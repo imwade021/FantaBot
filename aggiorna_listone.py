@@ -1,61 +1,33 @@
-import os
 import pandas as pd
 
-def ottieni_dati_aggiornati():
-    print("⏳ Sincronizzazione ed elaborazione listone locale in corso...")
-    
-    file_path = "listone.xlsx"
-    if not os.path.exists(file_path):
-        print("❌ File listone.xlsx non trovato nella cartella del progetto!")
-        return
+def aggiorna_listone():
+    # 1. Ecco il dizionario aggiornato con TUTTE le nuove colonne dello Scouting Report
+    data = {
+        'Nome': ['Sommer', 'Di Gregorio', 'Bastoni', 'Dimarco', 'Buongiorno', 'Barella', 'Koopmeiners', 'Pulisic', 'Lautaro', 'Vlahovic', 'Kvaratskhelia'],
+        'Squadra': ['Inter', 'Juventus', 'Inter', 'Inter', 'Napoli', 'Inter', 'Juventus', 'Milan', 'Inter', 'Juventus', 'Napoli'],
+        'R': ['P', 'P', 'D', 'D', 'D', 'C', 'C', 'C', 'A', 'A', 'A'],
+        'FM': [5.8, 5.5, 6.3, 6.7, 6.2, 7.1, 7.3, 7.2, 8.5, 8.1, 7.8],
+        'FVM': [45, 40, 35, 45, 30, 85, 95, 80, 180, 160, 150],
+        'Qt.A': [18, 16, 15, 20, 14, 25, 28, 24, 45, 40, 38],
+        'Target_Max': [50, 45, 40, 50, 35, 90, 100, 85, 190, 170, 160],
+        'Slot': [1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1],
+        
+        # --- NUOVE METRICHE SCOUTING ---
+        'Titolarita': ['Inamovibile', 'Inamovibile', 'Inamovibile', 'Inamovibile', 'Inamovibile', 'Inamovibile', 'Inamovibile', 'Inamovibile', 'Inamovibile', 'Inamovibile', 'Inamovibile'],
+        'Rigori_Piazzati': ['-', '-', '-', 'Angoli/Punizioni', '-', 'Nessuno', 'Rigorista 2', 'Nessuno', 'Rigorista 1', 'Rigorista 1', 'Rigorista 1'],
+        'Infortuni': ['Iron Man', 'Iron Man', 'Medio', 'Basso', 'Basso', 'Iron Man', 'Medio', 'Alto', 'Basso', 'Medio', 'Basso'],
+        'Malus': ['Corretto', 'Corretto', 'Corretto', 'Corretto', 'Cartellino Facile', 'Spesso Ammonito', 'Corretto', 'Corretto', 'Spesso Ammonito', 'Spesso Ammonito', 'Corretto']
+    }
 
-    # Lettura Excel da riga 2 (header=1)
-    df = pd.read_excel(file_path, header=1, engine='openpyxl')
+    df = pd.DataFrame(data)
 
-    # 1. Calcolo Fantamedia (FM) stimata
-    def estrai_fm(row):
-        fvm = float(row.get('FVM', 0)) if pd.notnull(row.get('FVM')) else 0
-        r = str(row.get('R', 'C')).upper()
-        base = 7.0 if r == 'A' else (6.4 if r == 'C' else (6.1 if r == 'D' else 5.5))
-        return round(base + (fvm / 150.0), 2)
-
-    # 2. Calcolo Slot Consigliato
-    def calcola_slot(row):
-        fvm = float(row.get('FVM', 0)) if pd.notnull(row.get('FVM')) else 0
-        r = str(row.get('R', 'C')).upper()
-        if r == 'A':
-            return "1° Slot Top" if fvm >= 220 else ("1° Slot" if fvm >= 120 else ("2° Slot" if fvm >= 60 else "3° Slot/Scommessa"))
-        elif r == 'C':
-            return "1° Slot Top" if fvm >= 120 else ("1° Slot" if fvm >= 70 else ("2° Slot" if fvm >= 35 else "3° Slot"))
-        elif r == 'D':
-            return "1° Slot Top" if fvm >= 60 else ("1° Slot" if fvm >= 35 else ("2° Slot" if fvm >= 18 else "3° Slot"))
-        else:
-            return "1° Slot" if fvm >= 40 else ("2° Slot" if fvm >= 20 else "3° Slot")
-
-    # 3. Calcolo Target Max Budget
-    def calcola_target(row):
-        fvm = float(row.get('FVM', 0)) if pd.notnull(row.get('FVM')) else 0
-        qta = float(row.get('Qt.A', 0)) if pd.notnull(row.get('Qt.A')) else 0
-        return max(int(qta), int(round(fvm * 0.42)))
-
-    # Database Rigoristi di riferimento
-    rigoristi_top = [
-        "LAUTARO", "VLAHOVIC", "ORSOLINI", "CALHANOGLU", "DYBALA", 
-        "KOOPMEINERS", "PULISIC", "ZAPATA", "MCTOMINAY", "LOOKMAN", "RETUGUI"
-    ]
-
-    # Popolamento nuove colonne
-    df['FM'] = df.apply(estrai_fm, axis=1)
-    df['Slot'] = df.apply(calcola_slot, axis=1)
-    df['Target_Max'] = df.apply(calcola_target, axis=1)
-    df['Rigorista'] = df['Nome'].apply(lambda n: "Sì" if any(rig in str(n).upper() for rig in rigoristi_top) else "No")
-    df['Note'] = df.apply(lambda r: f"Puntare max {r['Target_Max']} cr. ({r['Slot']})", axis=1)
-
-    # Scrittura su file Excel
-    with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Listone', startrow=1)
-
-    print("🚀 listone.xlsx arricchito con successo ed esente da errori!")
+    # 2. Salvataggio su Excel (impostato con startrow=1 per saltare la prima riga come vuole il bot)
+    try:
+        with pd.ExcelWriter("listone.xlsx", engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, startrow=1)
+        print("✅ Successo! Il file 'listone.xlsx' è stato generato con il nuovo Scouting Report.")
+    except Exception as e:
+        print(f"❌ Errore durante la creazione del file: {e}")
 
 if __name__ == '__main__':
-    ottieni_dati_aggiornati()
+    aggiorna_listone()
