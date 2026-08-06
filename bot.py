@@ -2,10 +2,10 @@ import os
 import io
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')
+matplotlib.use('Agg')  # Fondamentale per far funzionare i grafici su server cloud come Render
 import matplotlib.pyplot as plt
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # TOKEN DEL BOT TELEGRAM
 TOKEN = "8969898580:AAHxI0_LK57bhCTP_TNYLKubhEU3a0yEg0Y"
@@ -27,7 +27,7 @@ TEAM_COLORS = {
 def get_team_icon(squadra):
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
-# CACHE RAM
+# CACHE RAM PER EXCEL
 DATA_CACHE = None
 
 def load_data(force_reload=False):
@@ -35,6 +35,7 @@ def load_data(force_reload=False):
     if DATA_CACHE is None or force_reload:
         if os.path.exists("listone.xlsx"):
             print("⚡ Caricamento listone.xlsx in RAM...")
+            # Leggiamo l'Excel saltando la riga 1 (header=1)
             DATA_CACHE = pd.read_excel("listone.xlsx", header=1, engine='openpyxl')
         else:
             print("⚠️ Attenzione: File listone.xlsx non trovato!")
@@ -84,7 +85,7 @@ def get_roster_stats(session):
         'max_bid': max_bid, 'budget_medio_ruolo': budget_medio_ruolo, 'total_missing': total_missing
     }
 
-# MENU PRINCIPALE AGGIORNATO
+# MENU PRINCIPALE
 def main_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -134,7 +135,7 @@ def send_dashboard(chat_id, user_id, message_id=None):
     else:
         bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
-# --- COMPONENTS SELETTORE ---
+# COMPONENTI MENU
 def menu_seleziona_squadra(df, prefisso_callback):
     markup = InlineKeyboardMarkup(row_width=2)
     squadre = sorted(df['Squadra'].dropna().astype(str).unique())
@@ -166,7 +167,7 @@ def menu_seleziona_giocatore(df, squadra, ruolo, prefisso_callback, user_id):
     markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data=f"{prefisso_callback}_sq_{squadra}"))
     return markup
 
-# --- SALVATAGGIO PREZZO DIGITATO E UNDO ---
+# LOGICA ACQUISTO
 def process_buy_price(message, player_name, user_id):
     chat_id = message.chat.id
     if not message.text or not message.text.isdigit():
@@ -199,12 +200,11 @@ def process_buy_price(message, player_name, user_id):
     
     bot.send_message(chat_id, f"✅ *{player_name.upper()}* acquistato per `{costo} cr.`!", parse_mode="Markdown", reply_markup=markup)
 
-# --- HANDLER MESSAGGI E RICERCA ---
+# HANDLERS PRINCIPALI E RICERCA TESTUALE
 @bot.message_handler(commands=['start', 'menu'])
 def cmd_start(message):
     send_dashboard(message.chat.id, message.from_user.id)
 
-# MOTORE DI RICERCA TESTUALE
 @bot.message_handler(func=lambda message: not message.text.startswith('/') and not message.text.isdigit())
 def search_player(message):
     query = message.text.strip().lower()
@@ -213,6 +213,10 @@ def search_player(message):
         return
         
     df = load_data()
+    if df is None:
+        bot.reply_to(message, "⚠️ Errore: file listone.xlsx non trovato nel sistema.")
+        return
+
     matches = df[df['Nome'].str.lower().str.contains(query, na=False)]
     
     if matches.empty:
@@ -231,7 +235,7 @@ def search_player(message):
         
     bot.reply_to(message, f"🔍 Risultati ricerca per *{query}*:", parse_mode="Markdown", reply_markup=markup)
 
-# --- GESTORE CALLBACKS ---
+# GESTORE CALLBACK (BOTTONI)
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     user_id = call.from_user.id
@@ -245,14 +249,13 @@ def handle_callbacks(call):
 
     elif call.data == "reload_excel":
         load_data(force_reload=True)
-        bot.answer_callback_query(call.id, "⚡ Dati sincronizzati in RAM!")
+        bot.answer_callback_query(call.id, "⚡ Dati sincronizzati con Excel!")
 
     elif call.data == "reset_confirm":
         user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session['wishlist']}
         bot.answer_callback_query(call.id, "🔄 Dati resettati!")
         send_dashboard(chat_id, user_id, call.message.message_id)
 
-    # AREA ROSA & EXPORT
     elif call.data == "menu_rosa":
         rosa = session['rosa']
         stats = get_roster_stats(session)
@@ -267,7 +270,6 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # WISHLIST NUOVA AREA
     elif call.data == "menu_wishlist":
         wish = session['wishlist']
         if not wish:
@@ -287,13 +289,11 @@ def handle_callbacks(call):
         call.data = f"sq_pl_{nome}"
         handle_callbacks(call)
 
-    # TOP RIMASTI NUOVA AREA
     elif call.data == "menu_top":
         rosa_names = [p['nome'] for p in session['rosa']]
         df_disp = df[~df['Nome'].isin(rosa_names)]
         
         text = "🔥 *TOP SVINCOLATI RIMASTI*\nI migliori 3 giocatori per ruolo attualmente liberi:\n───────────────────────────\n"
-        
         for r in ['P', 'D', 'C', 'A']:
             top = df_disp[df_disp['R'] == r].sort_values(by='FVM', ascending=False, na_position='last').head(3)
             text += f"\n{ROLE_ICONS[r]} *{r}*:\n"
@@ -303,7 +303,7 @@ def handle_callbacks(call):
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # ESPLORAZIONE E ACQUISTO CON SCOUTING REPORT
+    # ESPLORA SQUADRE E SCOUTING REPORT
     elif call.data in ["menu_squadre", "sq_start"]:
         markup = menu_seleziona_squadra(df, "sq")
         bot.edit_message_text("👕 *ESPLORA SQUADRE*\n\nSeleziona un club:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
@@ -323,7 +323,6 @@ def handle_callbacks(call):
         p_data = df[df['Nome'] == player_name].iloc[0]
         sq_name = p_data.get('Squadra', '-')
         
-        # NUOVA STRUTTURA CON SCOUTING REPORT (Legge le nuove colonne se presenti)
         info_text = (
             f"👤 *{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
             f"───────────────────────────\n"
@@ -350,7 +349,7 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(info_text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # AREA STUDIO COMPARATIVA
+    # AREA STUDIO COMPARATIVA CON GRAFICO
     elif call.data in ["menu_studio", "cmp1_start"]:
         bot.edit_message_text("📊 *AREA STUDIO*\n\nSeleziona la squadra del *1° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "cmp1"))
     elif call.data.startswith("cmp1_sq_"):
@@ -370,12 +369,60 @@ def handle_callbacks(call):
         p1_name = session['selected_for_compare'][0]
         session['selected_for_compare'] = []
         
+        # Recupero dati dei due giocatori scelti
+        p1_data = df[df['Nome'] == p1_name].iloc[0]
+        p2_data = df[df['Nome'] == p2_name].iloc[0]
+
+        # Testo con il riepilogo Scouting
+        testo_confronto = (
+            f"📊 *COMPARAZIONE DIRETTA*\n"
+            f"🏆 *{p1_name.upper()}* vs *{p2_name.upper()}*\n"
+            f"───────────────────────────\n"
+            f"📈 *FantaMedia:* `{p1_data.get('FM', '-')}` 🆚 `{p2_data.get('FM', '-')}`\n\n"
+            f"🪖 *Titolarità:*\n• {p1_name}: `{p1_data.get('Titolarita', '-')}`\n• {p2_name}: `{p2_data.get('Titolarita', '-')}`\n\n"
+            f"👟 *Rigori/Piazzati:*\n• {p1_name}: `{p1_data.get('Rigori_Piazzati', '-')}`\n• {p2_name}: `{p2_data.get('Rigori_Piazzati', '-')}`\n\n"
+            f"🏥 *Infortuni:*\n• {p1_name}: `{p1_data.get('Infortuni', '-')}`\n• {p2_name}: `{p2_data.get('Infortuni', '-')}`\n\n"
+            f"🟨 *Malus:*\n• {p1_name}: `{p1_data.get('Malus', '-')}`\n• {p2_name}: `{p2_data.get('Malus', '-')}`\n"
+            f"───────────────────────────\n"
+            f"Chi acquisti?"
+        )
+
+        # Generazione Grafico a Barre
+        fig, ax = plt.subplots(figsize=(8, 5))
+        metrics = ['Quotazione', 'FVM', 'Target Max']
+        
+        # Gestione sicurezza valori se mancano
+        p1_vals = [float(p1_data.get('Qt.A', 0) or 0), float(p1_data.get('FVM', 0) or 0), float(p1_data.get('Target_Max', 0) or 0)]
+        p2_vals = [float(p2_data.get('Qt.A', 0) or 0), float(p2_data.get('FVM', 0) or 0), float(p2_data.get('Target_Max', 0) or 0)]
+
+        x = range(len(metrics))
+        width = 0.35
+
+        ax.bar([i - width/2 for i in x], p1_vals, width, label=p1_name, color='#1f77b4')
+        ax.bar([i + width/2 for i in x], p2_vals, width, label=p2_name, color='#ff7f0e')
+
+        ax.set_ylabel('Crediti')
+        ax.set_title(f'Confronto Valori: {p1_name} vs {p2_name}')
+        ax.set_xticks(x)
+        ax.set_xticklabels(metrics)
+        ax.legend()
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+
+        # Salvataggio in memoria
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=100)
+        buf.seek(0)
+        plt.close(fig)
+        
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton(f"➕ Prendi {p1_name}", callback_data=f"buy_{p1_name}"), InlineKeyboardButton(f"➕ Prendi {p2_name}", callback_data=f"buy_{p2_name}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.send_message(chat_id, f"🏆 Scontro Completato:\n*{p1_name}* vs *{p2_name}*\n\n_Grafico in costruzione..._ Chi acquisti?", parse_mode="Markdown", reply_markup=markup)
+        
+        # Elimina vecchio messaggio testuale e invia la foto
+        bot.delete_message(chat_id, call.message.message_id)
+        bot.send_photo(chat_id, buf, caption=testo_confronto, parse_mode="Markdown", reply_markup=markup)
 
-    # AZIONI ACQUISTO E UNDO RAPIDO
+    # ACQUISTI E SVINCOLI
     elif call.data.startswith("buy_"):
         player_name = call.data.replace("buy_", "")
         bot.answer_callback_query(call.id, "Preparazione acquisto...")
@@ -394,7 +441,6 @@ def handle_callbacks(call):
                 return
         bot.answer_callback_query(call.id, "⚠️ Giocatore non trovato in rosa.")
 
-    # GESTIONE SVINCOLO CLASSICO
     elif call.data == "menu_svincola":
         if not session['rosa']:
             bot.answer_callback_query(call.id, "❌ Nessun calciatore in rosa!")
@@ -415,6 +461,6 @@ def handle_callbacks(call):
         send_dashboard(chat_id, user_id, call.message.message_id)
 
 if __name__ == '__main__':
-    print("🤖 FantaBot Pro Ready (Scouting Report Attivo!)...")
+    print("🤖 FantaBot Pro Ready (Scouting Report + Grafici + Excel!)...")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except Exception as e: print(f"❌ Errore polling: {e}")
