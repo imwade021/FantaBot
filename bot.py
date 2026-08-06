@@ -256,7 +256,7 @@ def handle_callbacks(call):
         # 5. Ordiniamo dal più economico a salire
         df_gemme = df_gemme.sort_values(by='Prezzo_num', ascending=True).head(5)
         
-                testo_gemme = "💎 *GEMME NASCOSTE*\nGiocatori titolari a 5 crediti o meno, ideali per completare la rosa:\n\n"
+        testo_gemme = "💎 *GEMME NASCOSTE*\nGiocatori titolari a 5 crediti o meno, ideali per completare la rosa:\n\n"
 
 Le migliori scommesse low-cost rimaste nel listone:
 
