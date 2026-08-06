@@ -224,18 +224,57 @@ def handle_callbacks(call):
         # Ordina per chi costa meno tra i validi trovati
         df_gemme = df_gemme.sort_values(by='FVM_num', ascending=True).head(5)
         
-        testo_gemme = "💎 *GEMME NASCOSTE*\nGiocatori low-cost (Max 10 cr) con buone chance di voto:\n\n"
+           # 💎 CACCIATORE DI GEMME (VERSIONE BLINDATA MULTI-COLONNA)
+    elif call.data == "menu_gemme":
+        nomi_in_rosa = [p['nome'] for p in session['rosa']]
+        
+        # 1. Trova la colonna giusta per il PREZZO
+        col_prezzo = 'FVM'
+        for col in ['Target_Max', 'FVM', 'Quotazione', 'Qt.A']:
+            if col in df.columns:
+                col_prezzo = col
+                break
+                
+        # 2. Trova la colonna giusta per la TITOLARITA'
+        col_titolarita = 'Titolarita'
+        if 'Titolarità' in df.columns:
+            col_titolarita = 'Titolarità'
+            
+        # 3. Creiamo la colonna numerica per i calcoli
+        df['Prezzo_num'] = pd.to_numeric(df[col_prezzo], errors='coerce').fillna(0)
+        
+        # 4. Filtro: Prezzo massimo 12 crediti, esclusi chi costa 0, e status da ballottaggio in su
+        if col_titolarita in df.columns:
+            parole_chiave = 'titolare|inamovibile|ballottaggio'
+            df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & 
+                          (df['Prezzo_num'] > 0) & 
+                          (df['Prezzo_num'] <= 12) & 
+                          (df[col_titolarita].astype(str).str.contains(parole_chiave, na=False, case=False))]
+        else:
+            df_gemme = pd.DataFrame()
+            
+        # 5. Ordiniamo dal più economico a salire
+        df_gemme = df_gemme.sort_values(by='Prezzo_num', ascending=True).head(5)
+        
+        testo_gemme = "💎 *GEMME NASCOSTE*
+Le migliori scommesse low-cost rimaste nel listone:
+
+"
         markup = InlineKeyboardMarkup(row_width=1)
         
         if df_gemme.empty: 
-            testo_gemme += "_Nessuna gemma trovata. Il mercato è spietato!_"
+            testo_gemme += f"_Nessuna gemma trovata. Colonna usata: {col_prezzo}_"
         else:
             for _, row in df_gemme.iterrows():
-                testo_gemme += f"🔹 {ROLE_ICONS.get(row.get('R','C'),'')} *{row['Nome']}* ({row.get('Squadra','-')})\n      ↳ FVM: `{int(row['FVM_num'])}` cr. | Status: `{row.get(col_titolarita, '-')}`\n"
+                testo_gemme += f"🔹 {ROLE_ICONS.get(row.get('R','C'),'')} *{row['Nome']}* ({row.get('Squadra','-')})
+      ↳ Costo ({col_prezzo}): `{int(row['Prezzo_num'])}` cr. | Status: `{row.get(col_titolarita, '-')}`
+"
                 markup.add(InlineKeyboardButton(f"🔍 Analizza {row['Nome']}", callback_data=f"sq_pl_{row['Nome']}"))
                 
         markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
         bot.edit_message_text(testo_gemme, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+```
+
 
     elif call.data == "menu_rosa":
         rosa = session['rosa']
