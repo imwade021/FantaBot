@@ -217,6 +217,7 @@ def handle_callbacks(call):
         send_dashboard(chat_id, user_id)
 
     elif call.data == "go_home": 
+        bot.answer_callback_query(call.id)
         send_dashboard(chat_id, user_id, call.message.message_id)
         
     elif call.data == "reload_excel": 
@@ -224,11 +225,13 @@ def handle_callbacks(call):
         bot.answer_callback_query(call.id, "⚡ Dati sincronizzati!")
         
     elif call.data == "reset_confirm":
+        bot.answer_callback_query(call.id)
         user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session['wishlist']}
         send_dashboard(chat_id, user_id, call.message.message_id)
 
-    # --- GEMME NASCOSTE (FIX) ---
+    # --- GEMME NASCOSTE ---
     elif call.data == "menu_gemme":
+        bot.answer_callback_query(call.id)
         nomi_in_rosa = [p['nome'] for p in session['rosa']]
         
         colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
@@ -254,6 +257,7 @@ def handle_callbacks(call):
         bot.edit_message_text(testo_gemme, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "menu_rosa":
+        bot.answer_callback_query(call.id)
         rosa = session['rosa']
         
         squadre_count = {}
@@ -287,7 +291,8 @@ def handle_callbacks(call):
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "radar_rosa":
-        if not session['rosa']: return bot.answer_callback_query(call.id, "Rosa vuota!")
+        bot.answer_callback_query(call.id)
+        if not session['rosa']: return
         spese = {'P': 0, 'D': 0, 'C': 0, 'A': 0}
         for p in session['rosa']: spese[p['ruolo']] += p['prezzo']
         
@@ -308,7 +313,8 @@ def handle_callbacks(call):
         bot.send_photo(chat_id, buf, caption="🕸️ *Analisi Radar della tua Rosa*", parse_mode="Markdown")
 
     elif call.data == "chart_budget":
-        if not session['rosa']: return bot.answer_callback_query(call.id, "Rosa vuota!")
+        bot.answer_callback_query(call.id)
+        if not session['rosa']: return
         spese = {'P': 0, 'D': 0, 'C': 0, 'A': 0}
         for p in session['rosa']: spese[p['ruolo']] += p['prezzo']
         
@@ -323,7 +329,8 @@ def handle_callbacks(call):
         bot.send_photo(chat_id, buf, caption="📊 *Distribuzione Budget*", parse_mode="Markdown")
 
     elif call.data == "export_roster":
-        if not session['rosa']: return bot.answer_callback_query(call.id, "Rosa vuota!")
+        bot.answer_callback_query(call.id)
+        if not session['rosa']: return
         rosa = session['rosa']
         fig, ax = plt.subplots(figsize=(8, 10)); ax.axis('off')
         
@@ -350,16 +357,15 @@ def handle_callbacks(call):
 
     # --- SCHEDA GIOCATORE CON TASTO WISHLIST ---
     elif call.data.startswith("sq_pl_"):
+        bot.answer_callback_query(call.id)
         player_name = call.data.replace("sq_pl_", "")
         p_data = df[df['Nome'] == player_name].iloc[0]
         
-        # Pulizia robusta del FVM
         fvm_str = str(p_data.get('FVM', '0')).replace(',', '.').replace('-', '0')
         fvm = pd.to_numeric(fvm_str, errors='coerce')
         if pd.isna(fvm): fvm = 0
             
         sq_name = p_data.get('Squadra', '-')
-        
         stats = get_roster_stats(session)
         consiglio_bid = min(stats['max_bid'], int((session['budget'] * 0.3) + (fvm * 0.7)))
         
@@ -395,9 +401,7 @@ def handle_callbacks(call):
     # --- TOGGLE WISHLIST ---
     elif call.data.startswith("wl_toggle_"):
         player_name = call.data.replace("wl_toggle_", "")
-        
-        if 'wishlist' not in session:
-            session['wishlist'] = []
+        if 'wishlist' not in session: session['wishlist'] = []
             
         if player_name in session['wishlist']:
             session['wishlist'].remove(player_name)
@@ -405,10 +409,10 @@ def handle_callbacks(call):
         else:
             session['wishlist'].append(player_name)
             bot.answer_callback_query(call.id, f"⭐ {player_name} aggiunto alla Wishlist!", show_alert=True)
-            
         send_dashboard(chat_id, user_id, call.message.message_id)
 
     elif call.data.startswith("alt_"):
+        bot.answer_callback_query(call.id)
         player_name = call.data.replace("alt_", "")
         try:
             p_data = df[df['Nome'] == player_name].iloc[0]
@@ -422,7 +426,8 @@ def handle_callbacks(call):
             alternative['FVM_num'] = pd.to_numeric(alternative['FVM'].astype(str).str.replace(',', '.').str.replace('-', '0'), errors='coerce').fillna(0)
             migliori_alternative = alternative[alternative['FVM_num'] <= (fvm_target + 5)].sort_values(by='FVM_num', ascending=False).head(3)
             
-            if migliori_alternative.empty: return bot.answer_callback_query(call.id, "Nessuna alternativa trovata!", show_alert=True)
+            if migliori_alternative.empty: 
+                return bot.answer_callback_query(call.id, "Nessuna alternativa trovata!", show_alert=True)
             
             testo_alt = f"🚨 *PIANO B INNESCATO*\nEcco le migliori 3 alternative libere nello stesso ruolo:\n\n"
             markup = InlineKeyboardMarkup(row_width=1)
@@ -431,30 +436,40 @@ def handle_callbacks(call):
                 markup.add(InlineKeyboardButton(f"🔍 Analizza {row['Nome']}", callback_data=f"sq_pl_{row['Nome']}"))
             markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
             bot.edit_message_text(testo_alt, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-        except Exception: bot.answer_callback_query(call.id, "Errore nel calcolo delle alternative.")
+        except Exception: 
+            bot.answer_callback_query(call.id, "Errore nel calcolo delle alternative.")
 
     elif call.data == "sq_start": 
+        bot.answer_callback_query(call.id)
         bot.edit_message_text("👕 *ESPLORA SQUADRE*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "sq"))
     elif call.data.startswith("sq_sq_"): 
+        bot.answer_callback_query(call.id)
         bot.edit_message_text("Scegli il ruolo da esplorare:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(call.data.replace("sq_sq_", ""), "sq"))
     elif call.data.startswith("sq_ru_"): 
+        bot.answer_callback_query(call.id)
         _, _, sq, ru = call.data.split("_")
         bot.edit_message_text(f"Seleziona un giocatore ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "sq", user_id))
 
     elif call.data in ["menu_studio", "cmp1_start"]: 
+        bot.answer_callback_query(call.id)
         bot.edit_message_text("📊 *AREA STUDIO*\n\nSeleziona la squadra del *1° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "cmp1"))
     elif call.data.startswith("cmp1_sq_"): 
+        bot.answer_callback_query(call.id)
         bot.edit_message_text("Scegli il ruolo del *1° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(call.data.replace("cmp1_sq_", ""), "cmp1"))
     elif call.data.startswith("cmp1_ru_"): 
+        bot.answer_callback_query(call.id)
         _, _, sq, ru = call.data.split("_")
         bot.edit_message_text(f"Seleziona il *1° Giocatore* ({ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "cmp1", user_id))
     elif call.data.startswith("cmp1_pl_"):
+        bot.answer_callback_query(call.id)
         session['selected_for_compare'] = [call.data.replace("cmp1_pl_", "")]
         bot.edit_message_text(f"✅ 1° Gioc: *{session['selected_for_compare'][0]}*\n\nSeleziona la squadra del *2° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "cmp2"))
     elif call.data.startswith("cmp2_sq_"):
+        bot.answer_callback_query(call.id)
         ruolo_p1 = df[df['Nome'] == session['selected_for_compare'][0]].iloc[0].get('R', 'C')
         bot.edit_message_text(f"Seleziona il *2° Giocatore* (Filtro Ruolo: {ruolo_p1}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, call.data.replace("cmp2_sq_", ""), ruolo_p1, "cmp2", user_id))
     elif call.data.startswith("cmp2_pl_"):
+        bot.answer_callback_query(call.id)
         p2_name, p1_name = call.data.replace("cmp2_pl_", ""), session['selected_for_compare'][0]
         p1_data, p2_data = df[df['Nome'] == p1_name].iloc[0], df[df['Nome'] == p2_name].iloc[0]
         session['selected_for_compare'] = []
@@ -463,15 +478,10 @@ def handle_callbacks(call):
             f"📊 *COMPARAZIONE DIRETTA*\n🏆 *{p1_name.upper()}* vs *{p2_name.upper()}*\n───────────────────────────\n"
             f"📈 *FantaMedia:* `{p1_data.get('FM', '-')}` 🆚 `{p2_data.get('FM', '-')}`\n\n"
             f"🏅 *Fascia:*\n• {p1_name}: {get_team_icon(p1_data.get('Squadra',''))} `{p1_data.get('Fascia', '-')}`\n• {p2_name}: {get_team_icon(p2_data.get('Squadra',''))} `{p2_data.get('Fascia', '-')}`\n\n"
-            f"🪖 *Titolarità:*\n• {p1_name}: `{p1_data.get('Titolarita', '-')}`\n• {p2_name}: `{p2_data.get('Titolarita', '-')}`\n\n"
-            f"👟 *Rigori/Piazzati:*\n• {p1_name}: `{p1_data.get('Rigori_Piazzati', '-')}`\n• {p2_name}: `{p2_data.get('Rigori_Piazzati', '-')}`\n\n"
-            f"🏥 *Infortuni:*\n• {p1_name}: `{p1_data.get('Infortuni', '-')}`\n• {p2_name}: `{p2_data.get('Infortuni', '-')}`\n\n"
-            f"🟨 *Malus:*\n• {p1_name}: `{p1_data.get('Malus', '-')}`\n• {p2_name}: `{p2_data.get('Malus', '-')}`\n"
         )
         
         fig, ax = plt.subplots(figsize=(8, 5))
         
-        # Pulizia robusta valori per il grafico
         p1_qta = pd.to_numeric(str(p1_data.get('Qt.A', '0')).replace(',', '.').replace('-', '0'), errors='coerce')
         p1_fvm = pd.to_numeric(str(p1_data.get('FVM', '0')).replace(',', '.').replace('-', '0'), errors='coerce')
         p2_qta = pd.to_numeric(str(p2_data.get('Qt.A', '0')).replace(',', '.').replace('-', '0'), errors='coerce')
@@ -497,11 +507,13 @@ def handle_callbacks(call):
         bot.send_photo(chat_id, buf, caption=testo_confronto, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("buy_"):
+        bot.answer_callback_query(call.id)
         player_name = call.data.replace("buy_", "")
         msg = bot.send_message(chat_id, f"💰 A quanti crediti hai acquistato *{player_name}*?\n_Scrivi un numero (es. 15):_", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
         
     elif call.data.startswith("undo_"):
+        bot.answer_callback_query(call.id)
         player_name = call.data.replace("undo_", "")
         for idx, p in enumerate(session['rosa']):
             if p['nome'] == player_name: 
@@ -509,12 +521,12 @@ def handle_callbacks(call):
                 send_dashboard(chat_id, user_id)
                 return
 
-    # --- MENU SVINCOLI (FIX) ---
+    # --- MENU SVINCOLI ---
     elif call.data == "menu_svincola":
         if not session['rosa']: 
-            bot.answer_callback_query(call.id, "❌ La tua rosa è vuota!", show_alert=True)
-            return
+            return bot.answer_callback_query(call.id, "❌ La tua rosa è vuota!", show_alert=True)
             
+        bot.answer_callback_query(call.id)
         markup = InlineKeyboardMarkup(row_width=1)
         for p in session['rosa']:
             markup.add(InlineKeyboardButton(f"✂️ Svincola {p['nome']} (+{p['prezzo']} cr)", callback_data=f"sv_{p['nome'][:20]}"))
@@ -535,6 +547,7 @@ def handle_callbacks(call):
 
     # --- MENU WISHLIST ---
     elif call.data == "menu_wishlist":
+        bot.answer_callback_query(call.id)
         wishlist = session.get('wishlist', [])
         markup = InlineKeyboardMarkup(row_width=1)
         
