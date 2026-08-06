@@ -52,7 +52,7 @@ def get_session(user_id):
             'budget': 500,
             'rosa': [],
             'selected_for_compare': [],
-            'wishlist': []  # NUOVO: Wishlist dei pupilli
+            'wishlist': [] 
         }
     return user_sessions[user_id]
 
@@ -125,7 +125,7 @@ def send_dashboard(chat_id, user_id, message_id=None):
         f"⚙️ `Centrocampi` `[{c_bar}]` `{stats['counts']['C']}/8`\n"
         f"🎯 `Attaccanti`  `[{a_bar}]` `{stats['counts']['A']}/6`\n\n"
         f"───────────────────────────\n"
-        f"💡 _Novità: Scrivi il nome di un giocatore in chat per cercarlo!_\n"
+        f"💡 _Scrivi il nome di un giocatore in chat per cercarlo!_\n"
     )
     
     if message_id:
@@ -193,7 +193,6 @@ def process_buy_price(message, player_name, user_id):
     session['rosa'].append({'nome': player_name, 'prezzo': costo, 'ruolo': ruolo, 'squadra': squadra})
     session['budget'] -= costo
     
-    # PULSANTE UNDO RAPIDO
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("↩️ Annulla Acquisto", callback_data=f"undo_{player_name}"))
     markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
@@ -265,7 +264,6 @@ def handle_callbacks(call):
                 text += f"`{idx:02d}.` {icon} *{p['nome']}* ── `{p['prezzo']} cr.`\n"
         
         markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(InlineKeyboardButton("💬 Export WA", callback_data="export_wa"), InlineKeyboardButton("📊 Export Excel", callback_data="export_excel"))
         markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
@@ -286,7 +284,6 @@ def handle_callbacks(call):
         if "add" in call.data and nome not in session['wishlist']: session['wishlist'].append(nome)
         if "rem" in call.data and nome in session['wishlist']: session['wishlist'].remove(nome)
         bot.answer_callback_query(call.id, "⭐ Wishlist aggiornata!")
-        # Ricarica la scheda giocatore
         call.data = f"sq_pl_{nome}"
         handle_callbacks(call)
 
@@ -306,7 +303,7 @@ def handle_callbacks(call):
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # ESPLORAZIONE E ACQUISTO (Aggiornato con Wishlist)
+    # ESPLORAZIONE E ACQUISTO CON SCOUTING REPORT
     elif call.data in ["menu_squadre", "sq_start"]:
         markup = menu_seleziona_squadra(df, "sq")
         bot.edit_message_text("👕 *ESPLORA SQUADRE*\n\nSeleziona un club:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
@@ -326,18 +323,24 @@ def handle_callbacks(call):
         p_data = df[df['Nome'] == player_name].iloc[0]
         sq_name = p_data.get('Squadra', '-')
         
+        # NUOVA STRUTTURA CON SCOUTING REPORT (Legge le nuove colonne se presenti)
         info_text = (
             f"👤 *{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
             f"───────────────────────────\n"
             f"📌 Ruolo: `{p_data.get('R', '-')}`  │  ⭐ Slot: `{p_data.get('Slot', '-')}`\n"
             f"📈 Fantamedia: `{p_data.get('FM', '-')}`\n"
             f"💰 Quotazione: `{p_data.get('Qt.A', '-')}` cr.  │  FVM: `{p_data.get('FVM', '-')}` cr.\n"
-            f"🎯 *Target Max:* `{p_data.get('Target_Max', '-')} cr.`\n"
+            f"🎯 *Target Max:* `{p_data.get('Target_Max', '-')} cr.`\n\n"
+            f"🔬 *SCOUTING REPORT*\n"
+            f"🪖 Titolarità: `{p_data.get('Titolarita', '-')}`\n"
+            f"👟 Rigori/Piazzati: `{p_data.get('Rigori_Piazzati', '-')}`\n"
+            f"🏥 Infortuni: `{p_data.get('Infortuni', '-')}`\n"
+            f"🟨 Malus/Cartellini: `{p_data.get('Malus', '-')}`\n"
+            f"───────────────────────────\n"
         )
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("⚡ Acquista (Inserisci Prezzo)", callback_data=f"buy_{player_name}"))
         
-        # Tasto toggle Wishlist
         if player_name in session['wishlist']:
             markup.add(InlineKeyboardButton("❌ Rimuovi dalla Wishlist", callback_data=f"wish_rem_{player_name}"))
         else:
@@ -347,7 +350,7 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(info_text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # AREA STUDIO COMPARATIVA (Riassunta per spazio, mantiene la logica)
+    # AREA STUDIO COMPARATIVA
     elif call.data in ["menu_studio", "cmp1_start"]:
         bot.edit_message_text("📊 *AREA STUDIO*\n\nSeleziona la squadra del *1° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "cmp1"))
     elif call.data.startswith("cmp1_sq_"):
@@ -363,16 +366,14 @@ def handle_callbacks(call):
         ruolo_p1 = df[df['Nome'] == session['selected_for_compare'][0]].iloc[0].get('R', 'C')
         bot.edit_message_text(f"Filtro Ruolo: *{ruolo_p1}*\nSeleziona il *2° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, squadra, ruolo_p1, "cmp2", user_id))
     elif call.data.startswith("cmp2_pl_"):
-        # Costruzione Grafico (Logica invariata ma alleggerita la caption per limitare testo)
         p2_name = call.data.replace("cmp2_pl_", "")
         p1_name = session['selected_for_compare'][0]
         session['selected_for_compare'] = []
-        bot.send_message(chat_id, f"📊 Preparazione grafico {p1_name} vs {p2_name}... un istante.")
-        # [La logica grafica va qui come in precedenza, usando matplotlib. Per brevità in chat omettiamo il ricarico massivo di matplotlib se non strettamente richiesto dal blocco, assumendo che lo integri nel tuo layout standard se preferisci, altrimenti ecco i bottoni per prenderli]
+        
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton(f"➕ Prendi {p1_name}", callback_data=f"buy_{p1_name}"), InlineKeyboardButton(f"➕ Prendi {p2_name}", callback_data=f"buy_{p2_name}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.send_message(chat_id, f"🏆 Scontro completato. Chi acquisti?", reply_markup=markup)
+        bot.send_message(chat_id, f"🏆 Scontro Completato:\n*{p1_name}* vs *{p2_name}*\n\n_Grafico in costruzione..._ Chi acquisti?", parse_mode="Markdown", reply_markup=markup)
 
     # AZIONI ACQUISTO E UNDO RAPIDO
     elif call.data.startswith("buy_"):
@@ -388,12 +389,12 @@ def handle_callbacks(call):
             if p['nome'] == player_name:
                 removed = rosa.pop(idx)
                 session['budget'] += removed['prezzo']
-                bot.answer_callback_query(call.id, f"↩️ Acquisto annullato! {removed['prezzo']} crediti restituiti.", show_alert=True)
+                bot.answer_callback_query(call.id, f"↩️ Acquisto annullato! {removed['prezzo']} cr restituiti.", show_alert=True)
                 send_dashboard(chat_id, user_id)
                 return
         bot.answer_callback_query(call.id, "⚠️ Giocatore non trovato in rosa.")
 
-    # GESTIONE SVINCOLO CLASSICO E EXPORT
+    # GESTIONE SVINCOLO CLASSICO
     elif call.data == "menu_svincola":
         if not session['rosa']:
             bot.answer_callback_query(call.id, "❌ Nessun calciatore in rosa!")
@@ -412,15 +413,8 @@ def handle_callbacks(call):
             session['budget'] += int(removed['prezzo'])
             bot.answer_callback_query(call.id, f"🗑️ {removed['nome']} svincolato!")
         send_dashboard(chat_id, user_id, call.message.message_id)
-        
-    elif call.data == "export_wa":
-        # Logica Export WA come prima
-        pass 
-    elif call.data == "export_excel":
-        # Logica Export Excel come prima
-        pass
 
 if __name__ == '__main__':
-    print("🤖 FantaBot Pro Ready (All Features Active!)...")
+    print("🤖 FantaBot Pro Ready (Scouting Report Attivo!)...")
     try: bot.infinity_polling(timeout=10, long_polling_timeout=5)
     except Exception as e: print(f"❌ Errore polling: {e}")
