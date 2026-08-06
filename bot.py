@@ -193,6 +193,44 @@ def menu_seleziona_giocatore(df, squadra, ruolo, prefisso_callback):
     markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data=f"{prefisso_callback}_sq_{squadra}"))
     return markup
 
+# --- FUNZIONE SALVATAGGIO PREZZO DIGITATO ---
+
+def process_buy_price(message, player_name, user_id):
+    chat_id = message.chat.id
+    if not message.text or not message.text.isdigit():
+        msg = bot.send_message(chat_id, "❌ Prezzo non valido. Inserisci *solo numeri interi* (es. 15):", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
+        return
+
+    costo = int(message.text)
+    session = get_session(user_id)
+    stats = get_roster_stats(session)
+
+    if costo > stats['max_bid']:
+        bot.send_message(chat_id, f"⚠️ *ATTENZIONE!*\nL'offerta di `{costo} cr.` supera il tuo *Max Bid Sicuro* consentito (`{stats['max_bid']} cr.`).\nAcquisto annullato.", parse_mode="Markdown")
+        send_dashboard(chat_id, user_id)
+        return
+
+    df = load_data()
+    try:
+        player_row = df[df['Nome'] == player_name].iloc[0]
+        ruolo = player_row.get('R', 'C')
+        squadra = player_row.get('Squadra', '-')
+    except Exception:
+        ruolo = 'C'
+        squadra = '-'
+
+    session['rosa'].append({
+        'nome': player_name, 
+        'prezzo': costo, 
+        'ruolo': ruolo, 
+        'squadra': squadra
+    })
+    session['budget'] -= costo
+    
+    bot.send_message(chat_id, f"✅ *{player_name.upper()}* aggiunto alla rosa per `{costo} cr.`!", parse_mode="Markdown")
+    send_dashboard(chat_id, user_id)
+
 # --- HANDLER MESSAGGI E CALLBACK ---
 
 @bot.message_handler(commands=['start', 'menu'])
@@ -261,7 +299,7 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # EXPORT WHATSAPP (SOLUZIONE DEFINITIVA A PROVA DI ERRORE DI SINTASSI)
+    # EXPORT WHATSAPP
     elif call.data == "export_wa":
         rosa = session['rosa']
         if not rosa:
@@ -339,7 +377,7 @@ def handle_callbacks(call):
             f"📝 *Note Tattiche:* _{p_data.get('Note', '-')}_"
         )
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(f"⚡ Acquista ({p_data.get('Target_Max', 1)} cr.)", callback_data=f"buy_{player_name}"))
+        markup.add(InlineKeyboardButton("⚡ Acquista (Inserisci Prezzo)", callback_data=f"buy_{player_name}"))
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data=f"sq_sq_{sq_name}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(info_text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
@@ -367,20 +405,35 @@ def handle_callbacks(call):
         player_name = call.data.replace("cmp1_pl_", "")
         session['selected_for_compare'] = [player_name]
         markup = menu_seleziona_squadra(df, "cmp2")
-        bot.edit_message_text(f"✅ 1° Giocatore: *{player_name}*\n\nOra seleziona la squadra del *2° Giocatore*:", 
+        bot.edit_message_text(f"✅ 1° Gioc: *{player_name}*\n\nOra seleziona la squadra del *2° Giocatore* (Stesso Ruolo):", 
                               chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
+    # FILTRO AUTOMATICO SUL RUOLO PER IL 2° GIOCATORE
     elif call.data.startswith("cmp2_sq_"):
         squadra = call.data.replace("cmp2_sq_", "")
-        markup = menu_seleziona_ruolo(squadra, "cmp2")
-        bot.edit_message_text(f"{get_team_icon(squadra)} *{squadra}*\nScegli il ruolo del *2° Giocatore*:", 
-                              chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-
-    elif call.data.startswith("cmp2_ru_"):
-        _, _, squadra, ruolo = call.data.split("_")
-        markup = menu_seleziona_giocatore(df, squadra, ruolo, "cmp2")
-        bot.edit_message_text(f"{get_team_icon(squadra)} *{squadra}*  │  Ruolo: *{ruolo}*\nSeleziona il *2° Giocatore*:", 
-                              chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        
+        # Leggo dalla cache RAM il ruolo del 1° giocatore
+        p1_name = session['selected_for_compare'][0]
+        p1_data = df[df['Nome'] == p1_name].iloc[0]
+        ruolo_p1 = p1_data.get('R', 'C')
+        
+        # Costruisco la tastiera giocatori saltando del tutto la scelta ruolo
+        markup = InlineKeyboardMarkup(row_width=1)
+        sub_df = df[(df['Squadra'] == squadra) & (df['R'] == ruolo_p1)]
+        
+        for _, row in sub_df.iterrows():
+            nome = row['Nome']
+            fvm = row.get('FVM', '-')
+            slot = row.get('Slot', '-')
+            fmt_btn = f"{ROLE_ICONS.get(ruolo_p1,'')} {nome}  ──  FVM: {fvm} ({slot})"
+            markup.add(InlineKeyboardButton(fmt_btn, callback_data=f"cmp2_pl_{nome}"))
+            
+        markup.add(InlineKeyboardButton("🔙 Cambia Squadra", callback_data=f"cmp1_pl_{p1_name}"))
+        
+        bot.edit_message_text(
+            f"{get_team_icon(squadra)} *{squadra}*  │  Filtro Ruolo: *{ruolo_p1}*\nSeleziona il *2° Giocatore*:", 
+            chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup
+        )
 
     elif call.data.startswith("cmp2_pl_"):
         p2_name = call.data.replace("cmp2_pl_", "")
@@ -457,40 +510,23 @@ def handle_callbacks(call):
         )
 
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(f"➕ Prendi {p1_name} ({p1_data.get('Target_Max', 1)}cr)", callback_data=f"buy_{p1_name}"))
-        markup.add(InlineKeyboardButton(f"➕ Prendi {p2_name} ({p2_data.get('Target_Max', 1)}cr)", callback_data=f"buy_{p2_name}"))
+        markup.add(InlineKeyboardButton(f"➕ Prendi {p1_name}", callback_data=f"buy_{p1_name}"))
+        markup.add(InlineKeyboardButton(f"➕ Prendi {p2_name}", callback_data=f"buy_{p2_name}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
 
         bot.send_photo(chat_id, photo=buf, caption=caption, parse_mode="Markdown", reply_markup=markup)
 
-    # ACQUISTO RAPIDO
+    # ACQUISTO CON INSERIMENTO PREZZO MANUALE
     elif call.data.startswith("buy_"):
         player_name = call.data.replace("buy_", "")
-        player_row = df[df['Nome'] == player_name].iloc[0]
-        target = player_row.get('Target_Max', 1)
-        ruolo = player_row.get('R', 'C')
-        squadra = player_row.get('Squadra', '-')
         
-        try:
-            costo = int(target)
-        except Exception:
-            costo = 1
-
-        stats = get_roster_stats(session)
-        if costo > stats['max_bid']:
-            bot.answer_callback_query(call.id, f"⚠️ Attenzione! {costo} cr. supera il Max Bid Sicuro ({stats['max_bid']} cr.)!", show_alert=True)
-            return
-
-        session['rosa'].append({
-            'nome': player_name, 
-            'prezzo': costo, 
-            'ruolo': ruolo, 
-            'squadra': squadra
-        })
-        session['budget'] -= costo
-        
-        bot.answer_callback_query(call.id, f"✅ {player_name} ({ruolo}) preso a {costo} cr.!")
-        send_dashboard(chat_id, user_id)
+        bot.answer_callback_query(call.id, "Preparazione acquisto...")
+        msg = bot.send_message(
+            chat_id, 
+            f"💰 A quanti crediti hai acquistato *{player_name}*?\n_Scrivi un numero qui in chat (es. 15):_", 
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
 
     # SVINCOLA GIOCATORE
     elif call.data == "menu_svincola":
@@ -516,7 +552,7 @@ def handle_callbacks(call):
 
 # AVVIO BOT
 if __name__ == '__main__':
-    print("🤖 FantaBot Pro Ready (Apple Dark Aesthetics + Team Colors Active)...")
+    print("🤖 FantaBot Pro Ready (Role Auto-Filter + Manual Price Active)...")
     print("📡 In ascolto dei comandi Telegram...")
     try:
         bot.infinity_polling(timeout=10, long_polling_timeout=5)
