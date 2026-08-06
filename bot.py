@@ -203,19 +203,37 @@ def handle_callbacks(call):
         user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session['wishlist']}
         send_dashboard(chat_id, user_id, call.message.message_id)
 
-    # 💎 CACCIATORE DI GEMME
+        # 💎 CACCIATORE DI GEMME (VERSIONE REALISTICA)
     elif call.data == "menu_gemme":
         nomi_in_rosa = [p['nome'] for p in session['rosa']]
-        df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & (pd.to_numeric(df['FVM'], errors='coerce') <= 5) & (df['Titolarita'].str.contains('Titolare|Inamovibile', na=False, case=False))]
-        df_gemme = df_gemme.sort_values(by='FVM', ascending=False).head(5)
         
-        testo_gemme = "💎 *GEMME NASCOSTE*\nGiocatori titolari a 5 crediti o meno, ideali per completare la rosa:\n\n"
+        # Gestione sicura colonne
+        col_titolarita = 'Titolarità' if 'Titolarità' in df.columns else 'Titolarita'
+        df['FVM_num'] = pd.to_numeric(df['FVM'], errors='coerce').fillna(0)
+        
+        # Filtro realistico: FVM <= 10 e status da almeno "Ballottaggio" in su
+        if col_titolarita in df.columns:
+            parole_chiave = 'titolare|inamovibile|ballottaggio'
+            df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & 
+                          (df['FVM_num'] > 0) & 
+                          (df['FVM_num'] <= 10) & 
+                          (df[col_titolarita].astype(str).str.contains(parole_chiave, na=False, case=False))]
+        else:
+            df_gemme = pd.DataFrame()
+            
+        # Ordina per chi costa meno tra i validi trovati
+        df_gemme = df_gemme.sort_values(by='FVM_num', ascending=True).head(5)
+        
+        testo_gemme = "💎 *GEMME NASCOSTE*\nGiocatori low-cost (Max 10 cr) con buone chance di voto:\n\n"
         markup = InlineKeyboardMarkup(row_width=1)
-        if df_gemme.empty: testo_gemme += "_Nessuna gemma trovata al momento._"
+        
+        if df_gemme.empty: 
+            testo_gemme += "_Nessuna gemma trovata. Il mercato è spietato!_"
         else:
             for _, row in df_gemme.iterrows():
-                testo_gemme += f"🔹 {ROLE_ICONS.get(row['R'],'')} *{row['Nome']}* ({row['Squadra']}) ─ FVM: `{row['FVM']}`\n"
-                markup.add(InlineKeyboardButton(f"🔍 Info {row['Nome']}", callback_data=f"sq_pl_{row['Nome']}"))
+                testo_gemme += f"🔹 {ROLE_ICONS.get(row.get('R','C'),'')} *{row['Nome']}* ({row.get('Squadra','-')})\n      ↳ FVM: `{int(row['FVM_num'])}` cr. | Status: `{row.get(col_titolarita, '-')}`\n"
+                markup.add(InlineKeyboardButton(f"🔍 Analizza {row['Nome']}", callback_data=f"sq_pl_{row['Nome']}"))
+                
         markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
         bot.edit_message_text(testo_gemme, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
