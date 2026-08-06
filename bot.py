@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# ⚠️ IL TUO TOKEN TELEGRAM ⚠️
 TOKEN = "8969898580:AAHxI0_LK57bhCTP_TNYLKubhEU3a0yEg0Y"
 bot = telebot.TeleBot(TOKEN)
 
@@ -29,20 +30,24 @@ BEST_PAIRS = {
     'Torino': ['Juventus', 'Genoa', 'Como'], 'Bologna': ['Atalanta', 'Fiorentina']
 }
 
-def get_team_icon(squadra): return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
+def get_team_icon(squadra): 
+    return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
 DATA_CACHE = None
 def load_data(force_reload=False):
     global DATA_CACHE
     if DATA_CACHE is None or force_reload:
-        if os.path.exists("listone.xlsx"): DATA_CACHE = pd.read_excel("listone.xlsx", header=1, engine='openpyxl')
-        else: DATA_CACHE = None
+        if os.path.exists("listone.xlsx"): 
+            DATA_CACHE = pd.read_excel("listone.xlsx", header=1, engine='openpyxl')
+        else: 
+            DATA_CACHE = None
     return DATA_CACHE
 load_data()
 
 user_sessions = {}
 def get_session(user_id):
-    if user_id not in user_sessions: user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': []}
+    if user_id not in user_sessions: 
+        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': []}
     return user_sessions[user_id]
 
 def generate_progress_bar(current, target, length=8):
@@ -55,7 +60,8 @@ def get_roster_stats(session):
     counts = {'P': 0, 'D': 0, 'C': 0, 'A': 0}
     for p in rosa:
         r = p.get('ruolo', 'C')
-        if r in counts: counts[r] += 1
+        if r in counts: 
+            counts[r] += 1
             
     slot_liberi = max(0, 25 - len(rosa))
     max_bid = max(0, budget - (slot_liberi - 1)) if slot_liberi > 0 else budget
@@ -77,6 +83,9 @@ def main_menu_keyboard():
         InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"),
         InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm")
     )
+    markup.add(
+        InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen")
+    )
     return markup
 
 def send_dashboard(chat_id, user_id, message_id=None):
@@ -84,7 +93,6 @@ def send_dashboard(chat_id, user_id, message_id=None):
     stats = get_roster_stats(session)
     c = stats['counts']
     
-    # 🔥 TERMOMETRO DELL'ASTA (INFLAZIONE)
     spesa_tot = sum(p['prezzo'] for p in session['rosa'])
     fvm_tot = sum(p.get('fvm', 0) for p in session['rosa'])
     termometro = "⚖️ _Equilibrata_"
@@ -110,7 +118,8 @@ def send_dashboard(chat_id, user_id, message_id=None):
     if message_id:
         try: bot.edit_message_text(text, chat_id, message_id, parse_mode="Markdown", reply_markup=main_menu_keyboard())
         except Exception: bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
-    else: bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
+    else: 
+        bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 def menu_seleziona_squadra(df, prefisso):
     markup = InlineKeyboardMarkup(row_width=2)
@@ -175,7 +184,8 @@ def process_buy_price(message, player_name, user_id):
             bot.send_message(chat_id, f"💡 **L'ORACOLO DEI PORTIERI** 💡\nHai acquistato un portiere del *{squadra_acquistata}*.\nLe migliori squadre da affiancare sono: **{', '.join(accoppiamenti)}**.", parse_mode="Markdown")
 
 @bot.message_handler(commands=['start', 'menu'])
-def cmd_start(m): send_dashboard(m.chat.id, m.from_user.id)
+def cmd_start(m): 
+    send_dashboard(m.chat.id, m.from_user.id)
 
 @bot.message_handler(func=lambda m: not m.text.startswith('/') and not m.text.isdigit())
 def search_player(message):
@@ -197,90 +207,46 @@ def handle_callbacks(call):
     session = get_session(user_id)
     df = load_data()
 
-    if call.data == "go_home": send_dashboard(chat_id, user_id, call.message.message_id)
-    elif call.data == "reload_excel": load_data(force_reload=True); bot.answer_callback_query(call.id, "⚡ Dati sincronizzati!")
+    if call.data == "clear_screen":
+        bot.answer_callback_query(call.id, "🧹 Pulizia in corso...")
+        curr_id = call.message.message_id
+        for i in range(curr_id, max(0, curr_id - 80), -1):
+            try: bot.delete_message(chat_id, i)
+            except Exception: pass
+        send_dashboard(chat_id, user_id)
+
+    elif call.data == "go_home": 
+        send_dashboard(chat_id, user_id, call.message.message_id)
+        
+    elif call.data == "reload_excel": 
+        load_data(force_reload=True)
+        bot.answer_callback_query(call.id, "⚡ Dati sincronizzati!")
+        
     elif call.data == "reset_confirm":
         user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session['wishlist']}
         send_dashboard(chat_id, user_id, call.message.message_id)
 
-        # 💎 CACCIATORE DI GEMME (VERSIONE REALISTICA)
     elif call.data == "menu_gemme":
         nomi_in_rosa = [p['nome'] for p in session['rosa']]
-        
-        # Gestione sicura colonne
-        col_titolarita = 'Titolarità' if 'Titolarità' in df.columns else 'Titolarita'
-        df['FVM_num'] = pd.to_numeric(df['FVM'], errors='coerce').fillna(0)
-        
-        # Filtro realistico: FVM <= 10 e status da almeno "Ballottaggio" in su
-        if col_titolarita in df.columns:
-            parole_chiave = 'titolare|inamovibile|ballottaggio'
-            df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & 
-                          (df['FVM_num'] > 0) & 
-                          (df['FVM_num'] <= 10) & 
-                          (df[col_titolarita].astype(str).str.contains(parole_chiave, na=False, case=False))]
-        else:
-            df_gemme = pd.DataFrame()
-            
-        # Ordina per chi costa meno tra i validi trovati
-        df_gemme = df_gemme.sort_values(by='FVM_num', ascending=True).head(5)
-        
-           # 💎 CACCIATORE DI GEMME (VERSIONE BLINDATA MULTI-COLONNA)
-    elif call.data == "menu_gemme":
-        nomi_in_rosa = [p['nome'] for p in session['rosa']]
-        
-        # 1. Trova la colonna giusta per il PREZZO
-        col_prezzo = 'FVM'
-        for col in ['Target_Max', 'FVM', 'Quotazione', 'Qt.A']:
-            if col in df.columns:
-                col_prezzo = col
-                break
-                
-        # 2. Trova la colonna giusta per la TITOLARITA'
-        col_titolarita = 'Titolarita'
-        if 'Titolarità' in df.columns:
-            col_titolarita = 'Titolarità'
-            
-        # 3. Creiamo la colonna numerica per i calcoli
-        df['Prezzo_num'] = pd.to_numeric(df[col_prezzo], errors='coerce').fillna(0)
-        
-        # 4. Filtro: Prezzo massimo 12 crediti, esclusi chi costa 0, e status da ballottaggio in su
-        if col_titolarita in df.columns:
-            parole_chiave = 'titolare|inamovibile|ballottaggio'
-            df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & 
-                          (df['Prezzo_num'] > 0) & 
-                          (df['Prezzo_num'] <= 12) & 
-                          (df[col_titolarita].astype(str).str.contains(parole_chiave, na=False, case=False))]
-        else:
-            df_gemme = pd.DataFrame()
-            
-        # 5. Ordiniamo dal più economico a salire
-        df_gemme = df_gemme.sort_values(by='Prezzo_num', ascending=True).head(5)
+        df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & (pd.to_numeric(df['FVM'], errors='coerce') <= 5) & (df['Titolarita'].str.contains('Titolare|Inamovibile', na=False, case=False))]
+        df_gemme = df_gemme.sort_values(by='FVM', ascending=False).head(5)
         
         testo_gemme = "💎 *GEMME NASCOSTE*\nGiocatori titolari a 5 crediti o meno, ideali per completare la rosa:\n\n"
-
-Le migliori scommesse low-cost rimaste nel listone:
-
-"
         markup = InlineKeyboardMarkup(row_width=1)
         
         if df_gemme.empty: 
-            testo_gemme += f"_Nessuna gemma trovata. Colonna usata: {col_prezzo}_"
+            testo_gemme += "_Nessuna gemma trovata al momento._"
         else:
             for _, row in df_gemme.iterrows():
-                testo_gemme += f"🔹 {ROLE_ICONS.get(row.get('R','C'),'')} *{row['Nome']}* ({row.get('Squadra','-')})
-      ↳ Costo ({col_prezzo}): `{int(row['Prezzo_num'])}` cr. | Status: `{row.get(col_titolarita, '-')}`
-"
-                markup.add(InlineKeyboardButton(f"🔍 Analizza {row['Nome']}", callback_data=f"sq_pl_{row['Nome']}"))
+                testo_gemme += f"🔹 {ROLE_ICONS.get(row['R'],'')} *{row['Nome']}* ({row['Squadra']}) ─ FVM: `{row['FVM']}`\n"
+                markup.add(InlineKeyboardButton(f"🔍 Info {row['Nome']}", callback_data=f"sq_pl_{row['Nome']}"))
                 
         markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
         bot.edit_message_text(testo_gemme, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-```
-
 
     elif call.data == "menu_rosa":
         rosa = session['rosa']
         
-        # ⚠️ SCANNER RISCHI E BONUS
         squadre_count = {}
         rigoristi = 0
         difensori_fm = []
@@ -379,7 +345,6 @@ Le migliori scommesse low-cost rimaste nel listone:
         sq_name, fvm = p_data.get('Squadra', '-'), pd.to_numeric(p_data.get('FVM', 0), errors='coerce')
         if pd.isna(fvm): fvm = 0
         
-        # 🧠 CONSIGLIERE D'OFFERTA (Smart Bidding)
         stats = get_roster_stats(session)
         consiglio_bid = min(stats['max_bid'], int((session['budget'] * 0.3) + (fvm * 0.7)))
         
@@ -425,15 +390,21 @@ Le migliori scommesse low-cost rimaste nel listone:
             bot.edit_message_text(testo_alt, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
         except Exception: bot.answer_callback_query(call.id, "Errore nel calcolo delle alternative.")
 
-    # 🛠️ FIX ROTTE "ESPLORA SQUADRE" PRINCIPALE
-    elif call.data == "sq_start": bot.edit_message_text("👕 *ESPLORA SQUADRE*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "sq"))
-    elif call.data.startswith("sq_sq_"): bot.edit_message_text("Scegli il ruolo da esplorare:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(call.data.replace("sq_sq_", ""), "sq"))
-    elif call.data.startswith("sq_ru_"): _, _, sq, ru = call.data.split("_"); bot.edit_message_text(f"Seleziona un giocatore ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "sq", user_id))
+    elif call.data == "sq_start": 
+        bot.edit_message_text("👕 *ESPLORA SQUADRE*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "sq"))
+    elif call.data.startswith("sq_sq_"): 
+        bot.edit_message_text("Scegli il ruolo da esplorare:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(call.data.replace("sq_sq_", ""), "sq"))
+    elif call.data.startswith("sq_ru_"): 
+        _, _, sq, ru = call.data.split("_")
+        bot.edit_message_text(f"Seleziona un giocatore ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "sq", user_id))
 
-    # ROTTE AREA STUDIO COMPARATIVA
-    elif call.data in ["menu_studio", "cmp1_start"]: bot.edit_message_text("📊 *AREA STUDIO*\n\nSeleziona la squadra del *1° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "cmp1"))
-    elif call.data.startswith("cmp1_sq_"): bot.edit_message_text("Scegli il ruolo del *1° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(call.data.replace("cmp1_sq_", ""), "cmp1"))
-    elif call.data.startswith("cmp1_ru_"): _, _, sq, ru = call.data.split("_"); bot.edit_message_text(f"Seleziona il *1° Giocatore* ({ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "cmp1", user_id))
+    elif call.data in ["menu_studio", "cmp1_start"]: 
+        bot.edit_message_text("📊 *AREA STUDIO*\n\nSeleziona la squadra del *1° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "cmp1"))
+    elif call.data.startswith("cmp1_sq_"): 
+        bot.edit_message_text("Scegli il ruolo del *1° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(call.data.replace("cmp1_sq_", ""), "cmp1"))
+    elif call.data.startswith("cmp1_ru_"): 
+        _, _, sq, ru = call.data.split("_")
+        bot.edit_message_text(f"Seleziona il *1° Giocatore* ({ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "cmp1", user_id))
     elif call.data.startswith("cmp1_pl_"):
         session['selected_for_compare'] = [call.data.replace("cmp1_pl_", "")]
         bot.edit_message_text(f"✅ 1° Gioc: *{session['selected_for_compare'][0]}*\n\nSeleziona la squadra del *2° Giocatore*:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "cmp2"))
@@ -479,15 +450,23 @@ Le migliori scommesse low-cost rimaste nel listone:
         player_name = call.data.replace("buy_", "")
         msg = bot.send_message(chat_id, f"💰 A quanti crediti hai acquistato *{player_name}*?\n_Scrivi un numero (es. 15):_", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
+        
     elif call.data.startswith("undo_"):
         player_name = call.data.replace("undo_", "")
         for idx, p in enumerate(session['rosa']):
-            if p['nome'] == player_name: session['budget'] += session['rosa'].pop(idx)['prezzo']; send_dashboard(chat_id, user_id); return
-    elif call.data in ["menu_top", "menu_svincola", "menu_wishlist"]: bot.answer_callback_query(call.id, "In lavorazione... 🛠️")
+            if p['nome'] == player_name: 
+                session['budget'] += session['rosa'].pop(idx)['prezzo']
+                send_dashboard(chat_id, user_id)
+                return
+                
+    elif call.data in ["menu_top", "menu_svincola", "menu_wishlist"]: 
+        bot.answer_callback_query(call.id, "In lavorazione... 🛠️")
 
 if __name__ == '__main__':
     print("🤖 Pulizia vecchie connessioni in corso...")
-    try: bot.remove_webhook() 
-    except Exception: pass
-    print("🚀 FantaBot Pro Ready (God Mode v3.0)...")
+    try: 
+        bot.remove_webhook() 
+    except Exception: 
+        pass
+    print("🚀 FantaBot Pro Ready (God Mode v3.1)...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
