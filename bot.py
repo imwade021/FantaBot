@@ -6,8 +6,8 @@ import numpy as np
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ⚠️ IL TUO TOKEN TELEGRAM
-TOKEN = os.getenv("BOT_TOKEN", "8969898580:AAHxI0_LK57bhCTP_TNYLKubhEU3a0yEg0Y")
+# Token letto dalle variabili d'ambiente di Render
+TOKEN = os.getenv("BOT_TOKEN", "INSERISCI_QUI_IL_NUOVO_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
 TARGET_ROSTER = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
@@ -18,14 +18,6 @@ TEAM_COLORS = {
     'Juventus': '⚪⚫', 'Lazio': '🩵⚪', 'Lecce': '🟡🔴', 'Milan': '🔴⚫',
     'Monza': '🔴⚪', 'Napoli': '🔵⚪', 'Parma': '🟡🔵', 'Roma': '🟡🔴',
     'Torino': '🟤⚪', 'Udinese': '⚪⚫', 'Venezia': '🟠🟢', 'Verona': '🟡🔵'
-}
-
-BEST_PAIRS = {
-    'Inter': ['Venezia', 'Napoli', 'Lecce'], 'Juventus': ['Torino', 'Empoli', 'Parma'],
-    'Milan': ['Monza', 'Como', 'Genoa'], 'Atalanta': ['Bologna', 'Udinese', 'Verona'],
-    'Napoli': ['Inter', 'Roma', 'Fiorentina'], 'Roma': ['Lazio', 'Napoli'],
-    'Lazio': ['Roma', 'Milan'], 'Fiorentina': ['Empoli', 'Bologna', 'Napoli'],
-    'Torino': ['Juventus', 'Genoa', 'Como'], 'Bologna': ['Atalanta', 'Fiorentina']
 }
 
 DATABASE_SCOMMESSE_PURE = [
@@ -155,7 +147,7 @@ def send_dashboard(chat_id, user_id, message_id=None):
     else: 
         bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
-# --- MODALITÀ CECCHINO ---
+# Modalità Cecchino
 @bot.message_handler(func=lambda m: m.text.strip().startswith('+'))
 def modalita_cecchino(message):
     chat_id = message.chat.id
@@ -306,7 +298,7 @@ def handle_callbacks(call):
         user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session.get('wishlist', []), 'scartati': []}
         send_dashboard(chat_id, user_id, call.message.message_id)
 
-    # --- PANIC BUTTON ---
+    # Panic Button
     elif call.data == "menu_panic":
         markup = InlineKeyboardMarkup(row_width=4)
         markup.add(
@@ -342,7 +334,7 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔙 Indietro", callback_data="menu_panic"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- FORMAZIONE ---
+    # Formazione
     elif call.data == "menu_formazione":
         rosa = session['rosa']
         if len(rosa) < 11:
@@ -367,7 +359,7 @@ def handle_callbacks(call):
         
         bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
-    # --- LA MIA ROSA ---
+    # Rosa
     elif call.data == "menu_rosa":
         rosa = session['rosa']
         text = f"📋 *LA MIA ROSA*\n───────────────────────────\n💰 *Budget Residuo:* `{session['budget']}` cr.\n\n"
@@ -380,7 +372,7 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- TOP LIBERI ---
+    # Top Liberi
     elif call.data == "menu_top":
         markup = InlineKeyboardMarkup(row_width=4)
         markup.add(
@@ -426,7 +418,7 @@ def handle_callbacks(call):
         call.data = f"top_ruolo_{ruolo}"
         return handle_callbacks(call)
 
-    # --- GEMME ---
+    # Gemme
     elif call.data == "menu_gemme":
         nomi_in_rosa = [p['nome'] for p in session['rosa']]
         scartati = session.get('scartati', [])
@@ -444,7 +436,7 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- SCOMMESSA & CARD ---
+    # Scommesse & Cards
     elif call.data in ["menu_scommessa", "pesca_card_scommessa"]:
         nomi_in_rosa = [p['nome'] for p in session['rosa']]
         scartati = session.get('scartati', [])
@@ -509,7 +501,7 @@ def handle_callbacks(call):
             markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
             bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- SCHEDA GIOCATORE ---
+    # Scheda Giocatore
     elif call.data.startswith("sq_pl_"):
         player_name = call.data.replace("sq_pl_", "")
         p_data = df[df['Nome'] == player_name].iloc[0]
@@ -547,7 +539,7 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- ESPLORA SQUADRE ---
+    # Esplora Squadre
     elif call.data == "sq_start":
         bot.edit_message_text("👕 *ESPLORA SQUADRE*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "sq"))
     elif call.data.startswith("sq_sq_"):
@@ -556,7 +548,7 @@ def handle_callbacks(call):
         _, _, sq, ru = call.data.split("_")
         bot.edit_message_text(f"Giocatori ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "sq", user_id))
 
-    # --- AREA SVINCOLI ---
+    # Area Svincoli
     elif call.data == "menu_svincola":
         if not session['rosa']:
             bot.send_message(chat_id, "❌ La tua rosa è vuota!")
