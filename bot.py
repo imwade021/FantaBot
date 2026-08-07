@@ -16,7 +16,6 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-TARGET_ROSTER = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
 ROLE_ICONS = {'P': '🧤', 'D': '🛡️', 'C': '⚙️', 'A': '🎯'}
 TEAM_COLORS = {
     'Atalanta': '🔵⚫', 'Bologna': '🔴🔵', 'Cagliari': '🔴🔵', 'Como': '🔵⚪',
@@ -26,9 +25,6 @@ TEAM_COLORS = {
     'Torino': '🟤⚪', 'Udinese': '⚪⚫', 'Venezia': '🟠🟢', 'Verona': '🟡🔵'
 }
 
-# ==========================================
-# FUNZIONI UTILITY
-# ==========================================
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try:
         bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
@@ -48,7 +44,11 @@ def load_data(force_reload=False):
         if os.path.exists("Lista-FantaAsta-Fantacalcio.csv"):
             try:
                 DATA_CACHE = pd.read_csv("Lista-FantaAsta-Fantacalcio.csv", header=None)
-                DATA_CACHE.columns = ['Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3']
+                DATA_CACHE.columns = [
+                    'Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 
+                    'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 
+                    'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
+                ]
                 print("✅ File CSV caricato con successo!")
                 return DATA_CACHE
             except Exception as e:
@@ -74,12 +74,8 @@ load_data()
 user_sessions = {}
 def get_session(user_id):
     if user_id not in user_sessions: 
-        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': [], 'scartati': []}
+        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'wishlist': []}
     return user_sessions[user_id]
-
-def generate_progress_bar(current, target, length=8):
-    filled = min(length, max(0, int(round(length * current / target)))) if target > 0 else 0
-    return '■' * filled + '□' * (length - filled)
 
 def get_roster_stats(session):
     rosa = session['rosa']
@@ -94,30 +90,11 @@ def get_roster_stats(session):
     max_bid = max(0, budget - (slot_liberi - 1)) if slot_liberi > 0 else budget
     return {'counts': counts, 'slot_liberi': slot_liberi, 'max_bid': max_bid}
 
-# ==========================================
-# KEYBOARD & DASHBOARD
-# ==========================================
 def main_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("👕 Esplora", callback_data="sq_start"),
-        InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa")
-    )
-    markup.add(
-        InlineKeyboardButton("🏆 Top Liberi", callback_data="menu_top"),
-        InlineKeyboardButton("⚽ Formazione", callback_data="menu_formazione")
-    )
-    markup.add(
-        InlineKeyboardButton("🚨 Panic Button", callback_data="menu_panic"),
+        InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"),
         InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist")
-    )
-    markup.add(
-        InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme"),
-        InlineKeyboardButton("🎲 Scommessa", callback_data="menu_scommessa")
-    )
-    markup.add(
-        InlineKeyboardButton("✂️ Svincola", callback_data="menu_svincola"),
-        InlineKeyboardButton("📊 Area Studio", callback_data="menu_studio")
     )
     markup.add(
         InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"),
@@ -131,15 +108,6 @@ def main_menu_keyboard():
 def send_dashboard(chat_id, user_id, message_id=None):
     session = get_session(user_id)
     stats = get_roster_stats(session)
-    c = stats['counts']
-    
-    spesa_tot = sum(p['prezzo'] for p in session['rosa'])
-    fvm_tot = sum(p.get('fvm', 0) for p in session['rosa'])
-    termometro = "⚖️ _Equilibrata_"
-    if spesa_tot > 0 and fvm_tot > 0:
-        diff_perc = ((spesa_tot - fvm_tot) / fvm_tot) * 100
-        if diff_perc > 15: termometro = "🔥 _Asta Calda_ (Stai pagando troppo!)"
-        elif diff_perc < -10: termometro = "❄️ _Asta Fredda_ (Ottimi affari!)"
     
     text = (
         " *FANTABOT PRO DASHBOARD*\n"
@@ -147,14 +115,7 @@ def send_dashboard(chat_id, user_id, message_id=None):
         "💳 *BILANCIO ASTA*\n"
         f"• Budget Rimanente: `{session['budget']}` cr.\n"
         f"• Giocatori Presi: `{25 - stats['slot_liberi']}/25`\n"
-        f"• *Max Bid Sicuro:* `{stats['max_bid']}` cr.\n"
-        f"• Termometro Asta: {termometro}\n\n"
-        "📊 *COPERTURA ROSTER*\n"
-        f"🧤 `Portieri`   `[{generate_progress_bar(c['P'], 3, 6)}]` `{c['P']}/3`\n"
-        f"🛡️ `Difensori`  `[{generate_progress_bar(c['D'], 8, 6)}]` `{c['D']}/8`\n"
-        f"⚙️ `Centrocampi` `[{generate_progress_bar(c['C'], 8, 6)}]` `{c['C']}/8`\n"
-        f"🎯 `Attaccanti`  `[{generate_progress_bar(c['A'], 6, 6)}]` `{c['A']}/6`\n"
-        "───────────────────────────\n"
+        f"• *Max Bid Sicuro:* `{stats['max_bid']}` cr.\n\n"
         "💡 _Cerca nome o scrivi `+ nome prezzo` per comprare al volo!_\n"
     )
     if message_id:
@@ -176,15 +137,15 @@ def search_player(message):
     df = load_data()
     if df is None or len(query) < 2: return
     
-    matches = df[df['Nome'].str.lower().str.contains(query, na=False)]
+    matches = df[df['Nome'].astype(str).str.lower().str.contains(query, na=False)]
     if matches.empty and 'Nome_Breve' in df.columns:
-        matches = df[df['Nome_Breve'].str.lower().str.contains(query, na=False)]
+        matches = df[df['Nome_Breve'].astype(str).str.lower().str.contains(query, na=False)]
         
     if matches.empty: return bot.reply_to(message, "❌ Nessun giocatore trovato.")
         
     markup = InlineKeyboardMarkup(row_width=1)
     for _, row in matches.head(10).iterrows():
-        markup.add(InlineKeyboardButton(f"{ROLE_ICONS.get(row.get('R','C'),'')} {row['Nome']} ({row.get('Squadra','-')})", callback_data=f"sq_pl_{row['Nome']}"))
+        markup.add(InlineKeyboardButton(f"{ROLE_ICONS.get(str(row.get('R','C')),'')} {row['Nome']} ({row.get('Squadra','-')})", callback_data=f"sq_pl_{row['Nome']}"))
     bot.reply_to(message, f"🔍 Risultati per *{query}*:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -195,14 +156,25 @@ def handle_callbacks(call):
     session = get_session(user_id)
     df = load_data()
 
-    if call.data == "go_home": 
+    if call.data == "clear_screen":
+        curr_id = call.message.message_id
+        for i in range(curr_id, max(0, curr_id - 80), -1):
+            try: bot.delete_message(chat_id, i)
+            except Exception: pass
+        send_dashboard(chat_id, user_id)
+
+    elif call.data == "go_home": 
         send_dashboard(chat_id, user_id, call.message.message_id)
+
+    elif call.data == "reload_excel": 
+        load_data(force_reload=True)
+        bot.send_message(chat_id, "⚡ *Dati sincronizzati con successo!*", parse_mode="Markdown")
 
     elif call.data.startswith("sq_pl_"):
         player_name = call.data.replace("sq_pl_", "")
         
         if df is None:
-            bot.send_message(chat_id, "❌ Nessun database caricato. Invia il file CSV in chat!")
+            bot.send_message(chat_id, "❌ Database non trovato. Assicurati che il file CSV sia su GitHub!")
             return
 
         p_data = df[df['Nome'] == player_name].iloc[0]
@@ -225,13 +197,18 @@ def handle_callbacks(call):
         try: bot.delete_message(chat_id, call.message.message_id)
         except Exception: pass
 
-        # Invio diretto della photo URL di Fantacalcio
+        # Scarica l'immagine dal server Fantacalcio e la invia direttamente a Telegram
         if photo_url and str(photo_url).startswith('http'):
             try:
-                bot.send_photo(chat_id, photo_url, caption=info_text, parse_mode="Markdown", reply_markup=markup)
-                return
+                headers = {"User-Agent": "Mozilla/5.0"}
+                res = requests.get(photo_url, headers=headers, timeout=5)
+                if res.status_code == 200:
+                    img_bytes = io.BytesIO(res.content)
+                    img_bytes.name = 'card.png'
+                    bot.send_photo(chat_id, img_bytes, caption=info_text, parse_mode="Markdown", reply_markup=markup)
+                    return
             except Exception as e:
-                print(f"⚠️ Invio URL diretto non riuscito: {e}")
+                print(f"⚠️ Download foto fallito: {e}")
 
         bot.send_message(chat_id, info_text, parse_mode="Markdown", reply_markup=markup)
 
@@ -245,13 +222,11 @@ def handle_document(message):
     try:
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        
         save_name = "Lista-FantaAsta-Fantacalcio.csv" if fname.endswith('.csv') else "listone.xlsx"
         with open(save_name, 'wb') as new_file:
             new_file.write(downloaded_file)
-            
         load_data(force_reload=True)
-        bot.reply_to(message, "✅ *DATABASE CARICATO E AGGIORNATO CON SUCCESSO!*", parse_mode="Markdown")
+        bot.reply_to(message, "✅ *DATABASE AGGIORNATO CON SUCCESSO!*", parse_mode="Markdown")
     except Exception as e:
         bot.send_message(chat_id, f"❌ Errore caricamento: {str(e)}")
 
