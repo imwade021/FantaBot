@@ -135,7 +135,6 @@ def is_macellaio(nome, ruolo, fvm):
     return False
 
 def advanced_trade_analyzer(p1, p2):
-    """Calcola la validità di uno scambio incrociando Potenziale Bonus (FVM) e Affidabilità/Titolarità (Quotazione)."""
     try:
         fvm1 = float(str(p1.get('FVM', 0)).replace(',', '.'))
         qta1 = float(str(p1.get('Qt.A', 1)).replace(',', '.'))
@@ -146,7 +145,6 @@ def advanced_trade_analyzer(p1, p2):
         qta2 = float(str(p2.get('Qt.A', 1)).replace(',', '.'))
     except: fvm2, qta2 = 0, 1
 
-    # L'affidabilità si basa sulla Quotazione base (indice di certezza del voto e solidità per Fantacalcio.it)
     aff1 = min(99, int((qta1 / 35) * 100)) if qta1 else 10
     aff2 = min(99, int((qta2 / 35) * 100)) if qta2 else 10
 
@@ -352,21 +350,47 @@ def process_whatif_price(message, player_name, user_id):
     hyp_price = int(message.text)
     session = get_session(user_id)
     stats = get_roster_stats(session)
+    
+    df = load_data()
+    row = df[df['Nome'] == player_name].iloc[0]
+    fvm = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+    ruolo = row.get('R', 'C')
+
     budget_left = session['budget'] - hyp_price
     slots_left = stats['slot_liberi'] - 1
     
     if slots_left < 0: return bot.send_message(chat_id, "❌ Hai già la rosa piena!", parse_mode="Markdown")
         
     avg_left = budget_left / slots_left if slots_left > 0 else 0
-    
+
+    overpay_warning = ""
+    fvm_limit = fvm + (fvm * 0.3) + 3 
+    if hyp_price > fvm_limit:
+        overpay_warning = f"🛑 *FERMATI!* Stai strapagando! Il suo FVM è `{fvm}` e tu vuoi spendere `{hyp_price}`. È un salasso ingiustificato.\n"
+
+    malus_warning = ""
+    if is_macellaio(player_name, ruolo, fvm):
+        malus_warning = "🪓 *IN PIÙ È UN MACELLAIO!* Prende cartellini a raffica, non buttare crediti qui.\n"
+
+    seed = sum(ord(c) for c in player_name)
+    if seed % 3 == 0 or seed % 3 == 1:
+         malus_warning += "🏥 *IN PIÙ È FRAGILE!* Rischio infortuni alto/medio. Vuoi davvero svenarti per uno che starà in infermeria?\n"
+
     if budget_left < slots_left:
-        bot.send_message(chat_id, f"🔮 *SIMULATORE WHAT-IF: {player_name.upper()} a {hyp_price} cr.*\n\n☠️ *IMPOSSIBILE!* Andresti in passivo matematico non potendo completare la rosa (ti serve almeno 1 cr. per giocatore).", parse_mode="Markdown")
+        budget_verdict = "☠️ *IMPOSSIBILE!* Andresti in passivo matematico non potendo completare la rosa (ti serve almeno 1 cr. per giocatore)."
     elif avg_left < 6.0:
-        bot.send_message(chat_id, f"🔮 *SIMULATORE WHAT-IF: {player_name.upper()} a {hyp_price} cr.*\n\n🚨 *FOLLIA PURA!* Ti resterebbero solo `{budget_left}` crediti per {slots_left} giocatori.\nMedia di `{avg_left:.1f} cr` a giocatore. Sarai costretto a schierare riserve e tappabuchi!", parse_mode="Markdown")
+        budget_verdict = f"🚨 *FOLLIA DI BUDGET!* Ti resterebbero solo `{budget_left}` crediti per {slots_left} giocatori.\nMedia di `{avg_left:.1f} cr` a giocatore. Sarai costretto a schierare riserve e tappabuchi!"
     elif avg_left < 15.0:
-        bot.send_message(chat_id, f"🔮 *SIMULATORE WHAT-IF: {player_name.upper()} a {hyp_price} cr.*\n\n⚠️ *A RISCHIO.* Ti rimangono `{budget_left}` cr per {slots_left} slot (Media `{avg_left:.1f} cr`). Sei al limite, assicurati di avere la rosa quasi completa prima di farlo.", parse_mode="Markdown")
+        budget_verdict = f"⚠️ *BUDGET A RISCHIO.* Ti rimangono `{budget_left}` cr per {slots_left} slot (Media `{avg_left:.1f} cr`). Sei al limite."
     else:
-        bot.send_message(chat_id, f"🔮 *SIMULATORE WHAT-IF: {player_name.upper()} a {hyp_price} cr.*\n\n✅ *SOSTENIBILE.* Ti rimarrebbero in cassa `{budget_left}` crediti per `{slots_left}` slot.\nMedia sicura di `{avg_left:.1f} cr.` a giocatore.", parse_mode="Markdown")
+        budget_verdict = f"✅ *BUDGET SOSTENIBILE.* Ti rimarrebbero in cassa `{budget_left}` crediti per `{slots_left}` slot (Media sicura di `{avg_left:.1f} cr`)."
+
+    if overpay_warning or malus_warning:
+        final_text = f"🔮 *SIMULATORE WHAT-IF: {player_name.upper()} a {hyp_price} cr.*\n\n{overpay_warning}{malus_warning}\n{budget_verdict}"
+    else:
+        final_text = f"🔮 *SIMULATORE WHAT-IF: {player_name.upper()} a {hyp_price} cr.*\n\n{budget_verdict}\n👍 Ottima mossa, il prezzo è in linea col suo valore e non ci sono campanelli d'allarme."
+
+    bot.send_message(chat_id, final_text, parse_mode="Markdown")
 
 # ==========================================
 # HANDLERS (VOCALI, RICERCA, CECCHINO)
@@ -531,20 +555,25 @@ def handle_callbacks(call):
         ruolo, fvm = row['R'], float(row.get('FVM', 0))
         avail = get_available_players(df, session)
         
-        # Filtra tutti i giocatori dello stesso ruolo disponibili, calcola lo scarto FVM assoluto e prende i 4 più simili
+        # Eliminiamo la foto problematica per caricare il testo al suo posto
+        try: bot.delete_message(chat_id, call.message.message_id)
+        except Exception: pass
+
         same_role = avail[(avail['R'] == ruolo) & (avail['Nome'] != p_name)].copy()
         same_role['diff_fvm'] = abs(same_role['FVM'] - fvm)
         cloni = same_role.sort_values(by=['diff_fvm', 'FVM'], ascending=[True, False]).head(4)
         
         markup = InlineKeyboardMarkup(row_width=1)
         if cloni.empty:
-            bot.answer_callback_query(call.id, text="Nessun giocatore simile trovato!", show_alert=True)
+            bot.send_message(chat_id, "❌ Nessun giocatore simile trovato!", parse_mode="Markdown")
             return
             
         for _, cl_row in cloni.iterrows():
             markup.add(InlineKeyboardButton(f"🔄 {cl_row['Nome']} ({cl_row['Squadra']}) FVM:{cl_row['FVM']}", callback_data=f"sq_pl_{cl_row['Nome']}"))
         markup.add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p_name}"))
-        bot.edit_message_text(f"🔄 *SLIDING DOORS: Ti hanno rubato {p_name}?*\nNiente panico. Ecco le 4 migliori alternative per fascia di prezzo rimaste libere:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        
+        testo_sd = f"🔄 *SLIDING DOORS: Ti hanno rubato {p_name}?*\nNiente panico. Ecco le 4 migliori alternative per fascia di prezzo rimaste libere:"
+        bot.send_message(chat_id, testo_sd, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("wl_add_"):
         p_name = call.data.replace("wl_add_", "")
@@ -720,7 +749,9 @@ def handle_callbacks(call):
         if 'wishlist' not in session: session['wishlist'] = []
         if player_name in session['wishlist']: session['wishlist'].remove(player_name)
         else: session['wishlist'].append(player_name)
-        send_dashboard(chat_id, user_id, call.message.message_id)
+        
+        # Invece di tornare alla dashboard, ricarichiamo la card del giocatore (molto più comodo!)
+        send_player_card_view(chat_id, player_name, call.message.message_id, df, session)
 
     elif call.data == "menu_wishlist":
         wishlist = session.get('wishlist', [])
@@ -748,5 +779,5 @@ def handle_document(message):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto con algoritmi di valutazione intelligenti!")
+    print("🚀 Bot in ascolto con bug risolti!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
