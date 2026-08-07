@@ -112,7 +112,6 @@ def get_roster_stats(session):
     return {'counts': counts, 'slot_liberi': slot_liberi, 'max_bid': max_bid}
 
 def get_available_players(df, session):
-    """Filtra i giocatori escludendo quelli già acquistati in rosa o segnati come scartati."""
     presi_nomi = [p['nome'] for p in session.get('rosa', [])]
     scartati_nomi = session.get('scartati', [])
     esclusi = set(presi_nomi + scartati_nomi)
@@ -122,7 +121,6 @@ def get_available_players(df, session):
 # FUNZIONE UNICA PER GENERARE LE CARD 
 # ==========================================
 def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
-    """Invia la card del giocatore (usata da ricerca, liste e scommesse)."""
     p_data = df[df['Nome'] == player_name].iloc[0]
     sq_name = p_data.get('Squadra', '-')
     photo_url = p_data.get('PhotoURL', None)
@@ -421,17 +419,18 @@ def handle_callbacks(call):
         _, _, sq, ru = call.data.split("_")
         bot.edit_message_text(f"Giocatori ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "sq", user_id))
 
-    # --- SEZIONE TOP LIBERI ---
+    # --- SEZIONE TOP LIBERI (I Campioni) ---
     elif call.data == "menu_top_start":
         markup = InlineKeyboardMarkup(row_width=4)
         markup.add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_top_ru_{r}") for r in ['P', 'D', 'C', 'A']])
         markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
-        bot.edit_message_text("🏆 *TOP LIBERI - Scegli il ruolo:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text("🏆 *TOP LIBERI (I Big rimasti) - Scegli il ruolo:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("menu_top_ru_"):
         r = call.data.replace("menu_top_ru_", "")
         if df is None: return
         avail = get_available_players(df, session)
+        # Non ci sono limiti di FVM, prende semplicemente i più alti in assoluto rimasti
         top_players = avail[avail['R'] == r].sort_values(by='FVM', ascending=False).head(15)
         
         markup = InlineKeyboardMarkup(row_width=1)
@@ -442,18 +441,19 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_top_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(f"🏆 *TOP 15 LIBERI - RUOLO {ROLE_ICONS[r]} {r}:*\nClicca sul giocatore per vederlo e acquistarlo.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- SEZIONE GEMME NASCOSTE ---
+    # --- SEZIONE GEMME NASCOSTE (I Low Cost di Lusso, FVM 6-20) ---
     elif call.data == "menu_gemme_start":
         markup = InlineKeyboardMarkup(row_width=4)
         markup.add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_gemme_ru_{r}") for r in ['P', 'D', 'C', 'A']])
         markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
-        bot.edit_message_text("💎 *GEMME NASCOSTE (Low Cost) - Scegli il ruolo:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text("💎 *GEMME NASCOSTE (FVM 6-20) - Scegli il ruolo:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("menu_gemme_ru_"):
         r = call.data.replace("menu_gemme_ru_", "")
         if df is None: return
         avail = get_available_players(df, session)
-        gemme = avail[(avail['R'] == r) & (avail['FVM'] <= 15) & (avail['FVM'] >= 2)].sort_values(by='FVM', ascending=False).head(15)
+        # Limite di FVM per i giocatori da 3/4 slot
+        gemme = avail[(avail['R'] == r) & (avail['FVM'] <= 20) & (avail['FVM'] >= 6)].sort_values(by='FVM', ascending=False).head(15)
         
         markup = InlineKeyboardMarkup(row_width=1)
         for _, row in gemme.iterrows():
@@ -461,20 +461,21 @@ def handle_callbacks(call):
             markup.add(InlineKeyboardButton(f"💎 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}"))
             
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_gemme_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"💎 *GEMME NASCOSTE - RUOLO {ROLE_ICONS[r]} {r}:*\nClicca sul giocatore per vederlo e acquistarlo.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"💎 *GEMME NASCOSTE - RUOLO {ROLE_ICONS[r]} {r}:*\nOttime occasioni a medio prezzo.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- SEZIONE PANIC BUTTON ---
+    # --- SEZIONE PANIC BUTTON (Tappabuchi a 1 credito, FVM 1-5) ---
     elif call.data == "menu_panic_start":
         markup = InlineKeyboardMarkup(row_width=4)
         markup.add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_panic_ru_{r}") for r in ['P', 'D', 'C', 'A']])
         markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
-        bot.edit_message_text("🚨 *PANIC BUTTON - Scegli il ruolo di emergenza:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text("🚨 *PANIC BUTTON (FVM 1-5) - Scegli il ruolo di emergenza:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("menu_panic_ru_"):
         r = call.data.replace("menu_panic_ru_", "")
         if df is None: return
         avail = get_available_players(df, session)
-        panic_list = avail[avail['R'] == r].sort_values(by='FVM', ascending=False).head(15)
+        # Filtra solo i giocatori con FVM tra 1 e 5 (I Tappabuchi a 1 credito)
+        panic_list = avail[(avail['R'] == r) & (avail['FVM'] <= 5) & (avail['FVM'] >= 1)].sort_values(by='FVM', ascending=False).head(15)
         
         markup = InlineKeyboardMarkup(row_width=1)
         for _, row in panic_list.iterrows():
@@ -482,9 +483,9 @@ def handle_callbacks(call):
             markup.add(InlineKeyboardButton(f"🚨 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}"))
             
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_panic_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🚨 *PANIC BUTTON - RUOLO {ROLE_ICONS[r]} {r}:*\nLista di emergenza, clicca per comprare o scartare.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"🚨 *PANIC BUTTON - RUOLO {ROLE_ICONS[r]} {r}:*\nTappabuchi perfetti per chiudere la rosa a 1 credito!", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- SEZIONE SCOMMESSE (SLOT MACHINE) ---
+    # --- SEZIONE SCOMMESSE (SLOT MACHINE CARD) ---
     elif call.data == "menu_scommessa_start":
         if df is None: return
         avail = get_available_players(df, session)
@@ -502,7 +503,7 @@ def handle_callbacks(call):
         else:
             safe_answer_callback(call.id, text="Nessuna scommessa disponibile o sono già state prese tutte!", show_alert=True)
 
-    # --- AREA STUDIO (COMPARATORE CORRETTO E FUNZIONANTE) ---
+    # --- AREA STUDIO (COMPARATORE SQUADRA -> RUOLO -> GIOCATORE CONSERVA RUOLO) ---
     elif call.data == "menu_studio_start":
         session['compare_p1'] = None
         if df is None: return
