@@ -5,3 +5,5 @@ matplotlib
 numpy
 requests
 beautifulsoup4
+Pillow
+duckduckgo_search
