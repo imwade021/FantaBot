@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# ⚠️ TOKEN DEL BOT
 TOKEN = os.getenv("BOT_TOKEN", "8969898580:AAHxI0_LK57bhCTP_TNYLKubhEU3a0yEg0Y")
 bot = telebot.TeleBot(TOKEN)
 
@@ -46,19 +47,17 @@ def safe_answer_callback(call_id, text=None, show_alert=False):
 def get_team_icon(squadra): 
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
-# CARICAMENTO INTELLIGENTE DELL'EXCEL
+# CARICAMENTO INTELLIGENTE DELL'EXCEL (Cerca 'Nome' o 'Id' nelle prime righe)
 DATA_CACHE = None
 def load_data(force_reload=False):
     global DATA_CACHE
     if DATA_CACHE is None or force_reload:
         if os.path.exists("listone.xlsx"): 
-            # Scansiona le prime righe finché non trova quella con le colonne giuste ('Nome' e 'Id')
             for row_h in range(0, 5):
                 try:
                     df_test = pd.read_excel("listone.xlsx", header=row_h, engine='openpyxl')
                     cols = [str(c).strip().lower() for c in df_test.columns]
                     if 'nome' in cols or any('id' in c for c in cols):
-                        # Normalizza i nomi delle colonne
                         df_test.columns = [str(c).strip() for c in df_test.columns]
                         DATA_CACHE = df_test
                         break
@@ -182,6 +181,56 @@ def fetch_online_gems():
             continue
     return list(gems_found)
 
+@bot.message_handler(func=lambda m: m.text.strip().startswith('+'))
+def modalita_cecchino(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    text = message.text.strip()[1:].strip() 
+    
+    try:
+        parts = text.rsplit(' ', 1)
+        if len(parts) != 2 or not parts[1].isdigit():
+            bot.reply_to(message, "❌ *Errore Cecchino!*\nUsa il formato: `+ nomegiocatore prezzo`\nEsempio: `+ neres 35`", parse_mode="Markdown")
+            return
+            
+        query_nome = parts[0].strip().lower()
+        costo = int(parts[1])
+        
+        df = load_data()
+        matches = df[df['Nome'].str.lower().str.contains(query_nome, na=False)]
+        
+        if matches.empty:
+            bot.reply_to(message, f"❌ Nessun giocatore trovato per '{query_nome}'.", parse_mode="Markdown")
+            return
+            
+        row = matches.iloc[0] 
+        player_name = row['Nome']
+        
+        session = get_session(user_id)
+        stats = get_roster_stats(session)
+        
+        if costo > stats['max_bid']:
+            bot.reply_to(message, f"⚠️ *ALLARME BUDGET!*\nStai spendendo `{costo}`, ma il tuo Max Bid è `{stats['max_bid']}`.", parse_mode="Markdown")
+            return
+            
+        ruolo_acquistato = row.get('R', 'C')
+        sq_acquistata = row.get('Squadra', '-')
+        fvm = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+        fm = pd.to_numeric(str(row.get('FM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+        slot = str(row.get('Slot', '-'))
+        
+        session['rosa'].append({
+            'nome': player_name, 'prezzo': costo, 'ruolo': ruolo_acquistato, 'squadra': sq_acquistata,
+            'fvm': 0 if pd.isna(fvm) else fvm, 'fm': 0 if pd.isna(fm) else fm, 'rigori': str(row.get('Rigori_Piazzati', '')), 'slot': slot
+        })
+        session['budget'] -= costo
+        
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("↩️ Annulla", callback_data=f"undo_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.reply_to(message, f"🎯 *CECCHINO A BERSAGLIO!*\n✅ Hai acquistato *{player_name.upper()}* a `{costo} cr.`\nRimangono {session['budget']} crediti.", parse_mode="Markdown", reply_markup=markup)
+        
+    except Exception as e:
+        bot.reply_to(message, "❌ Errore durante l'acquisto rapido.")
+
 @bot.message_handler(commands=['start', 'menu'])
 def cmd_start(m): 
     send_dashboard(m.chat.id, m.from_user.id)
@@ -216,7 +265,7 @@ def handle_callbacks(call):
         df_scommesse = df_liberi[df_liberi['Nome'].apply(lambda x: any(g in str(x).lower() for g in all_gems))].copy()
 
         if call.data == "pesca_card_scommessa":
-            safe_answer_callback(call.id, "🃏 Generazione Card...")
+            safe_answer_callback(call.id, "🃏 Generazione Card con Foto...")
             if df_scommesse.empty:
                 safe_answer_callback(call.id, "❌ Nessuna scommessa disponibile!", show_alert=True)
                 return
@@ -228,7 +277,7 @@ def handle_callbacks(call):
             fvm_p = str(scommessa.get('FVM', scommessa.get('Qt.A', '1-3')))
             slot_p = str(scommessa.get('Slot', 'Scommessa / Ultimo Slot'))
             
-            # --- RECUPERO ID AUTOMATICO E PULITO ---
+            # Recupero ID per l'immagine dal server di Fantacalcio
             id_val = None
             for col in scommessa.index:
                 if str(col).strip().lower() in ['id', 'cod', 'codice']:
@@ -237,7 +286,8 @@ def handle_callbacks(call):
                         id_val = val_str
                         break
             
-            photo_url = f"https://s3.eu-west-1.amazonaws.com/fantacalcio.it/calciatori/2026/200x200/{id_val}.png" if id_val else None
+            # URL UFFICIALE FOTO GIOCATORE FANTACALCIO
+            photo_url = f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png" if id_val else None
 
             testo_card = (
                 f"🃏 *SPECIAL CARD: SCOMMESSA 2026/27*\n"
@@ -261,6 +311,7 @@ def handle_callbacks(call):
             try: bot.delete_message(chat_id, call.message.message_id)
             except Exception: pass
 
+            # Tenta prima di inviare la Foto ufficiale con la didascalia sotto
             if photo_url:
                 try:
                     bot.send_photo(chat_id, photo_url, caption=testo_card, parse_mode="Markdown", reply_markup=markup)
@@ -268,6 +319,7 @@ def handle_callbacks(call):
                 except Exception:
                     pass
 
+            # Fallback in caso di foto mancante
             bot.send_message(chat_id, testo_card, parse_mode="Markdown", reply_markup=markup)
 
         else:
