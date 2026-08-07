@@ -12,7 +12,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ⚠️ IL TUO TOKEN TELEGRAM ⚠️ (Inserisci il tuo vero token qui)
-TOKEN = "8969898580:AAHxI0_LK57bhCTP_TNYLKubhEU3a0yEg0Y"
+TOKEN = "INSERISCI_QUI_IL_TUO_TOKEN"
 bot = telebot.TeleBot(TOKEN)
 
 TARGET_ROSTER = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
@@ -87,15 +87,18 @@ def main_menu_keyboard():
     )
     markup.add(
         InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme"),
-        InlineKeyboardButton("✂️ Svincola", callback_data="menu_svincola")
+        InlineKeyboardButton("🎲 Scommessa", callback_data="menu_scommessa")
     )
     markup.add(
-        InlineKeyboardButton("📊 Area Studio", callback_data="menu_studio"),
-        InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel")
+        InlineKeyboardButton("✂️ Svincola", callback_data="menu_svincola"),
+        InlineKeyboardButton("📊 Area Studio", callback_data="menu_studio")
     )
     markup.add(
-        InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm"),
-        InlineKeyboardButton("🧹 Pulisci", callback_data="clear_screen")
+        InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"),
+        InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm")
+    )
+    markup.add(
+        InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen")
     )
     return markup
 
@@ -514,6 +517,83 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
         bot.edit_message_text(testo_gemme, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
+    # --- PULSANTE SCOMMESSA (LISTA COMPLETA + CARD CASUALE) ---
+    elif call.data == "menu_scommessa":
+        bot.answer_callback_query(call.id)
+        
+        nomi_in_rosa = [p['nome'] for p in session['rosa']]
+        scartati = session.get('scartati', [])
+        
+        colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
+        df['FVM_num'] = pd.to_numeric(df[colonna_base].astype(str).str.replace(',', '.').str.replace('-', '0'), errors='coerce').fillna(0)
+        
+        # Filtriamo tutti i giocatori liberi a bassissimo costo (FVM 1-5)
+        df_scommesse = df[(~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati)) & (df['FVM_num'] > 0) & (df['FVM_num'] <= 5)].sort_values(by='FVM_num', ascending=False)
+        
+        testo = "🎲 *LISTA SCOMMESSE LOW-COST (1-5 Cr.)*\nEcco tutte le scommesse ancora disponibili per completare la rosa a 1 credito:\n\n"
+        markup = InlineKeyboardMarkup(row_width=1)
+        
+        if df_scommesse.empty:
+            testo += "_Nessuna scommessa rimasta tra i giocatori liberi._"
+        else:
+            # Tasto speciale per estrarre la card visuale a sorpresa
+            markup.add(InlineKeyboardButton("🃏 Pesca una Card Scommessa a Caso", callback_data="pesca_card_scommessa"))
+            
+            # Elenco completo di tutti i giocatori
+            for _, row in df_scommesse.head(12).iterrows():
+                testo += f"🎲 {ROLE_ICONS.get(row.get('R','C'),'')} *{row['Nome']}* ({row.get('Squadra','-')}) ─ FVM: `{row['FVM_num']}`\n"
+                markup.add(InlineKeyboardButton(f"🔍 Info {row['Nome']}", callback_data=f"sq_pl_{row['Nome']}"))
+                
+        markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
+        bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "pesca_card_scommessa":
+        bot.answer_callback_query(call.id, "🃏 Generazione Card Scommessa...")
+        
+        nomi_in_rosa = [p['nome'] for p in session['rosa']]
+        scartati = session.get('scartati', [])
+        
+        colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
+        df['FVM_num'] = pd.to_numeric(df[colonna_base].astype(str).str.replace(',', '.').str.replace('-', '0'), errors='coerce').fillna(0)
+        
+        df_scommesse = df[(~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati)) & (df['FVM_num'] > 0) & (df['FVM_num'] <= 5)]
+        
+        if df_scommesse.empty: return
+            
+        scommessa = df_scommesse.sample(n=1).iloc[0]
+        nome_p = scommessa['Nome']
+        sq_p = scommessa.get('Squadra', '-')
+        r_p = scommessa.get('R', 'C')
+        fvm_p = scommessa['FVM_num']
+        
+        id_player = scommessa.get('Id', '')
+        photo_url = f"https://s3.eu-west-1.amazonaws.com/fantacalcio.it/calciatori/2026/200x200/{id_player}.png" if id_player else "https://content.fantacalcio.it/web/immagini/card-default.png"
+
+        testo_card = (
+            f"🃏 *SPECIAL CARD: SCOMMESSA 2026/27*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 *{nome_p.upper()}*\n"
+            f"🛡️ Squadra: {get_team_icon(sq_p)} *{sq_p}*\n"
+            f"📌 Ruolo: `{ROLE_ICONS.get(r_p, '')} {r_p}`\n"
+            f"⭐ Slot Consigliato: `Scommessa / Ultimo Slot`\n"
+            f"💰 Costo FVM Suggerito: `{fvm_p}` cr.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔥 *L'ORASCOLO DICE:* _\"Chiamalo subito a 1 credito prima che gli altri lo notino!\"_"
+        )
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("⚡ Compra a 1 cr", callback_data=f"buy_{nome_p}"),
+            InlineKeyboardButton("🎲 Rilancia Card", callback_data="pesca_card_scommessa")
+        )
+        markup.add(InlineKeyboardButton("📋 Torna alla Lista", callback_data="menu_scommessa"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        
+        try:
+            bot.delete_message(chat_id, call.message.message_id)
+            bot.send_photo(chat_id, photo_url, caption=testo_card, parse_mode="Markdown", reply_markup=markup)
+        except Exception:
+            bot.send_message(chat_id, testo_card, parse_mode="Markdown", reply_markup=markup)
+
     # --- RADAR & GRAFICI BUDGET ---
     elif call.data == "radar_rosa":
         bot.answer_callback_query(call.id)
@@ -818,5 +898,5 @@ if __name__ == '__main__':
         bot.remove_webhook() 
     except Exception: 
         pass
-    print("🚀 FantaBot Pro Ready (God Mode v6.0)...")
+    print("🚀 FantaBot Pro Ready (God Mode v6.1)...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
