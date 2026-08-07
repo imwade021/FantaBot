@@ -8,8 +8,14 @@ import requests
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from PIL import Image, ImageDraw, ImageFont
 
-# Token letto dalle variabili d'ambiente di Render
-TOKEN = os.getenv("BOT_TOKEN", "INSERISCI_QUI_IL_NUOVO_TOKEN")
+# ==========================================
+# CONFIGURAZIONE INIZIALE & TOKEN
+# ==========================================
+TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    raise ValueError("⚠️ ERRORE: La variabile d'ambiente BOT_TOKEN non è impostata su Render!")
+
 bot = telebot.TeleBot(TOKEN)
 
 TARGET_ROSTER = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
@@ -30,6 +36,9 @@ DATABASE_SCOMMESSE_PURE = [
     'camarda', 'vitinha'
 ]
 
+# ==========================================
+# FUNZIONI UTILITY & DOWNLOAD IMMAGINI
+# ==========================================
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try:
         bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
@@ -63,7 +72,7 @@ def get_player_photo_bytes(row):
             
             if response.status_code == 200:
                 file_bytes = io.BytesIO(response.content)
-                file_bytes.name = 'player_photo.png' # FONDAMENTALE PER TELEGRAM!
+                file_bytes.name = 'player_photo.png'  # FONDAMENTALE PER TELEGRAM!
                 return file_bytes
             else:
                 print(f"❌ Errore HTTP {response.status_code} dal sito del Fantacalcio!")
@@ -88,33 +97,30 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
         sfondo = Image.open("template_card.png").convert("RGBA")
         sfondo = sfondo.resize((500, 750)) 
         
-        # 2. Prepara la faccia (bella grande)
+        # 2. Prepara la faccia
         faccia = Image.open(photo_bytes).convert("RGBA")
         faccia = faccia.resize((280, 280)) 
         
-        # 3. Incolla la faccia (centrata sulla destra)
+        # 3. Incolla la faccia
         sfondo.paste(faccia, (150, 140), faccia) 
         
         # 4. Prepara i font
         draw = ImageDraw.Draw(sfondo)
         try:
-            # Prova a usare il font personalizzato se lo hai caricato
             font_nome = ImageFont.truetype("font.ttf", 45)
             font_overall = ImageFont.truetype("font.ttf", 70)
             font_ruolo = ImageFont.truetype("font.ttf", 50)
         except IOError:
-            # Fallback in caso manchi il font.ttf
             font_nome = ImageFont.load_default()
             font_overall = ImageFont.load_default()
             font_ruolo = ImageFont.load_default()
         
-        # 5. Scrive le statistiche in alto a sinistra (in nero)
+        # 5. Scrive le statistiche
         draw.text((70, 130), str(fvm), fill="#1a1a1a", font=font_overall)
         draw.text((75, 210), str(ruolo), fill="#1a1a1a", font=font_ruolo)
         
-        # 6. Scrive il nome centrato in basso
+        # 6. Scrive il nome centrato
         nome_str = str(nome_giocatore).upper()
-        # Calcolo dinamico per centrare il testo
         try:
             text_width = draw.textlength(nome_str, font=font_nome)
         except AttributeError:
@@ -127,7 +133,7 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
         img_byte_arr = io.BytesIO()
         sfondo.save(img_byte_arr, format='PNG')
         img_byte_arr.seek(0)
-        img_byte_arr.name = 'fc_card.png' # FONDAMENTALE PER TELEGRAM!
+        img_byte_arr.name = 'fc_card.png'
         
         return img_byte_arr
         
@@ -137,6 +143,9 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
         photo_bytes.name = 'error_fallback.png'
         return photo_bytes
 
+# ==========================================
+# GESTIONE DATABASE & SESSIONI
+# ==========================================
 DATA_CACHE = None
 def load_data(force_reload=False):
     global DATA_CACHE
@@ -181,6 +190,9 @@ def get_roster_stats(session):
     max_bid = max(0, budget - (slot_liberi - 1)) if slot_liberi > 0 else budget
     return {'counts': counts, 'slot_liberi': slot_liberi, 'max_bid': max_bid}
 
+# ==========================================
+# KEYBOARD & DASHBOARD
+# ==========================================
 def main_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -372,6 +384,9 @@ def process_buy_price(message, player_name, user_id):
     markup = InlineKeyboardMarkup().add(InlineKeyboardButton("↩️ Annulla", callback_data=f"undo_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
     bot.send_message(chat_id, f"✅ *{player_name.upper()}* acquistato per `{costo} cr.`!", parse_mode="Markdown", reply_markup=markup)
 
+# ==========================================
+# GESTIONE CALLBACK BOTTONI
+# ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     safe_answer_callback(call.id)
@@ -682,6 +697,9 @@ def handle_callbacks(call):
         msg = bot.send_message(chat_id, f"💰 Crediti spesi per *{player_name}*?:", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
 
+# ==========================================
+# CARICAMENTO DOCUMENTI EXCEL
+# ==========================================
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     chat_id = message.chat.id
@@ -698,7 +716,15 @@ def handle_document(message):
     except Exception as e:
         bot.send_message(chat_id, f"❌ Errore durante l'aggiornamento: {str(e)}")
 
+# ==========================================
+# AVVIO BOT CON SYSTEM FIX ANTI-409
+# ==========================================
 if __name__ == '__main__':
-    try: bot.remove_webhook()
-    except Exception: pass
+    print("🧹 Pulizia sessioni vecchie su Render...")
+    try: 
+        bot.remove_webhook()
+    except Exception as e:
+        print(f"Note remove_webhook: {e}")
+
+    print("🚀 Bot avviato con successo e in ascolto!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
