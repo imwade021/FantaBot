@@ -526,88 +526,105 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
         bot.edit_message_text(testo_gemme, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- PULSANTE SCOMMESSA (LISTA RAGGRUPPATA PER RUOLO + CARD CASUALE) ---
+    # --- PULSANTE SCOMMESSA (SOLO VERE SCOMMESSA + GENERATORE CARD GRAFICA) ---
     elif call.data in ["menu_scommessa", "pesca_card_scommessa"]:
+        # DATABASE EXCLUSIVE SCOMMESSE / PROSPETTI 2026-2027
+        REAL_BETS_KEYWORDS = [
+            'bernabe', 'fazzini', 'bonny', 'oristanio', 'paz', 'marchwinski', 
+            'castro', 'belahyane', 'tengstedt', 'da cunha', 'moro', 'chaka traore',
+            'pisilli', 'ekhator', 'alisson santos', 'solet', 'idzes', 'mangas',
+            'milla', 'kike perez', 'ndour', 'viti', 'goglichidze', 'alajbegovic'
+        ]
+
+        nomi_in_rosa = [p['nome'] for p in session['rosa']]
+        scartati = session.get('scartati', [])
+        
+        # Filtriamo i liberi che sono VERE scommesse riconosciute
+        df_liberi = df[(~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati))].copy()
+        
+        # Match rigoroso: solo chi è nelle keyword o citato dallo scraper
+        online_gems = fetch_online_gems()
+        all_gems = set([g.lower() for g in online_gems] + REAL_BETS_KEYWORDS)
+        
+        df_scommesse = df_liberi[df_liberi['Nome'].apply(lambda x: any(g in str(x).lower() for g in all_gems))].copy()
+        
+        if df_scommesse.empty:
+            # Fallback intelligente: solo giovani/nuovi con FVM tra 2 e 5 (escludendo i terzi portieri e gli zero presenze)
+            colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
+            df_liberi['FVM_num'] = pd.to_numeric(df_liberi[colonna_base].astype(str).str.replace(',', '.').str.replace('-', '0'), errors='coerce').fillna(0)
+            df_scommesse = df_liberi[(df_liberi['FVM_num'] >= 2) & (df_liberi['FVM_num'] <= 5) & (df_liberi['R'] != 'P')]
+
         if call.data == "pesca_card_scommessa":
-            safe_answer_callback(call.id, "🃏 Generazione Card Scommessa...")
-            
-            nomi_in_rosa = [p['nome'] for p in session['rosa']]
-            scartati = session.get('scartati', [])
-            
-            online_gems = fetch_online_gems()
-            df_liberi = df[(~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati))].copy()
-            df_scommesse = df_liberi[df_liberi['Nome'].apply(lambda x: any(g.lower() in str(x).lower() for g in online_gems))]
+            safe_answer_callback(call.id, "🃏 Generazione Card Grafica...")
             
             if df_scommesse.empty:
-                colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
-                df_liberi['FVM_num'] = pd.to_numeric(df_liberi[colonna_base].astype(str).str.replace(',', '.').str.replace('-', '0'), errors='coerce').fillna(0)
-                df_scommesse = df_liberi[(df_liberi['FVM_num'] > 0) & (df_liberi['FVM_num'] <= 4)]
-                
-            if df_scommesse.empty:
-                safe_answer_callback(call.id, "❌ Nessuna scommessa rimasta!", show_alert=True)
+                safe_answer_callback(call.id, "❌ Nessuna scommessa disponibile!", show_alert=True)
                 return
                 
             scommessa = df_scommesse.sample(n=1).iloc[0]
-            nome_p = scommessa['Nome']
-            sq_p = scommessa.get('Squadra', '-')
-            r_p = scommessa.get('R', 'C')
-            fvm_p = scommessa.get('FVM', scommessa.get('Qt.A', '1-3'))
-            
-            id_player = scommessa.get('Id', '')
-            photo_url = f"https://s3.eu-west-1.amazonaws.com/fantacalcio.it/calciatori/2026/200x200/{id_player}.png" if id_player else "https://content.fantacalcio.it/web/immagini/card-default.png"
+            nome_p = str(scommessa['Nome']).upper()
+            sq_p = str(scommessa.get('Squadra', '-'))
+            r_p = str(scommessa.get('R', 'C'))
+            fvm_p = str(scommessa.get('FVM', scommessa.get('Qt.A', '1-3')))
+            slot_p = str(scommessa.get('Slot', 'Scommessa / Ultimo Slot'))
 
-            testo_card = (
-                "🃏 *SPECIAL CARD: SCOMMESSA 2026/27*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"👤 *{nome_p.upper()}*\n"
-                f"🛡️ Squadra: {get_team_icon(sq_p)} *{sq_p}*\n"
-                f"📌 Ruolo: `{ROLE_ICONS.get(r_p, '')} {r_p}`\n"
-                "⭐ Slot Consigliato: `Scommessa / Ultimo Slot`\n"
-                f"💰 Costo FVM Suggerito: `{fvm_p}` cr.\n"
-                "━━━━━━━━━━━━━━━━━━━━━━\n"
-                '🔥 *L\'ORACOLO DICE:* _"Chiamalo subito a 1 credito prima che gli altri lo notino!"_'
-            )
+            # 🎨 GENERAZIONE CARD GRAFICA HD CON MATPLOTLIB
+            fig, ax = plt.subplots(figsize=(6, 8), facecolor='#1a1a2e')
+            ax.set_facecolor('#1a1a2e')
+            ax.axis('off')
+
+            # Bordo Card
+            rect = plt.Rectangle((0.05, 0.05), 0.9, 0.9, fill=True, color='#16213e', ec='#e94560', lw=4, transform=ax.transAxes, zorder=1)
+            ax.add_patch(rect)
+
+            # Contenuto Card
+            ax.text(0.5, 0.88, "SPECIAL CARD 2026/27", color='#e94560', fontsize=16, weight='bold', ha='center', transform=ax.transAxes, zorder=2)
+            ax.text(0.5, 0.82, "🔥 SCOMMESSA TOP 🔥", color='#f1c40f', fontsize=12, weight='bold', ha='center', transform=ax.transAxes, zorder=2)
             
+            # Badge Ruolo e Squadra
+            ax.text(0.5, 0.68, f"{ROLE_ICONS.get(r_p, '')} {r_p}  |  {get_team_icon(sq_p)} {sq_p}", color='#ffffff', fontsize=14, weight='bold', ha='center', transform=ax.transAxes, zorder=2)
+            
+            # Nome Calciatore
+            ax.text(0.5, 0.52, nome_p, color='#ffffff', fontsize=22, weight='bold', ha='center', transform=ax.transAxes, zorder=2)
+            
+            # Statistiche
+            ax.text(0.5, 0.38, f"Costo FVM: {fvm_p} cr.", color='#00fff5', fontsize=15, weight='bold', ha='center', transform=ax.transAxes, zorder=2)
+            ax.text(0.5, 0.30, f"Slot: {slot_p}", color='#cccccc', fontsize=12, ha='center', transform=ax.transAxes, zorder=2)
+
+            # Footer Oracolo
+            ax.text(0.5, 0.15, "L'ORACOLO DICE:\n\"Puntalo a 1 credito prima degli altri!\"", color='#f39c12', fontsize=11, style='italic', ha='center', transform=ax.transAxes, zorder=2)
+
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', facecolor='#1a1a2e', dpi=140)
+            buf.seek(0)
+            plt.close(fig)
+
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(
-                InlineKeyboardButton("⚡ Compra a 1 cr", callback_data=f"buy_{nome_p}"),
+                InlineKeyboardButton("⚡ Compra a 1 cr", callback_data=f"buy_{scommessa['Nome']}"),
                 InlineKeyboardButton("🎲 Rilancia Card", callback_data="pesca_card_scommessa")
             )
             markup.add(InlineKeyboardButton("📋 Torna alla Lista", callback_data="menu_scommessa"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
             
             try:
                 bot.delete_message(chat_id, call.message.message_id)
-                bot.send_photo(chat_id, photo_url, caption=testo_card, parse_mode="Markdown", reply_markup=markup)
+                bot.send_photo(chat_id, buf, caption=f"🃏 *SPECIAL CARD: {nome_p}*", parse_mode="Markdown", reply_markup=markup)
             except Exception:
-                bot.send_message(chat_id, testo_card, parse_mode="Markdown", reply_markup=markup)
+                bot.send_photo(chat_id, buf, caption=f"🃏 *SPECIAL CARD: {nome_p}*", parse_mode="Markdown", reply_markup=markup)
 
         else:
             safe_answer_callback(call.id, "🔎 Filtraggio scommesse reali...")
             
-            nomi_in_rosa = [p['nome'] for p in session['rosa']]
-            scartati = session.get('scartati', [])
-            
-            online_gems = fetch_online_gems()
-            df_liberi = df[(~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati))].copy()
-            
-            colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
-            df_liberi['FVM_num'] = pd.to_numeric(df_liberi[colonna_base].astype(str).str.replace(',', '.').str.replace('-', '0'), errors='coerce').fillna(0)
-            
-            df_scommesse = df_liberi[
-                (df_liberi['Nome'].apply(lambda x: any(g.lower() in str(x).lower() for g in online_gems))) |
-                ((df_liberi['FVM_num'] > 0) & (df_liberi['FVM_num'] <= 4))
-            ].copy()
-            
-            testo = "🎲 *LE VERE SCOMMESSE 2026/27*\nProfili ad alto potenziale raggruppati per ruolo:\n\n"
+            testo = "🎲 *LE VERE SCOMMESSE 2026/27*\nSolo profili ad alto potenziale raggruppati per ruolo:\n\n"
             markup = InlineKeyboardMarkup(row_width=1)
             
-            markup.add(InlineKeyboardButton("🃏 Pesca una Card Scommessa a Caso", callback_data="pesca_card_scommessa"))
+            markup.add(InlineKeyboardButton("🃏 Pesca una Card Grafica a Caso", callback_data="pesca_card_scommessa"))
             
             ruoli_order = [('P', '🧤 PORTIERI'), ('D', '🛡️ DIFENSORI'), ('C', '⚙️ CENTROCAMPISTI'), ('A', '🎯 ATTACCANTI')]
             
             trovato_almeno_uno = False
             for r_code, r_title in ruoli_order:
-                sub_r = df_scommesse[df_scommesse['R'] == r_code].sort_values(by='FVM_num', ascending=False).head(4)
+                sub_r = df_scommesse[df_scommesse['R'] == r_code].head(4)
                 if not sub_r.empty:
                     trovato_almeno_uno = True
                     testo += f"\n*{r_title}*\n"
@@ -617,7 +634,7 @@ def handle_callbacks(call):
                         markup.add(InlineKeyboardButton(f"🔍 Info {row['Nome']}", callback_data=f"sq_pl_{row['Nome']}"))
                         
             if not trovato_almeno_uno:
-                testo += "_Tutte le scommesse sono state già prese o scartate!_"
+                testo += "_Tutte le scommesse principali sono state già prese o scartate!_"
                 
             markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
             bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
@@ -926,5 +943,5 @@ if __name__ == '__main__':
         bot.remove_webhook() 
     except Exception: 
         pass
-    print("🚀 FantaBot Pro Ready (God Mode v6.3 - Clean Syntax)...")
+    print("🚀 FantaBot Pro Ready (God Mode v6.4 - Graphic Cards Fixed)...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
