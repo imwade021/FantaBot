@@ -49,29 +49,20 @@ def get_team_icon(squadra):
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
 def get_player_photo_bytes(row):
-    """Estrae l'ID con ricerca avanzata e scarica la foto dal server Fantacalcio."""
+    """Estrae l'ID direttamente dalla colonna 'Id' del listone e scarica la foto."""
     id_val = None
     
-    # 1. Cerca colonne tipiche per l'ID
+    # Cerca la colonna Id
     for col in row.index:
-        col_clean = str(col).strip().lower()
-        if any(k in col_clean for k in ['id', 'cod', 'codice', 'id_fantacalcio']):
-            val_str = str(row[col]).split('.')[0].strip()
-            if val_str.isdigit():
-                id_val = val_str
-                break
-    
-    # 2. Se non trova la colonna specifica, prende la prima colonna interamente numerica
-    if not id_val:
-        for col in row.index:
-            val_str = str(row[col]).split('.')[0].strip()
-            if val_str.isdigit() and len(val_str) >= 2 and str(col).strip().lower() not in ['r', 'fvm', 'fm', 'qt.a', 'slot']:
-                id_val = val_str
+        if str(col).strip().lower() == 'id':
+            val = row[col]
+            if pd.notna(val):
+                id_val = str(val).split('.')[0].strip()
                 break
 
-    print(f"🔎 ID individuato per {row.get('Nome', 'Giocatore')}: {id_val}")
+    print(f"🔎 ID trovato per {row.get('Nome', 'Giocatore')}: {id_val}")
 
-    if id_val:
+    if id_val and id_val.isdigit():
         url = f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -88,14 +79,14 @@ def get_player_photo_bytes(row):
                 file_bytes.name = 'player_photo.png'
                 return file_bytes
             else:
-                print(f"❌ Errore HTTP {response.status_code} dal sito del Fantacalcio!")
+                print(f"❌ Errore HTTP {response.status_code} per l'ID {id_val}")
         except Exception as e:
             print(f"❌ Errore download foto: {e}")
             
     return None
 
 def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
-    """Crea la carta grafica del giocatore incollando il volto centrato sul template."""
+    """Crea la carta grafica del giocatore incollando il volto al centro del template."""
     try:
         if os.path.exists("template_card.png"):
             sfondo = Image.open("template_card.png").convert("RGBA")
@@ -105,14 +96,14 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
             
         draw = ImageDraw.Draw(sfondo)
 
-        # Incolla la foto del giocatore centrata se disponibile
+        # Incolla la foto se disponibile
         if photo_bytes:
             try:
                 photo_bytes.seek(0)
                 faccia = Image.open(photo_bytes).convert("RGBA")
                 faccia = faccia.resize((260, 260))
-                # Incolla al centro sopra lo sfondo della carta
-                sfondo.paste(faccia, (150, 160), faccia)
+                sfondo.paste(faccia, (120, 160), faccia)
+                print("📸 Foto incollata sulla carta con successo!")
             except Exception as e_img:
                 print(f"⚠️ Errore incollaggio foto: {e_img}")
 
@@ -162,7 +153,7 @@ def load_data(force_reload=False):
                 try:
                     df_test = pd.read_excel("listone.xlsx", header=row_h, engine='openpyxl')
                     cols = [str(c).strip().lower() for c in df_test.columns]
-                    if 'nome' in cols or any('id' in c for c in cols):
+                    if 'nome' in cols or 'id' in cols:
                         df_test.columns = [str(c).strip() for c in df_test.columns]
                         DATA_CACHE = df_test
                         print("✅ File listone.xlsx caricato correttamente!")
