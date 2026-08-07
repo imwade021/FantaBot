@@ -47,7 +47,6 @@ load_data()
 user_sessions = {}
 def get_session(user_id):
     if user_id not in user_sessions: 
-        # Ho aggiunto 'scartati' per memorizzare i giocatori comprati dagli altri
         user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': [], 'scartati': []}
     return user_sessions[user_id]
 
@@ -233,7 +232,7 @@ def handle_callbacks(call):
         user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session.get('wishlist', []), 'scartati': []}
         send_dashboard(chat_id, user_id, call.message.message_id)
 
-    # --- TOP LIBERI (METODO TINDER) ---
+    # --- TOP LIBERI (METODO TINDER) AUMENTATI A 15 ---
     elif call.data == "menu_top":
         bot.answer_callback_query(call.id)
         markup = InlineKeyboardMarkup(row_width=4)
@@ -257,9 +256,9 @@ def handle_callbacks(call):
         df['Valore_Ord'] = df[colonna_base].astype(str).str.replace(',', '.').str.replace('-', '0')
         df['Valore_Ord'] = pd.to_numeric(df['Valore_Ord'], errors='coerce').fillna(0)
         
-        # Filtriamo chi è in rosa e chi è stato scartato
+        # Mostriamo i primi 15 al posto dei primi 5
         df_liberi = df[(df['R'] == ruolo) & (~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati))]
-        df_top = df_liberi.sort_values(by='Valore_Ord', ascending=False).head(5)
+        df_top = df_liberi.sort_values(by='Valore_Ord', ascending=False).head(15)
         
         testo = f"🏆 *MIGLIORI {ROLE_ICONS.get(ruolo, '')} ANCORA LIBERI*\n\n"
         markup = InlineKeyboardMarkup(row_width=2)
@@ -270,7 +269,6 @@ def handle_callbacks(call):
             for _, row in df_top.iterrows():
                 nome = row['Nome']
                 testo += f"🔹 *{nome}* ({row.get('Squadra','-')}) ─ FVM: `{row['Valore_Ord']}`\n"
-                # Creiamo due pulsanti per riga: Info e Scarta
                 markup.row(
                     InlineKeyboardButton(f"🔍 Info {nome[:10]}", callback_data=f"sq_pl_{nome}"),
                     InlineKeyboardButton(f"❌ Scarta", callback_data=f"dsc_{ruolo}_{nome[:20]}")
@@ -287,7 +285,6 @@ def handle_callbacks(call):
         
         if 'scartati' not in session: session['scartati'] = []
             
-        # Troviamo il nome completo dall'excel partendo da quello troncato e lo aggiungiamo agli scartati
         for n in df['Nome'].dropna().unique():
             if str(n).startswith(nome_troncato):
                 if n not in session['scartati']:
@@ -295,16 +292,14 @@ def handle_callbacks(call):
                 break
                 
         bot.answer_callback_query(call.id, "❌ Giocatore scartato! Rimosso dalla lista.")
-        
-        # Ricarichiamo istantaneamente la classifica aggiornata
         call.data = f"top_ruolo_{ruolo}"
         return handle_callbacks(call)
 
-    # --- GEMME NASCOSTE ---
+    # --- GEMME NASCOSTE AUMENTATE A 15 ---
     elif call.data == "menu_gemme":
         bot.answer_callback_query(call.id)
         nomi_in_rosa = [p['nome'] for p in session['rosa']]
-        scartati = session.get('scartati', []) # Nascondiamo anche chi hanno comprato gli altri
+        scartati = session.get('scartati', [])
         
         colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
         df['Valore_Gemma'] = df[colonna_base].astype(str)
@@ -312,7 +307,7 @@ def handle_callbacks(call):
         df['Valore_Gemma'] = pd.to_numeric(df['Valore_Gemma'], errors='coerce').fillna(0)
         
         df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati)) & (df['Valore_Gemma'] > 0) & (df['Valore_Gemma'] <= 5)]
-        df_gemme = df_gemme.sort_values(by='Valore_Gemma', ascending=False).head(5)
+        df_gemme = df_gemme.sort_values(by='Valore_Gemma', ascending=False).head(15)
         
         testo_gemme = "💎 *GEMME NASCOSTE*\nGiocatori a 5 crediti o meno, ideali per completare la rosa:\n\n"
         markup = InlineKeyboardMarkup(row_width=1)
@@ -639,5 +634,5 @@ if __name__ == '__main__':
         bot.remove_webhook() 
     except Exception: 
         pass
-    print("🚀 FantaBot Pro Ready (God Mode v3.2)...")
+    print("🚀 FantaBot Pro Ready (God Mode v3.3)...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
