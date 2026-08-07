@@ -2,3 +2,6 @@ pyTelegramBotAPI
 pandas
 openpyxl
 matplotlib
+numpy
+requests
+beautifulsoup4
