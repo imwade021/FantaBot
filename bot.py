@@ -1,10 +1,12 @@
 import os
 import io
 import re
+import urllib.parse
 import pandas as pd
 import numpy as np
 import telebot
 import requests
+from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # Tenta di importare le librerie per i comandi vocali
@@ -14,13 +16,6 @@ try:
     VOICE_ENABLED = True
 except ImportError:
     VOICE_ENABLED = False
-
-# Importa la libreria per la ricerca web
-try:
-    from duckduckgo_search import DDGS
-    WEB_SEARCH_ENABLED = True
-except ImportError:
-    WEB_SEARCH_ENABLED = False
 
 # ==========================================
 # CONFIGURAZIONE INIZIALE & TOKEN
@@ -116,29 +111,55 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# RICERCHE WEB REALI OPTIMIZED & TRADE ANALYZER
+# RICERCHE WEB REALI (100% AUTOMATICHE, ZERO FILE)
 # ==========================================
 def fetch_real_web_data(query, max_results=2):
-    """Cerca sul web usando DuckDuckGo per ottenere dati veri, correnti e dettagliati."""
-    if not WEB_SEARCH_ENABLED:
-        return "⚠️ Errore: Libreria `duckduckgo_search` non trovata nel sistema."
+    """Scraper web autonomo: cerca su internet e legge il testo."""
+    
+    # 1. Tentativo primario: usa la libreria dedicata (se funziona sul server)
     try:
+        from duckduckgo_search import DDGS
         results = DDGS().text(query, max_results=max_results)
         output = []
         for r in results:
             output.append(f"🔎 _{r['body']}_\n🔗 *Fonte:* [{r['title']}]({r['href']})")
         if output:
             return "\n\n---\n\n".join(output)
-        return "Nessun risultato rilevante trovato sul web."
+    except Exception:
+        pass # Se fallisce, passa silenziosamente al piano B
+        
+    # 2. Tentativo secondario (Piano B Infallibile): usa BeautifulSoup
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    try:
+        url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
+        res = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        results = soup.find_all('div', class_='result__body')
+        output = []
+        for r in results[:max_results]:
+            snippet = r.find('a', class_='result__snippet')
+            title_tag = r.find('h2', class_='result__title')
+            if snippet and title_tag and title_tag.find('a'):
+                testo = snippet.text.strip()
+                titolo = title_tag.find('a').text.strip()
+                link = title_tag.find('a')['href']
+                if link.startswith('//duckduckgo.com/l/?uddg='):
+                    link = link.split('uddg=')[1].split('&')[0]
+                    link = urllib.parse.unquote(link)
+                output.append(f"🔎 _{testo}_\n🔗 *Fonte:* [{titolo}]({link})")
+        if output:
+            return "\n\n---\n\n".join(output)
     except Exception as e:
-        return "⚠️ Impossibile connettersi al motore di ricerca in questo momento."
+        print(f"Errore Scraper Web: {e}")
+        
+    return "⚠️ Nessun risultato rilevante trovato sul web in automatico in questo momento."
 
 def get_storico_reale(nome, squadra=""):
-    query = f"{nome} {squadra} statistiche gol assist fantacalcio.it SOS Fanta transfermarkt"
+    query = f"{nome} {squadra} statistiche gol assist stagioni fantacalcio.it transfermarkt"
     return f"📊 *STORICO REALE WEB: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query)}"
 
 def get_cartella_clinica_reale(nome, squadra=""):
-    query = f"{nome} {squadra} infortuni tempi recupero SOS Fanta fantacalcio"
+    query = f"{nome} {squadra} infortuni tempi recupero partite saltate SOS Fanta"
     return f"🏥 *CARTELLA CLINICA REALE: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query)}"
 
 def is_macellaio(nome, ruolo, fvm):
@@ -769,5 +790,5 @@ def handle_document(message):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto con Ricerca WEB Ottimizzata!")
+    print("🚀 Bot in ascolto: Ricerca WEB 100% Automatica ATTIVA!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
