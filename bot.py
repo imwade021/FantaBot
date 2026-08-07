@@ -1,13 +1,10 @@
 import os
 import io
 import re
-import requests
 import pandas as pd
 import numpy as np
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from PIL import Image, ImageDraw, ImageFont
-from duckduckgo_search import DDGS
 
 # Token letto dalle variabili d'ambiente di Render
 TOKEN = os.getenv("BOT_TOKEN", "INSERISCI_QUI_IL_NUOVO_TOKEN")
@@ -31,69 +28,6 @@ DATABASE_SCOMMESSE_PURE = [
     'camarda', 'vitinha'
 ]
 
-# --- FUNZIONE GENERAZIONE/RECUPERO IMMAGINI GARANTITA ---
-def get_player_avatar_stream(nome: str, id_val: str = None, ruolo: str = 'C') -> io.BytesIO:
-    """Recupera l'immagine del giocatore o genera un avatar colorato in RAM. Non fallisce mai."""
-    # 1. Prova tramite ID ufficiale
-    if id_val and str(id_val).isdigit():
-        url_id = f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png"
-        try:
-            resp = requests.get(url_id, timeout=2)
-            if resp.status_code == 200 and len(resp.content) > 1000:
-                img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
-                buf = io.BytesIO()
-                img.save(buf, format='PNG')
-                buf.seek(0)
-                return buf
-        except Exception:
-            pass
-
-    # 2. Prova tramite ricerca Web rapida
-    try:
-        query = f"{nome} calciatore png trasparente face"
-        with DDGS() as ddgs:
-            results = list(ddgs.images(query, max_results=2))
-            for res in results:
-                img_url = res.get("image")
-                resp = requests.get(img_url, timeout=2)
-                if resp.status_code == 200:
-                    img = Image.open(io.BytesIO(resp.content)).convert("RGBA")
-                    buf = io.BytesIO()
-                    img.save(buf, format='PNG')
-                    buf.seek(0)
-                    return buf
-    except Exception:
-        pass
-
-    # 3. Fallback: Genera Avatar Colorato in base al Ruolo
-    role_colors = {
-        'P': (241, 196, 15),  # Giallo
-        'D': (46, 204, 113),  # Verde
-        'C': (52, 152, 219),  # Blu
-        'A': (231, 76, 60)    # Rosso
-    }
-    bg_color = role_colors.get(ruolo, (149, 165, 166))
-    
-    img = Image.new('RGBA', (300, 300), color=bg_color)
-    draw = ImageDraw.Draw(img)
-    
-    parti_nome = nome.split()
-    iniziali = (parti_nome[0][0] + parti_nome[-1][0]).upper() if len(parti_nome) > 1 else nome[:2].upper()
-    
-    draw.ellipse((15, 15, 285, 285), outline=(255, 255, 255), width=6)
-    
-    try:
-        font = ImageFont.truetype("arial.ttf", 90)
-    except Exception:
-        font = ImageFont.load_default()
-        
-    draw.text((150, 150), iniziali, fill=(255, 255, 255), font=font, anchor="mm")
-    
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    buf.seek(0)
-    return buf
-
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try:
         bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
@@ -102,6 +36,21 @@ def safe_answer_callback(call_id, text=None, show_alert=False):
 
 def get_team_icon(squadra): 
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
+
+def get_player_photo_url(row):
+    """Estrae l'ID del giocatore dal DataFrame e genera l'URL dell'immagine del CDN Fantacalcio."""
+    id_val = None
+    for col in row.index:
+        if str(col).strip().lower() in ['id', 'cod', 'codice']:
+            val_str = str(row[col]).split('.')[0].strip()
+            if val_str.isdigit():
+                id_val = val_str
+                break
+    
+    if id_val:
+        # Tenta il caricamento della foto profilo ufficale
+        return f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png"
+    return None
 
 DATA_CACHE = None
 def load_data(force_reload=False):
@@ -521,13 +470,8 @@ def handle_callbacks(call):
             r_p = str(scommessa.get('R', 'C'))
             fvm_p = str(scommessa.get('FVM', scommessa.get('Qt.A', '1-3')))
             
-            id_val = None
-            for col in scommessa.index:
-                if str(col).strip().lower() in ['id', 'cod', 'codice']:
-                    val_str = str(scommessa[col]).split('.')[0].strip()
-                    if val_str.isdigit():
-                        id_val = val_str
-                        break
+            # Recupera URL foto del calciatore
+            photo_url = get_player_photo_url(scommessa)
 
             testo_card = (
                 f"🎴 *SPECIAL CARD: SCOMMESSA*\n"
@@ -550,9 +494,13 @@ def handle_callbacks(call):
             try: bot.delete_message(chat_id, call.message.message_id)
             except Exception: pass
 
-            # Ottieni immagine garantita
-            photo_stream = get_player_avatar_stream(nome_p, id_val, r_p)
-            bot.send_photo(chat_id, photo_stream, caption=testo_card, parse_mode="Markdown", reply_markup=markup)
+            if photo_url:
+                try:
+                    bot.send_photo(chat_id, photo_url, caption=testo_card, parse_mode="Markdown", reply_markup=markup)
+                    return
+                except Exception: pass
+
+            bot.send_message(chat_id, testo_card, parse_mode="Markdown", reply_markup=markup)
 
         else:
             testo = "🎲 *LE VERE SCOMMESSE*\nSolo profili ad alto potenziale:\n"
@@ -561,25 +509,18 @@ def handle_callbacks(call):
             markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
             bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # Scheda Giocatore
+    # Scheda Giocatore con Invio Immagine
     elif call.data.startswith("sq_pl_"):
         player_name = call.data.replace("sq_pl_", "")
         p_data = df[df['Nome'] == player_name].iloc[0]
         sq_name = p_data.get('Squadra', '-')
-        r_p = p_data.get('R', 'C')
         
-        id_val = None
-        for col in p_data.index:
-            if str(col).strip().lower() in ['id', 'cod', 'codice']:
-                val_str = str(p_data[col]).split('.')[0].strip()
-                if val_str.isdigit():
-                    id_val = val_str
-                    break
+        photo_url = get_player_photo_url(p_data)
         
         info_text = (
             f"👤 *{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
             f"───────────────────────────\n"
-            f"📌 Ruolo: `{r_p}`  │  ⭐ Slot: `{p_data.get('Slot', '-')}`\n"
+            f"📌 Ruolo: `{p_data.get('R', '-')}`  │  ⭐ Slot: `{p_data.get('Slot', '-')}`\n"
             f"📈 Fantamedia: `{p_data.get('FM', '-')}`\n"
             f"💰 Quotazione: `{p_data.get('Qt.A', '-')}` cr.  │  FVM: `{p_data.get('FVM', '-')}` cr.\n"
         )
@@ -590,12 +531,17 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton(wl_text, callback_data=f"wl_toggle_{player_name}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         
+        # Elimina il vecchio messaggio di navigazione
         try: bot.delete_message(chat_id, call.message.message_id)
         except Exception: pass
 
-        # Invia foto garantita + scheda
-        photo_stream = get_player_avatar_stream(player_name, id_val, r_p)
-        bot.send_photo(chat_id, photo_stream, caption=info_text, parse_mode="Markdown", reply_markup=markup)
+        if photo_url:
+            try:
+                bot.send_photo(chat_id, photo_url, caption=info_text, parse_mode="Markdown", reply_markup=markup)
+                return
+            except Exception: pass
+
+        bot.send_message(chat_id, info_text, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("wl_toggle_"):
         player_name = call.data.replace("wl_toggle_", "")
