@@ -46,15 +46,28 @@ def safe_answer_callback(call_id, text=None, show_alert=False):
 def get_team_icon(squadra): 
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
+# CARICAMENTO INTELLIGENTE DELL'EXCEL
 DATA_CACHE = None
 def load_data(force_reload=False):
     global DATA_CACHE
     if DATA_CACHE is None or force_reload:
         if os.path.exists("listone.xlsx"): 
-            DATA_CACHE = pd.read_excel("listone.xlsx", header=1, engine='openpyxl')
+            # Scansiona le prime righe finché non trova quella con le colonne giuste ('Nome' e 'Id')
+            for row_h in range(0, 5):
+                try:
+                    df_test = pd.read_excel("listone.xlsx", header=row_h, engine='openpyxl')
+                    cols = [str(c).strip().lower() for c in df_test.columns]
+                    if 'nome' in cols or any('id' in c for c in cols):
+                        # Normalizza i nomi delle colonne
+                        df_test.columns = [str(c).strip() for c in df_test.columns]
+                        DATA_CACHE = df_test
+                        break
+                except Exception:
+                    continue
         else: 
             DATA_CACHE = None
     return DATA_CACHE
+
 load_data()
 
 user_sessions = {}
@@ -203,7 +216,7 @@ def handle_callbacks(call):
         df_scommesse = df_liberi[df_liberi['Nome'].apply(lambda x: any(g in str(x).lower() for g in all_gems))].copy()
 
         if call.data == "pesca_card_scommessa":
-            safe_answer_callback(call.id, "🃏 Generazione Card con Foto...")
+            safe_answer_callback(call.id, "🃏 Generazione Card...")
             if df_scommesse.empty:
                 safe_answer_callback(call.id, "❌ Nessuna scommessa disponibile!", show_alert=True)
                 return
@@ -215,20 +228,27 @@ def handle_callbacks(call):
             fvm_p = str(scommessa.get('FVM', scommessa.get('Qt.A', '1-3')))
             slot_p = str(scommessa.get('Slot', 'Scommessa / Ultimo Slot'))
             
-            # Recupero ID per la foto ufficiale Fantacalcio
-            id_player = str(scommessa.get('Id', scommessa.get('ID', '')))
-            photo_url = f"https://s3.eu-west-1.amazonaws.com/fantacalcio.it/calciatori/2026/200x200/{id_player}.png" if id_player and id_player.isdigit() else None
+            # --- RECUPERO ID AUTOMATICO E PULITO ---
+            id_val = None
+            for col in scommessa.index:
+                if str(col).strip().lower() in ['id', 'cod', 'codice']:
+                    val_str = str(scommessa[col]).split('.')[0].strip()
+                    if val_str.isdigit():
+                        id_val = val_str
+                        break
+            
+            photo_url = f"https://s3.eu-west-1.amazonaws.com/fantacalcio.it/calciatori/2026/200x200/{id_val}.png" if id_val else None
 
             testo_card = (
-                f"🎴 *SPECIAL CARD: SCOMMESSA 2026/27*\n"
+                f"🃏 *SPECIAL CARD: SCOMMESSA 2026/27*\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"👤 *{nome_p}*\n"
                 f"🛡️ Squadra: {get_team_icon(sq_p)} *{sq_p}*\n"
                 f"📌 Ruolo: `{ROLE_ICONS.get(r_p, '')} {r_p}`\n"
                 f"⭐ Slot Consigliato: `{slot_p}`\n"
-                f"💰 Costo FVM: `{fvm_p}` cr.\n"
+                f"💰 Costo FVM Suggerito: `{fvm_p}` cr.\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🔥 *SENTENZA ORACOLO:* _\"Chiamalo subito a 1 credito prima che gli altri lo notino!\"_"
+                f"🔥 *L'ORACOLO DICE:* _\"Chiamalo subito prima che gli altri lo notino!\"_"
             )
 
             markup = InlineKeyboardMarkup(row_width=2)
@@ -238,10 +258,8 @@ def handle_callbacks(call):
             )
             markup.add(InlineKeyboardButton("📋 Torna alla Lista", callback_data="menu_scommessa"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
             
-            try:
-                bot.delete_message(chat_id, call.message.message_id)
-            except Exception:
-                pass
+            try: bot.delete_message(chat_id, call.message.message_id)
+            except Exception: pass
 
             if photo_url:
                 try:
@@ -250,14 +268,13 @@ def handle_callbacks(call):
                 except Exception:
                     pass
 
-            # Fallback immediato se la foto non è trovata
             bot.send_message(chat_id, testo_card, parse_mode="Markdown", reply_markup=markup)
 
         else:
             safe_answer_callback(call.id, "🔎 Filtraggio scommesse reali...")
             testo = "🎲 *LE VERE SCOMMESSE 2026/27*\nSolo profili ad alto potenziale raggruppati per ruolo:\n\n"
             markup = InlineKeyboardMarkup(row_width=1)
-            markup.add(InlineKeyboardButton("🎴 Pesca una Card Visiva HD", callback_data="pesca_card_scommessa"))
+            markup.add(InlineKeyboardButton("🃏 Pesca una Card Scommessa", callback_data="pesca_card_scommessa"))
             
             ruoli_order = [('P', '🧤 PORTIERI'), ('D', '🛡️ DIFENSORI'), ('C', '⚙️ CENTROCAMPISTI'), ('A', '🎯 ATTACCANTI')]
             trovato = False
@@ -279,6 +296,23 @@ def handle_callbacks(call):
                 bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
             except Exception:
                 bot.send_message(chat_id, testo, parse_mode="Markdown", reply_markup=markup)
+
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    chat_id = message.chat.id
+    if not message.document.file_name.endswith('.xlsx'):
+        bot.reply_to(message, "❌ Invia solo file in formato `.xlsx`!", parse_mode="Markdown")
+        return
+    try:
+        msg = bot.reply_to(message, "⏳ *Download in corso...*", parse_mode="Markdown")
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        with open("listone.xlsx", 'wb') as new_file:
+            new_file.write(downloaded_file)
+        load_data(force_reload=True)
+        bot.edit_message_text("✅ *DATABASE AGGIORNATO CON SUCCESSO!*", chat_id, msg.message_id, parse_mode="Markdown")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Errore durante l'aggiornamento: {str(e)}")
 
 if __name__ == '__main__':
     try: bot.remove_webhook() 
