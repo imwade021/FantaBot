@@ -27,10 +27,10 @@ TEAM_COLORS = {
 
 DATABASE_SCOMMESSE_PURE = [
     'bernabe', 'fazzini', 'bonny', 'oristanio', 'paz', 'marchwinski', 'castro', 
-    'belahyane', 'tengstedt', 'da cunha', 'moro', 'chaka traore', 'pisilli', 'ekhator', 
-    'alisson santos', 'solet', 'idzes', 'mangas', 'milla', 'kike perez', 'ndour', 
-    'viti', 'goglichidze', 'alajbegovic', 'nico paz', 'suslov', 'mosquera', 'tchaouna',
-    'camarda', 'vitinha'
+    'belahyane', 'tengstedt', 'da cunha', 'moro', 'traore', 'pisilli', 'ekhator', 
+    'solet', 'idzes', 'mangas', 'milla', 'ndour', 'viti', 'goglichidze', 
+    'alajbegovic', 'suslov', 'mosquera', 'tchaouna', 'camarda', 'vitinha', 
+    'savona', 'mbangula', 'conceicao', 'dallinga', 'fabbian', 'braine'
 ]
 
 def safe_answer_callback(call_id, text=None, show_alert=False):
@@ -112,11 +112,60 @@ def get_roster_stats(session):
     return {'counts': counts, 'slot_liberi': slot_liberi, 'max_bid': max_bid}
 
 def get_available_players(df, session):
-    """Filtra i giocatori escludendo quelli già acquistati o segnati come già presi/scartati."""
+    """Filtra i giocatori escludendo quelli già acquistati in rosa o segnati come scartati."""
     presi_nomi = [p['nome'] for p in session.get('rosa', [])]
     scartati_nomi = session.get('scartati', [])
     esclusi = set(presi_nomi + scartati_nomi)
     return df[~df['Nome'].isin(esclusi)]
+
+# ==========================================
+# FUNZIONE UNICA PER GENERARE LE CARD 
+# ==========================================
+def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
+    """Invia la card del giocatore (usata da ricerca, liste e scommesse)."""
+    p_data = df[df['Nome'] == player_name].iloc[0]
+    sq_name = p_data.get('Squadra', '-')
+    photo_url = p_data.get('PhotoURL', None)
+    
+    info_text = (
+        f"*{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
+        f"───────────────────────────\n"
+        f"📌 Ruolo: `{p_data.get('R', '-')}`\n"
+        f"💰 Quotazione: `{p_data.get('Qt.A', '-')}` cr.  │  FVM: `{p_data.get('FVM', '-')}` cr.\n"
+    )
+    
+    in_wl = player_name in session.get('wishlist', [])
+    wl_text = "❌ Rimuovi Wishlist" if in_wl else "⭐ Aggiungi Wishlist"
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), 
+        InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}")
+    )
+    
+    if is_scommessa:
+        markup.add(InlineKeyboardButton(wl_text, callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
+    else:
+        markup.add(InlineKeyboardButton(wl_text, callback_data=f"wl_toggle_{player_name}"))
+        
+    markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+    
+    try: bot.delete_message(chat_id, message_id)
+    except Exception: pass
+
+    if photo_url and str(photo_url).startswith('http'):
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            res = requests.get(photo_url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                img_bytes = io.BytesIO(res.content)
+                img_bytes.name = 'card.png'
+                bot.send_photo(chat_id, img_bytes, caption=info_text, parse_mode="Markdown", reply_markup=markup)
+                return
+        except Exception:
+            pass
+
+    bot.send_message(chat_id, info_text, parse_mode="Markdown", reply_markup=markup)
 
 # ==========================================
 # KEYBOARD & DASHBOARD
@@ -342,7 +391,7 @@ def handle_callbacks(call):
         p_name = call.data.replace("taken_", "")
         if 'scartati' not in session: session['scartati'] = []
         if p_name not in session['scartati']: session['scartati'].append(p_name)
-        bot.answer_callback_query(call.id, text=f"🚫 {p_name} segnato come già preso!", show_alert=False)
+        safe_answer_callback(call.id, text=f"🚫 {p_name} segnato come già preso!", show_alert=False)
         send_dashboard(chat_id, user_id, call.message.message_id)
 
     elif call.data == "menu_rosa":
@@ -360,6 +409,7 @@ def handle_callbacks(call):
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
+    # --- ESPLORA SQUADRE ---
     elif call.data == "sq_start":
         if df is None: return
         bot.edit_message_text("👕 *ESPLORA SQUADRE*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "sq"))
@@ -384,19 +434,13 @@ def handle_callbacks(call):
         avail = get_available_players(df, session)
         top_players = avail[avail['R'] == r].sort_values(by='FVM', ascending=False).head(15)
         
-        markup = InlineKeyboardMarkup(row_width=2)
+        markup = InlineKeyboardMarkup(row_width=1)
         for _, row in top_players.iterrows():
             nome = row['Nome']
-            fvm = row.get('FVM', '-')
-            markup.add(
-                InlineKeyboardButton(f"🔍 {nome} ({row.get('Squadra','-')}) FVM:{fvm}", callback_data=f"sq_pl_{nome}")
-            )
-            markup.add(
-                InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{nome}"),
-                InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{nome}")
-            )
+            markup.add(InlineKeyboardButton(f"🔍 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}"))
+            
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_top_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🏆 *TOP 15 LIBERI - RUOLO {ROLE_ICONS[r]} {r}:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"🏆 *TOP 15 LIBERI - RUOLO {ROLE_ICONS[r]} {r}:*\nClicca sul giocatore per vederlo e acquistarlo.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     # --- SEZIONE GEMME NASCOSTE ---
     elif call.data == "menu_gemme_start":
@@ -411,49 +455,13 @@ def handle_callbacks(call):
         avail = get_available_players(df, session)
         gemme = avail[(avail['R'] == r) & (avail['FVM'] <= 15) & (avail['FVM'] >= 2)].sort_values(by='FVM', ascending=False).head(15)
         
-        markup = InlineKeyboardMarkup(row_width=2)
+        markup = InlineKeyboardMarkup(row_width=1)
         for _, row in gemme.iterrows():
             nome = row['Nome']
-            fvm = row.get('FVM', '-')
-            markup.add(
-                InlineKeyboardButton(f"💎 {nome} ({row.get('Squadra','-')}) FVM:{fvm}", callback_data=f"sq_pl_{nome}")
-            )
-            markup.add(
-                InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{nome}"),
-                InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{nome}")
-            )
-        markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_gemme_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"💎 *GEMME NASCOSTE - RUOLO {ROLE_ICONS[r]} {r}:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-
-    # --- SEZIONE SCOMMESSE ---
-    elif call.data == "menu_scommessa_start":
-        markup = InlineKeyboardMarkup(row_width=4)
-        markup.add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_scommessa_ru_{r}") for r in ['P', 'D', 'C', 'A']])
-        markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
-        bot.edit_message_text("🎲 *SCOMMESSE CONSIGLIATE - Scegli il ruolo:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
-
-    elif call.data.startswith("menu_scommessa_ru_"):
-        r = call.data.replace("menu_scommessa_ru_", "")
-        if df is None: return
-        avail = get_available_players(df, session)
-        sub = avail[avail['R'] == r]
-        scommesse = sub[sub['Nome'].str.lower().isin(DATABASE_SCOMMESSE_PURE)].head(15)
-        if len(scommesse) < 15:
-            extra = sub[~sub['Nome'].isin(scommesse['Nome'])].head(15 - len(scommesse))
-            scommesse = pd.concat([scommesse, extra])
+            markup.add(InlineKeyboardButton(f"💎 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}"))
             
-        markup = InlineKeyboardMarkup(row_width=2)
-        for _, row in scommesse.iterrows():
-            nome = row['Nome']
-            markup.add(
-                InlineKeyboardButton(f"🎲 {nome} ({row.get('Squadra','-')})", callback_data=f"sq_pl_{nome}")
-            )
-            markup.add(
-                InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{nome}"),
-                InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{nome}")
-            )
-        markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_scommessa_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🎲 *SCOMMESSE - RUOLO {ROLE_ICONS[r]} {r}:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_gemme_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.edit_message_text(f"💎 *GEMME NASCOSTE - RUOLO {ROLE_ICONS[r]} {r}:*\nClicca sul giocatore per vederlo e acquistarlo.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     # --- SEZIONE PANIC BUTTON ---
     elif call.data == "menu_panic_start":
@@ -468,20 +476,33 @@ def handle_callbacks(call):
         avail = get_available_players(df, session)
         panic_list = avail[avail['R'] == r].sort_values(by='FVM', ascending=False).head(15)
         
-        markup = InlineKeyboardMarkup(row_width=2)
+        markup = InlineKeyboardMarkup(row_width=1)
         for _, row in panic_list.iterrows():
             nome = row['Nome']
-            markup.add(
-                InlineKeyboardButton(f"🚨 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}")
-            )
-            markup.add(
-                InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{nome}"),
-                InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{nome}")
-            )
+            markup.add(InlineKeyboardButton(f"🚨 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}"))
+            
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_panic_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🚨 *PANIC BUTTON - RUOLO {ROLE_ICONS[r]} {r}:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"🚨 *PANIC BUTTON - RUOLO {ROLE_ICONS[r]} {r}:*\nLista di emergenza, clicca per comprare o scartare.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- AREA STUDIO (COMPARATORE SQUADRA -> RUOLO -> GIOCATORE CONSERVA RUOLO) ---
+    # --- SEZIONE SCOMMESSE (SLOT MACHINE) ---
+    elif call.data == "menu_scommessa_start":
+        if df is None: return
+        avail = get_available_players(df, session)
+        
+        scommesse_list = []
+        for sc in DATABASE_SCOMMESSE_PURE:
+            match = avail[avail['Nome'].astype(str).str.lower().str.contains(sc)]
+            if not match.empty:
+                scommesse_list.append(match)
+        
+        if scommesse_list:
+            scommesse_df = pd.concat(scommesse_list).drop_duplicates()
+            random_p = scommesse_df.sample(1).iloc[0]
+            send_player_card_view(chat_id, random_p['Nome'], call.message.message_id, df, session, is_scommessa=True)
+        else:
+            safe_answer_callback(call.id, text="Nessuna scommessa disponibile o sono già state prese tutte!", show_alert=True)
+
+    # --- AREA STUDIO (COMPARATORE CORRETTO E FUNZIONANTE) ---
     elif call.data == "menu_studio_start":
         session['compare_p1'] = None
         if df is None: return
@@ -501,15 +522,14 @@ def handle_callbacks(call):
         session['compare_p1'] = p1_row.to_dict()
         ruolo_p1 = p1_row['R']
         
-        # Ora mostra le squadre per scegliere il Giocatore 2 dello STESSO ruolo
         markup = InlineKeyboardMarkup(row_width=2)
         squadre = sorted(df['Squadra'].dropna().astype(str).unique())
         markup.add(*[InlineKeyboardButton(f"{get_team_icon(sq)} {sq}", callback_data=f"std2_sq_{sq}") for sq in squadre])
         markup.add(InlineKeyboardButton("🔙 Reset Confronto", callback_data="menu_studio_start"))
         
         bot.edit_message_text(
-            f"📊 *CONFRONTO:* Primo giocatore selezionato: *{p1_nome.upper()}* ({ROLE_ICONS[ruolo_p1]} {ruolo_p1})\n\n"
-            f"Ora seleziona la squadra del *SECONDO GIOCATORE* (verranno mostrati solo i giocatori di ruolo {ROLE_ICONS[ruolo_p1]} {ruolo_p1}):",
+            f"📊 *CONFRONTO:* Hai selezionato *{p1_nome.upper()}* ({ROLE_ICONS[ruolo_p1]} {ruolo_p1})\n\n"
+            f"Ora seleziona la squadra del *SECONDO GIOCATORE* (vedrai solo i giocatori del ruolo {ruolo_p1}):",
             chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup
         )
 
@@ -519,7 +539,7 @@ def handle_callbacks(call):
         if not p1: return
         ruolo_p1 = p1['R']
         
-        # Filtra direttamente i giocatori della squadra 2 che hanno lo STESSO RUOLO di P1
+        # Filtra i giocatori della squadra 2 che hanno lo STESSO RUOLO di P1
         markup = InlineKeyboardMarkup(row_width=1)
         sub = df[(df['Squadra'] == sq2) & (df['R'] == ruolo_p1) & (df['Nome'] != p1['Nome'])]
         
@@ -532,7 +552,7 @@ def handle_callbacks(call):
     elif call.data.startswith("std2_pl_"):
         p2_nome = call.data.replace("std2_pl_", "")
         p1 = session.get('compare_p1')
-        p2_row = df[df['Nome'] == p2_nome].iloc[0].to_dict()
+        p2 = df[df['Nome'] == p2_nome].iloc[0].to_dict()
         
         text = (
             f"📊 *CONFRONTO DIRETTO:*\n\n"
@@ -578,46 +598,11 @@ def handle_callbacks(call):
                 break
         send_dashboard(chat_id, user_id, call.message.message_id)
 
+    # --- CLICK SULLA CARD DEL GIOCATORE ---
     elif call.data.startswith("sq_pl_"):
         player_name = call.data.replace("sq_pl_", "")
-        
-        if df is None:
-            bot.send_message(chat_id, "❌ Database non trovato. Assicurati che il file CSV sia su GitHub!")
-            return
-
-        p_data = df[df['Nome'] == player_name].iloc[0]
-        sq_name = p_data.get('Squadra', '-')
-        photo_url = p_data.get('PhotoURL', None)
-        
-        info_text = (
-            f"*{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
-            f"───────────────────────────\n"
-            f"📌 Ruolo: `{p_data.get('R', '-')}`\n"
-            f"💰 Quotazione: `{p_data.get('Qt.A', '-')}` cr.  │  FVM: `{p_data.get('FVM', '-')}` cr.\n"
-        )
-        
-        in_wl = player_name in session.get('wishlist', [])
-        wl_text = "❌ Rimuovi Wishlist" if in_wl else "⭐ Aggiungi Wishlist"
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}"))
-        markup.add(InlineKeyboardButton(wl_text, callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        
-        try: bot.delete_message(chat_id, call.message.message_id)
-        except Exception: pass
-
-        if photo_url and str(photo_url).startswith('http'):
-            try:
-                headers = {"User-Agent": "Mozilla/5.0"}
-                res = requests.get(photo_url, headers=headers, timeout=5)
-                if res.status_code == 200:
-                    img_bytes = io.BytesIO(res.content)
-                    img_bytes.name = 'card.png'
-                    bot.send_photo(chat_id, img_bytes, caption=info_text, parse_mode="Markdown", reply_markup=markup)
-                    return
-            except Exception as e:
-                print(f"⚠️ Download foto fallito: {e}")
-
-        bot.send_message(chat_id, info_text, parse_mode="Markdown", reply_markup=markup)
+        if df is None: return
+        send_player_card_view(chat_id, player_name, call.message.message_id, df, session)
 
     elif call.data.startswith("buy_"):
         player_name = call.data.replace("buy_", "")
