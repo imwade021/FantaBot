@@ -49,19 +49,27 @@ def get_team_icon(squadra):
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
 def get_player_photo_bytes(row):
-    """Estrae l'ID e scarica la foto, simulando un browser e rinominando i byte per Telegram."""
+    """Estrae l'ID con ricerca avanzata e scarica la foto dal server Fantacalcio."""
     id_val = None
     
-    # Cerca la colonna ID, Codice o Cod
+    # 1. Cerca colonne tipiche per l'ID
     for col in row.index:
-        col_str = str(col).strip().lower()
-        if col_str in ['id', 'cod', 'codice', 'id_giocatore', 'cod_giocatore']:
+        col_clean = str(col).strip().lower()
+        if any(k in col_clean for k in ['id', 'cod', 'codice', 'id_fantacalcio']):
             val_str = str(row[col]).split('.')[0].strip()
             if val_str.isdigit():
                 id_val = val_str
                 break
     
-    print(f"🔎 ID trovato per {row.get('Nome', 'Giocatore')}: {id_val}")
+    # 2. Se non trova la colonna specifica, prende la prima colonna interamente numerica
+    if not id_val:
+        for col in row.index:
+            val_str = str(row[col]).split('.')[0].strip()
+            if val_str.isdigit() and len(val_str) >= 2 and str(col).strip().lower() not in ['r', 'fvm', 'fm', 'qt.a', 'slot']:
+                id_val = val_str
+                break
+
+    print(f"🔎 ID individuato per {row.get('Nome', 'Giocatore')}: {id_val}")
 
     if id_val:
         url = f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png"
@@ -71,7 +79,7 @@ def get_player_photo_bytes(row):
             "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
         }
         try:
-            print(f"🤖 Provo a scaricare la foto da: {url}")
+            print(f"🤖 Download foto da: {url}")
             response = requests.get(url, headers=headers, timeout=5)
             print(f"📡 Risposta server Fantacalcio: {response.status_code}")
             
@@ -87,9 +95,8 @@ def get_player_photo_bytes(row):
     return None
 
 def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
-    """Crea la carta grafica del giocatore."""
+    """Crea la carta grafica del giocatore incollando il volto centrato sul template."""
     try:
-        # Se c'è un template lo carica, altrimenti genera la carta base da zero
         if os.path.exists("template_card.png"):
             sfondo = Image.open("template_card.png").convert("RGBA")
             sfondo = sfondo.resize((500, 750))
@@ -97,30 +104,41 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
             sfondo = Image.new("RGBA", (500, 750), (20, 20, 35, 255))
             
         draw = ImageDraw.Draw(sfondo)
-        draw.rectangle([10, 10, 490, 740], outline=(255, 215, 0), width=4)
 
+        # Incolla la foto del giocatore centrata se disponibile
         if photo_bytes:
             try:
                 photo_bytes.seek(0)
                 faccia = Image.open(photo_bytes).convert("RGBA")
-                faccia = faccia.resize((280, 280))
-                sfondo.paste(faccia, (110, 140), faccia)
+                faccia = faccia.resize((260, 260))
+                # Incolla al centro sopra lo sfondo della carta
+                sfondo.paste(faccia, (150, 160), faccia)
             except Exception as e_img:
-                print(f"⚠️ Impossibile incollare la foto: {e_img}")
+                print(f"⚠️ Errore incollaggio foto: {e_img}")
 
+        # Font per testi
         try:
-            font_nome = ImageFont.truetype("font.ttf", 40)
-            font_stats = ImageFont.truetype("font.ttf", 50)
+            font_nome = ImageFont.truetype("font.ttf", 45)
+            font_overall = ImageFont.truetype("font.ttf", 65)
+            font_ruolo = ImageFont.truetype("font.ttf", 45)
         except IOError:
             font_nome = ImageFont.load_default()
-            font_stats = ImageFont.load_default()
+            font_overall = ImageFont.load_default()
+            font_ruolo = ImageFont.load_default()
 
-        # Disegna testo e info sulla carta
-        draw.text((40, 100), f"FVM: {fvm}", fill=(255, 215, 0), font=font_stats)
-        draw.text((40, 160), f"R: {ruolo}", fill=(255, 255, 255), font=font_stats)
+        # Disegna FVM e Ruolo in alto a sinistra
+        draw.text((75, 125), str(fvm), fill="#1a1a1a", font=font_overall)
+        draw.text((80, 200), str(ruolo), fill="#1a1a1a", font=font_ruolo)
 
+        # Disegna Nome centrato in basso
         nome_str = str(nome_giocatore).upper()
-        draw.text((40, 480), nome_str, fill=(255, 255, 255), font=font_nome)
+        try:
+            text_width = draw.textlength(nome_str, font=font_nome)
+        except AttributeError:
+            text_width = draw.textsize(nome_str, font=font_nome)[0] 
+            
+        x_nome = int((500 - text_width) / 2)
+        draw.text((x_nome, 460), nome_str, fill="#1a1a1a", font=font_nome)
 
         img_byte_arr = io.BytesIO()
         sfondo.save(img_byte_arr, format='PNG')
@@ -152,7 +170,7 @@ def load_data(force_reload=False):
                 except Exception:
                     continue
         else: 
-            print("⚠️ File listone.xlsx non trovato nella directory del bot!")
+            print("⚠️ File listone.xlsx non trovato!")
             DATA_CACHE = None
     return DATA_CACHE
 
@@ -211,7 +229,7 @@ def main_menu_keyboard():
         InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm")
     )
     markup.add(
-        InlineKeyboardButton("扫 Pulisci Schermo", callback_data="clear_screen")
+        InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen")
     )
     return markup
 
@@ -419,7 +437,7 @@ def handle_callbacks(call):
         p_data = df[df['Nome'] == player_name].iloc[0]
         sq_name = p_data.get('Squadra', '-')
         
-        # 1. Tenta il download e genera la carta
+        # Generazione Carta FC
         photo_bytes = get_player_photo_bytes(p_data)
         final_card = crea_carta_fc(player_name, p_data.get('R', '-'), p_data.get('FVM', '-'), photo_bytes)
         
@@ -440,7 +458,6 @@ def handle_callbacks(call):
         try: bot.delete_message(chat_id, call.message.message_id)
         except Exception: pass
 
-        # Invio Foto o Testo
         if final_card:
             try:
                 bot.send_photo(chat_id, final_card, caption=info_text, parse_mode="Markdown", reply_markup=markup)
