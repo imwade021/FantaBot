@@ -40,7 +40,7 @@ def get_team_icon(squadra):
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
 def get_player_photo_bytes(row):
-    """Estrae l'ID e scarica la foto aggirando i blocchi anti-bot di Fantacalcio.it."""
+    """Estrae l'ID e scarica la foto, simulando un browser e rinominando i byte per Telegram."""
     id_val = None
     for col in row.index:
         if str(col).strip().lower() in ['id', 'cod', 'codice']:
@@ -53,14 +53,22 @@ def get_player_photo_bytes(row):
         url = f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.fantacalcio.it/"
+            "Referer": "https://www.fantacalcio.it/",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
         }
         try:
+            print(f"🤖 Provo a scaricare la foto da: {url}")
             response = requests.get(url, headers=headers, timeout=5)
+            print(f"📡 Risposta server Fantacalcio: {response.status_code}")
+            
             if response.status_code == 200:
-                return io.BytesIO(response.content)
+                file_bytes = io.BytesIO(response.content)
+                file_bytes.name = 'player_photo.png' # FONDAMENTALE PER TELEGRAM!
+                return file_bytes
+            else:
+                print(f"❌ Errore HTTP {response.status_code} dal sito del Fantacalcio!")
         except Exception as e:
-            print(f"Errore download foto: {e}")
+            print(f"❌ Errore download foto: {e}")
             
     return None
 
@@ -73,6 +81,7 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
         # Controllo se hai caricato il template su GitHub
         if not os.path.exists("template_card.png"):
             photo_bytes.seek(0)
+            photo_bytes.name = 'fallback_player.png'
             return photo_bytes
             
         # 1. Carica e ridimensiona lo sfondo a misure standard (500x750)
@@ -118,12 +127,14 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
         img_byte_arr = io.BytesIO()
         sfondo.save(img_byte_arr, format='PNG')
         img_byte_arr.seek(0)
+        img_byte_arr.name = 'fc_card.png' # FONDAMENTALE PER TELEGRAM!
         
         return img_byte_arr
         
     except Exception as e:
         print(f"Errore generazione carta: {e}")
         photo_bytes.seek(0)
+        photo_bytes.name = 'error_fallback.png'
         return photo_bytes
 
 DATA_CACHE = None
@@ -590,7 +601,7 @@ def handle_callbacks(call):
         p_data = df[df['Nome'] == player_name].iloc[0]
         sq_name = p_data.get('Squadra', '-')
         
-        # Generazione Carta FC anche per la visualizzazione standard
+        # Generazione Carta FC
         photo_bytes = get_player_photo_bytes(p_data)
         final_card = crea_carta_fc(player_name, p_data.get('R', '-'), p_data.get('FVM', '-'), photo_bytes)
         
@@ -615,7 +626,8 @@ def handle_callbacks(call):
             try:
                 bot.send_photo(chat_id, final_card, caption=info_text, parse_mode="Markdown", reply_markup=markup)
                 return
-            except Exception: pass
+            except Exception as e:
+                print(f"Errore durante l'invio della foto a Telegram: {e}")
 
         bot.send_message(chat_id, info_text, parse_mode="Markdown", reply_markup=markup)
 
