@@ -28,8 +28,16 @@ TEAM_COLORS = {
     'Torino': '🟤⚪', 'Udinese': '⚪⚫', 'Venezia': '🟠🟢', 'Verona': '🟡🔵'
 }
 
+DATABASE_SCOMMESSE_PURE = [
+    'bernabe', 'fazzini', 'bonny', 'oristanio', 'paz', 'marchwinski', 'castro', 
+    'belahyane', 'tengstedt', 'da cunha', 'moro', 'chaka traore', 'pisilli', 'ekhator', 
+    'alisson santos', 'solet', 'idzes', 'mangas', 'milla', 'kike perez', 'ndour', 
+    'viti', 'goglichidze', 'alajbegovic', 'nico paz', 'suslov', 'mosquera', 'tchaouna',
+    'camarda', 'vitinha'
+]
+
 # ==========================================
-# DOWNLOAD AUTOMATICO FOTO GIOCATORE
+# FUNZIONI UTILITY & DOWNLOAD IMMAGINI
 # ==========================================
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try:
@@ -41,39 +49,22 @@ def get_team_icon(squadra):
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
 def get_player_photo_bytes(row):
-    """Recupera l'ID dal file Excel oppure lo cerca via API dal nome del calciatore."""
+    """Cerca l'ID dall'Excel e, se fallisce o viene bloccato da Fantacalcio, crea un avatar col nome."""
     id_val = None
     
-    # 1. Cerca colonna ID o Codice nel DataFrame
+    # 1. Cerca l'ID nel file Excel
     for col in row.index:
         col_clean = str(col).strip().lower().replace('.', '')
-        if col_clean in ['id', 'cod', 'codice', 'id_fantacalcio']:
+        if col_clean in ['id', 'cod', 'codice']:
             val = str(row[col]).split('.')[0].strip()
             if val.isdigit():
                 id_val = val
                 break
 
-    nome_giocatore = str(row.get('Nome', '')).strip()
+    nome_giocatore = str(row.get('Nome', 'Giocatore')).strip()
 
-    # 2. Se l'ID manca o non è numerico, cerca l'ID di Fantacalcio dal nome via API
-    if not id_val or not id_val.isdigit():
-        print(f"🔍 Ricerca ID online per: {nome_giocatore}...")
-        try:
-            # Ricerca nome pulito
-            nome_clean = nome_giocatore.split(' ')[0]
-            search_url = f"https://www.fantacalcio.it/api/v1/Giocatori/Cerca?term={nome_clean}"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            res = requests.get(search_url, headers=headers, timeout=4)
-            if res.status_code == 200:
-                data = res.json()
-                if data and isinstance(data, list):
-                    id_val = str(data[0].get('id', ''))
-        except Exception as e:
-            print(f"⚠️ Errore ricerca API: {e}")
-
-    print(f"🔎 ID finale utilizzato per {nome_giocatore}: {id_val}")
-
-    if id_val and id_val.isdigit():
+    # 2. Tenta il download da Fantacalcio se presente l'ID
+    if id_val:
         url = f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -82,22 +73,31 @@ def get_player_photo_bytes(row):
         }
         try:
             print(f"🤖 Download foto da: {url}")
-            response = requests.get(url, headers=headers, timeout=5)
+            response = requests.get(url, headers=headers, timeout=3)
             print(f"📡 Risposta server Fantacalcio: {response.status_code}")
-            
-            if response.status_code == 200:
+            if response.status_code == 200 and len(response.content) > 1000:
                 file_bytes = io.BytesIO(response.content)
                 file_bytes.name = 'player_photo.png'
                 return file_bytes
-            else:
-                print(f"❌ Immagine non trovata HTTP {response.status_code} per ID {id_val}")
         except Exception as e:
-            print(f"❌ Errore download foto: {e}")
-            
+            print(f"⚠️ Fantacalcio bloccato: {e}")
+
+    # 3. FALLBACK GARANTITO: Se Fantacalcio blocca la richiesta, genera una grafica personalizzata col nome
+    try:
+        print(f"🔄 Genero l'avatar per {nome_giocatore}...")
+        avatar_url = f"https://ui-avatars.com/api/?name={requests.utils.quote(nome_giocatore)}&size=250&background=1a1a2e&color=ffd700&bold=true"
+        res_avatar = requests.get(avatar_url, timeout=3)
+        if res_avatar.status_code == 200:
+            file_bytes = io.BytesIO(res_avatar.content)
+            file_bytes.name = 'fallback.png'
+            return file_bytes
+    except Exception as e:
+        print(f"⚠️ Errore generatore avatar: {e}")
+
     return None
 
 def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
-    """Crea la carta grafica del giocatore incollando la sagoma centrata."""
+    """Crea la carta grafica del giocatore incollando l'immagine al centro del template."""
     try:
         if os.path.exists("template_card.png"):
             sfondo = Image.open("template_card.png").convert("RGBA")
@@ -107,18 +107,18 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
             
         draw = ImageDraw.Draw(sfondo)
 
-        # Incolla foto centrata
+        # Incolla l'immagine se disponibile
         if photo_bytes:
             try:
                 photo_bytes.seek(0)
                 faccia = Image.open(photo_bytes).convert("RGBA")
-                faccia = faccia.resize((270, 270))
-                sfondo.paste(faccia, (115, 150), faccia)
-                print("📸 Foto applicata con successo sulla carta!")
+                faccia = faccia.resize((260, 260))
+                sfondo.paste(faccia, (120, 160), faccia)
+                print("📸 Immagine applicata sulla carta con successo!")
             except Exception as e_img:
-                print(f"⚠️ Errore rendering foto: {e_img}")
+                print(f"⚠️ Errore incollaggio immagine: {e_img}")
 
-        # Font
+        # Font per testi
         try:
             font_nome = ImageFont.truetype("font.ttf", 45)
             font_overall = ImageFont.truetype("font.ttf", 65)
@@ -128,10 +128,11 @@ def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
             font_overall = ImageFont.load_default()
             font_ruolo = ImageFont.load_default()
 
-        # Dati carta
+        # Disegna FVM e Ruolo in alto a sinistra
         draw.text((75, 125), str(fvm), fill="#1a1a1a", font=font_overall)
         draw.text((80, 200), str(ruolo), fill="#1a1a1a", font=font_ruolo)
 
+        # Disegna Nome centrato in basso
         nome_str = str(nome_giocatore).upper()
         try:
             text_width = draw.textlength(nome_str, font=font_nome)
@@ -163,7 +164,7 @@ def load_data(force_reload=False):
                 try:
                     df_test = pd.read_excel("listone.xlsx", header=row_h, engine='openpyxl')
                     cols = [str(c).strip().lower() for c in df_test.columns]
-                    if 'nome' in cols or 'id' in cols:
+                    if 'nome' in cols or 'id' in cols or 'cod' in cols:
                         df_test.columns = [str(c).strip() for c in df_test.columns]
                         DATA_CACHE = df_test
                         print("✅ File listone.xlsx caricato correttamente!")
@@ -171,7 +172,7 @@ def load_data(force_reload=False):
                 except Exception:
                     continue
         else: 
-            print("⚠️ File listone.xlsx non trovato localmente!")
+            print("⚠️ File listone.xlsx non trovato!")
             DATA_CACHE = None
     return DATA_CACHE
 
@@ -269,9 +270,61 @@ def send_dashboard(chat_id, user_id, message_id=None):
     else: 
         bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
-# ==========================================
-# HANDLERS MESSAGGI E COMANDI
-# ==========================================
+# Modalità Cecchino
+@bot.message_handler(func=lambda m: m.text.strip().startswith('+'))
+def modalita_cecchino(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    text = message.text.strip()[1:].strip() 
+    
+    try:
+        parts = text.rsplit(' ', 1)
+        if len(parts) != 2 or not parts[1].isdigit():
+            bot.reply_to(message, "❌ *Errore Cecchino!*\nUsa il formato: `+ nomegiocatore prezzo`\nEsempio: `+ neres 35`", parse_mode="Markdown")
+            return
+            
+        query_nome = parts[0].strip().lower()
+        costo = int(parts[1])
+        
+        df = load_data()
+        if df is None:
+            bot.reply_to(message, "❌ Carica prima il file listone.xlsx!")
+            return
+
+        matches = df[df['Nome'].str.lower().str.contains(query_nome, na=False)]
+        
+        if matches.empty:
+            bot.reply_to(message, f"❌ Nessun giocatore trovato per '{query_nome}'.", parse_mode="Markdown")
+            return
+            
+        row = matches.iloc[0] 
+        player_name = row['Nome']
+        
+        session = get_session(user_id)
+        stats = get_roster_stats(session)
+        
+        if costo > stats['max_bid']:
+            bot.reply_to(message, f"⚠️ *ALLARME BUDGET!*\nStai spendendo `{costo}`, ma il tuo Max Bid è `{stats['max_bid']}`.", parse_mode="Markdown")
+            return
+            
+        ruolo_acquistato = row.get('R', 'C')
+        sq_acquistata = row.get('Squadra', '-')
+        fvm = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+        fm = pd.to_numeric(str(row.get('FM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+        slot = str(row.get('Slot', '-'))
+        
+        session['rosa'].append({
+            'nome': player_name, 'prezzo': costo, 'ruolo': ruolo_acquistato, 'squadra': sq_acquistata,
+            'fvm': 0 if pd.isna(fvm) else fvm, 'fm': 0 if pd.isna(fm) else fm, 'rigori': str(row.get('Rigori_Piazzati', '')), 'slot': slot
+        })
+        session['budget'] -= costo
+        
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("↩️ Annulla", callback_data=f"undo_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.reply_to(message, f"🎯 *CECCHINO A BERSAGLIO!*\n✅ Hai acquistato *{player_name.upper()}* a `{costo} cr.`\nRimangono {session['budget']} crediti.", parse_mode="Markdown", reply_markup=markup)
+        
+    except Exception:
+        bot.reply_to(message, "❌ Errore durante l'acquisto rapido.")
+
 @bot.message_handler(commands=['start', 'menu'])
 def cmd_start(m): 
     send_dashboard(m.chat.id, m.from_user.id)
@@ -289,6 +342,66 @@ def search_player(message):
         markup.add(InlineKeyboardButton(f"{ROLE_ICONS.get(row.get('R','C'),'')} {row['Nome']} ({row.get('Squadra','-')})", callback_data=f"sq_pl_{row['Nome']}"))
     bot.reply_to(message, f"🔍 Risultati per *{query}*:", reply_markup=markup)
 
+def menu_seleziona_squadra(df, prefisso):
+    markup = InlineKeyboardMarkup(row_width=2)
+    squadre = sorted(df['Squadra'].dropna().astype(str).unique())
+    markup.add(*[InlineKeyboardButton(f"{get_team_icon(sq)} {sq}", callback_data=f"{prefisso}_sq_{sq}") for sq in squadre])
+    markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
+    return markup
+
+def menu_seleziona_ruolo(squadra, prefisso):
+    markup = InlineKeyboardMarkup(row_width=4)
+    markup.add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"{prefisso}_ru_{squadra}_{r}") for r in ['P', 'D', 'C', 'A']])
+    markup.add(InlineKeyboardButton("🔙 Squadre", callback_data=f"{prefisso}_start"))
+    return markup
+
+def menu_seleziona_giocatore(df, squadra, ruolo, prefisso, user_id):
+    markup = InlineKeyboardMarkup(row_width=1)
+    sub = df[(df['Squadra'] == squadra) & (df['R'] == ruolo)]
+    for _, row in sub.iterrows():
+        star = "⭐ " if row['Nome'] in get_session(user_id).get('wishlist', []) else ""
+        markup.add(InlineKeyboardButton(f"{star}{ROLE_ICONS.get(ruolo,'')} {row['Nome']} ─ FVM:{row.get('FVM', '-')}", callback_data=f"{prefisso}_pl_{row['Nome']}"))
+    markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data=f"{prefisso}_sq_{squadra}"))
+    return markup
+
+def process_buy_price(message, player_name, user_id):
+    chat_id = message.chat.id
+    if not message.text or not message.text.isdigit():
+        msg = bot.send_message(chat_id, "❌ Inserisci *solo numeri interi*:", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
+        return
+
+    costo = int(message.text)
+    session = get_session(user_id)
+    stats = get_roster_stats(session)
+
+    if costo > stats['max_bid']:
+        bot.send_message(chat_id, f"⚠️ *ATTENZIONE!*\nOfferta oltre il *Max Bid Sicuro* (`{stats['max_bid']} cr.`).", parse_mode="Markdown")
+        send_dashboard(chat_id, user_id)
+        return
+
+    df = load_data()
+    try: row = df[df['Nome'] == player_name].iloc[0]
+    except: return
+
+    squadra_acquistata = row.get('Squadra', '-')
+    ruolo_acquistato = row.get('R', 'C')
+    fvm = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+    fm = pd.to_numeric(str(row.get('FM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+    slot = str(row.get('Slot', '-'))
+
+    session['rosa'].append({
+        'nome': player_name, 'prezzo': costo, 'ruolo': ruolo_acquistato, 'squadra': squadra_acquistata,
+        'fvm': 0 if pd.isna(fvm) else fvm, 'fm': 0 if pd.isna(fm) else fm, 'rigori': str(row.get('Rigori_Piazzati', '')), 'slot': slot
+    })
+    session['budget'] -= costo
+    
+    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("↩️ Annulla", callback_data=f"undo_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+    bot.send_message(chat_id, f"✅ *{player_name.upper()}* acquistato per `{costo} cr.`!", parse_mode="Markdown", reply_markup=markup)
+
+# ==========================================
+# GESTIONE CALLBACK BOTTONI
+# ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
     safe_answer_callback(call.id)
@@ -297,20 +410,36 @@ def handle_callbacks(call):
     session = get_session(user_id)
     df = load_data()
 
-    if call.data == "go_home": 
+    if call.data == "clear_screen":
+        curr_id = call.message.message_id
+        for i in range(curr_id, max(0, curr_id - 80), -1):
+            try: bot.delete_message(chat_id, i)
+            except Exception: pass
+        send_dashboard(chat_id, user_id)
+
+    elif call.data == "go_home": 
         send_dashboard(chat_id, user_id, call.message.message_id)
 
+    elif call.data == "reload_excel": 
+        load_data(force_reload=True)
+        bot.send_message(chat_id, "⚡ *Dati sincronizzati con successo!*", parse_mode="Markdown")
+
+    elif call.data == "reset_confirm":
+        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session.get('wishlist', []), 'scartati': []}
+        send_dashboard(chat_id, user_id, call.message.message_id)
+
+    # Scheda Giocatore con Invio Immagine
     elif call.data.startswith("sq_pl_"):
         player_name = call.data.replace("sq_pl_", "")
         
         if df is None:
-            bot.send_message(chat_id, "❌ File listone.xlsx non presente!")
+            bot.send_message(chat_id, "❌ File listone.xlsx non caricato su Render. Invialo in chat!")
             return
 
         p_data = df[df['Nome'] == player_name].iloc[0]
         sq_name = p_data.get('Squadra', '-')
         
-        # Generazione Carta FC con Download Foto
+        # Generazione Carta FC con Fallback
         photo_bytes = get_player_photo_bytes(p_data)
         final_card = crea_carta_fc(player_name, p_data.get('R', '-'), p_data.get('FVM', '-'), photo_bytes)
         
@@ -336,15 +465,51 @@ def handle_callbacks(call):
                 bot.send_photo(chat_id, final_card, caption=info_text, parse_mode="Markdown", reply_markup=markup)
                 return
             except Exception as e:
-                print(f"❌ Errore invio photo a Telegram: {e}")
+                print(f"❌ Errore invio foto a Telegram: {e}")
 
         bot.send_message(chat_id, info_text, parse_mode="Markdown", reply_markup=markup)
 
+    elif call.data.startswith("wl_toggle_"):
+        player_name = call.data.replace("wl_toggle_", "")
+        if 'wishlist' not in session: session['wishlist'] = []
+        if player_name in session['wishlist']: session['wishlist'].remove(player_name)
+        else: session['wishlist'].append(player_name)
+        send_dashboard(chat_id, user_id, call.message.message_id)
+
+    elif call.data == "menu_wishlist":
+        wishlist = session.get('wishlist', [])
+        markup = InlineKeyboardMarkup(row_width=1)
+        if not wishlist: testo = "⭐ *WISHLIST VUOTA*"
+        else:
+            testo = "⭐ *LA TUA WISHLIST:*\n"
+            for nome in wishlist: markup.add(InlineKeyboardButton(f"🔍 {nome}", callback_data=f"sq_pl_{nome}"))
+        markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "sq_start":
+        if df is None:
+            bot.send_message(chat_id, "❌ Invia il file `listone.xlsx` in chat prima di usare l'esplorazione!")
+            return
+        bot.edit_message_text("👕 *ESPLORA SQUADRE*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "sq"))
+    elif call.data.startswith("sq_sq_"):
+        bot.edit_message_text("Scegli il ruolo:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(call.data.replace("sq_sq_", ""), "sq"))
+    elif call.data.startswith("sq_ru_"):
+        _, _, sq, ru = call.data.split("_")
+        bot.edit_message_text(f"Giocatori ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "sq", user_id))
+
+    elif call.data.startswith("buy_"):
+        player_name = call.data.replace("buy_", "")
+        msg = bot.send_message(chat_id, f"💰 Crediti spesi per *{player_name}*?:", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
+
+# ==========================================
+# CARICAMENTO DOCUMENTI EXCEL
+# ==========================================
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     chat_id = message.chat.id
     if not message.document.file_name.endswith('.xlsx'):
-        bot.reply_to(message, "❌ Invia un file `.xlsx`!", parse_mode="Markdown")
+        bot.reply_to(message, "❌ Invia solo file `.xlsx`!", parse_mode="Markdown")
         return
     try:
         file_info = bot.get_file(message.document.file_id)
@@ -352,18 +517,19 @@ def handle_document(message):
         with open("listone.xlsx", 'wb') as new_file:
             new_file.write(downloaded_file)
         load_data(force_reload=True)
-        bot.reply_to(message, "✅ *DATABASE CARICATO CON SUCCESSO!*", parse_mode="Markdown")
+        bot.reply_to(message, "✅ *DATABASE AGGIORNATO CON SUCCESSO!*", parse_mode="Markdown")
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Errore caricamento: {str(e)}")
+        bot.send_message(chat_id, f"❌ Errore durante l'aggiornamento: {str(e)}")
 
 # ==========================================
-# AVVIO BOT
+# AVVIO BOT CON FIX ANTI-409
 # ==========================================
 if __name__ == '__main__':
+    print("🧹 Pulizia sessioni vecchie su Render...")
     try: 
         bot.remove_webhook()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Note remove_webhook: {e}")
 
-    print("🚀 Bot in ascolto con ricerca foto attiva!")
+    print("🚀 Bot avviato con successo e in ascolto!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
