@@ -1,12 +1,10 @@
 import os
 import io
-import re
 import pandas as pd
 import numpy as np
 import telebot
 import requests
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from PIL import Image, ImageDraw, ImageFont
 
 # ==========================================
 # CONFIGURAZIONE INIZIALE & TOKEN
@@ -29,7 +27,7 @@ TEAM_COLORS = {
 }
 
 # ==========================================
-# FUNZIONI UTILITY & DOWNLOAD IMMAGINI
+# FUNZIONI UTILITY
 # ==========================================
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try:
@@ -40,103 +38,6 @@ def safe_answer_callback(call_id, text=None, show_alert=False):
 def get_team_icon(squadra): 
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
-def get_player_photo_bytes(row):
-    """Scarica la foto usando i link esatti scoperti dal file Lista-FantaAsta-Fantacalcio."""
-    id_val = None
-    photo_url = None
-    
-    # 1. Se nel row c'è un link o una colonna URL
-    for col in row.index:
-        val_str = str(row[col])
-        if 'content.fantacalcio.it' in val_str:
-            photo_url = val_str
-            break
-        col_clean = str(col).strip().lower().replace('.', '')
-        if col_clean in ['id', 'cod', 'codice', '4431']:
-            val = val_str.split('.')[0].strip()
-            if val.isdigit():
-                id_val = val
-
-    # 2. Se non ha il link completo ma ha l'ID, usa l'URL delle card "campioncini"
-    if not photo_url and id_val:
-        photo_url = f"https://content.fantacalcio.it/web/campioncini/21/card/{id_val}.png"
-
-    nome_giocatore = str(row.get('Nome', row.iloc[1] if len(row) > 1 else 'Giocatore')).strip()
-
-    if photo_url:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.fantacalcio.it/"
-        }
-        try:
-            print(f"🤖 Download foto da URL esatto: {photo_url}")
-            response = requests.get(photo_url, headers=headers, timeout=4)
-            print(f"📡 Risposta server Fantacalcio: {response.status_code}")
-            if response.status_code == 200 and len(response.content) > 500:
-                file_bytes = io.BytesIO(response.content)
-                file_bytes.name = 'player_photo.png'
-                return file_bytes
-        except Exception as e:
-            print(f"⚠️ Download foto fallito: {e}")
-
-    return None
-
-def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
-    """Crea la carta grafica del giocatore incollando la foto vera al centro."""
-    try:
-        if os.path.exists("template_card.png"):
-            sfondo = Image.open("template_card.png").convert("RGBA")
-            sfondo = sfondo.resize((500, 750))
-        else:
-            sfondo = Image.new("RGBA", (500, 750), (20, 20, 35, 255))
-            
-        draw = ImageDraw.Draw(sfondo)
-
-        # Incolla la foto del giocatore se disponibile
-        if photo_bytes:
-            try:
-                photo_bytes.seek(0)
-                faccia = Image.open(photo_bytes).convert("RGBA")
-                faccia = faccia.resize((260, 260))
-                sfondo.paste(faccia, (120, 160), faccia)
-                print("📸 Foto reale incollata con successo!")
-            except Exception as e_img:
-                print(f"⚠️ Errore incollaggio immagine: {e_img}")
-
-        # Font per testi
-        try:
-            font_nome = ImageFont.truetype("font.ttf", 45)
-            font_overall = ImageFont.truetype("font.ttf", 65)
-            font_ruolo = ImageFont.truetype("font.ttf", 45)
-        except IOError:
-            font_nome = ImageFont.load_default()
-            font_overall = ImageFont.load_default()
-            font_ruolo = ImageFont.load_default()
-
-        # Disegna FVM e Ruolo in alto a sinistra
-        draw.text((75, 125), str(fvm), fill="#1a1a1a", font=font_overall)
-        draw.text((80, 200), str(ruolo), fill="#1a1a1a", font=font_ruolo)
-
-        # Disegna Nome centrato in basso
-        nome_str = str(nome_giocatore).upper()
-        try:
-            text_width = draw.textlength(nome_str, font=font_nome)
-        except AttributeError:
-            text_width = draw.textsize(nome_str, font=font_nome)[0] 
-            
-        x_nome = int((500 - text_width) / 2)
-        draw.text((x_nome, 460), nome_str, fill="#1a1a1a", font=font_nome)
-
-        img_byte_arr = io.BytesIO()
-        sfondo.save(img_byte_arr, format='PNG')
-        img_byte_arr.seek(0)
-        img_byte_arr.name = 'fc_card.png'
-        return img_byte_arr
-
-    except Exception as e:
-        print(f"❌ Errore generazione carta: {e}")
-        return None
-
 # ==========================================
 # GESTIONE DATABASE & SESSIONI
 # ==========================================
@@ -144,13 +45,11 @@ DATA_CACHE = None
 def load_data(force_reload=False):
     global DATA_CACHE
     if DATA_CACHE is None or force_reload:
-        # Cerca prima il CSV di FantaAsta se disponibile, altrimenti listone.xlsx
         if os.path.exists("Lista-FantaAsta-Fantacalcio.csv"):
             try:
                 DATA_CACHE = pd.read_csv("Lista-FantaAsta-Fantacalcio.csv", header=None)
-                # Assegna nomi colonne leggibili
                 DATA_CACHE.columns = ['Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3']
-                print("✅ Caricato file CSV Lista-FantaAsta-Fantacalcio.csv con successso!")
+                print("✅ File CSV caricato con successo!")
                 return DATA_CACHE
             except Exception as e:
                 print(f"⚠️ Errore lettura CSV: {e}")
@@ -265,7 +164,7 @@ def send_dashboard(chat_id, user_id, message_id=None):
         bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=main_menu_keyboard())
 
 # ==========================================
-# HANDLERS MESSAGGI
+# HANDLERS MESSAGGI & RICERCA
 # ==========================================
 @bot.message_handler(commands=['start', 'menu'])
 def cmd_start(m): 
@@ -308,16 +207,12 @@ def handle_callbacks(call):
 
         p_data = df[df['Nome'] == player_name].iloc[0]
         sq_name = p_data.get('Squadra', '-')
-        
-        # Generazione Carta FC
-        photo_bytes = get_player_photo_bytes(p_data)
-        final_card = crea_carta_fc(player_name, p_data.get('R', '-'), p_data.get('FVM', '-'), photo_bytes)
+        photo_url = p_data.get('PhotoURL', None)
         
         info_text = (
             f"*{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
             f"───────────────────────────\n"
-            f"📌 Ruolo: `{p_data.get('R', '-')}`  │  ⭐ Slot: `{p_data.get('Slot', '-')}`\n"
-            f"📈 Fantamedia: `{p_data.get('FM', '-')}`\n"
+            f"📌 Ruolo: `{p_data.get('R', '-')}`\n"
             f"💰 Quotazione: `{p_data.get('Qt.A', '-')}` cr.  │  FVM: `{p_data.get('FVM', '-')}` cr.\n"
         )
         
@@ -330,12 +225,13 @@ def handle_callbacks(call):
         try: bot.delete_message(chat_id, call.message.message_id)
         except Exception: pass
 
-        if final_card:
+        # Invio diretto della photo URL di Fantacalcio
+        if photo_url and str(photo_url).startswith('http'):
             try:
-                bot.send_photo(chat_id, final_card, caption=info_text, parse_mode="Markdown", reply_markup=markup)
+                bot.send_photo(chat_id, photo_url, caption=info_text, parse_mode="Markdown", reply_markup=markup)
                 return
             except Exception as e:
-                print(f"❌ Errore invio foto: {e}")
+                print(f"⚠️ Invio URL diretto non riuscito: {e}")
 
         bot.send_message(chat_id, info_text, parse_mode="Markdown", reply_markup=markup)
 
@@ -368,5 +264,5 @@ if __name__ == '__main__':
     except Exception:
         pass
 
-    print("🚀 Bot avviato e in ascolto!")
+    print("🚀 Bot in ascolto con card ufficiale Fantacalcio!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
