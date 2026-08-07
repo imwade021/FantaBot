@@ -15,6 +15,13 @@ try:
 except ImportError:
     VOICE_ENABLED = False
 
+# Importa la libreria per la ricerca web
+try:
+    from duckduckgo_search import DDGS
+    WEB_SEARCH_ENABLED = True
+except ImportError:
+    WEB_SEARCH_ENABLED = False
+
 # ==========================================
 # CONFIGURAZIONE INIZIALE & TOKEN
 # ==========================================
@@ -109,25 +116,30 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# GENERATORI STATISTICHE E TRADE ANALYZER
+# RICERCHE WEB REALI OPTIMIZED & TRADE ANALYZER
 # ==========================================
-def get_storico_freddo(nome, ruolo, fvm):
-    fvm = float(fvm)
-    if ruolo == 'A': gol, assist = int(fvm / 3.5) + np.random.randint(-2, 3), int(fvm / 15) + np.random.randint(0, 3)
-    elif ruolo == 'C': gol, assist = int(fvm / 7) + np.random.randint(-1, 2), int(fvm / 8) + np.random.randint(0, 4)
-    elif ruolo == 'D': gol, assist = int(fvm / 15), int(fvm / 10) + np.random.randint(0, 2)
-    else: gol, assist = 0, 0
-    gol, assist = max(0, gol), max(0, assist)
-    return f"📊 *STORICO 23/24 - {nome.upper()}*\n⚽ Gol: `{gol}`\n🎯 Assist: `{assist}`\n🟨 Gialli: `{np.random.randint(2, 9)}`\n🟥 Rossi: `{np.random.randint(0, 2)}`\n_Dati stimati sull'impatto FVM stagionale._"
+def fetch_real_web_data(query, max_results=2):
+    """Cerca sul web usando DuckDuckGo per ottenere dati veri, correnti e dettagliati."""
+    if not WEB_SEARCH_ENABLED:
+        return "⚠️ Errore: Libreria `duckduckgo_search` non trovata nel sistema."
+    try:
+        results = DDGS().text(query, max_results=max_results)
+        output = []
+        for r in results:
+            output.append(f"🔎 _{r['body']}_\n🔗 *Fonte:* [{r['title']}]({r['href']})")
+        if output:
+            return "\n\n---\n\n".join(output)
+        return "Nessun risultato rilevante trovato sul web."
+    except Exception as e:
+        return "⚠️ Impossibile connettersi al motore di ricerca in questo momento."
 
-def get_cartella_clinica(nome):
-    seed = sum(ord(c) for c in nome)
-    if seed % 3 == 0:
-        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ *RISCHIO ALTO*: Soggetto a continue infiammazioni muscolari. Ha saltato 11 partite l'anno scorso. Sconsigliato a cifre alte."
-    elif seed % 3 == 1:
-        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ *RISCHIO MEDIO*: Fastidi cronici al ginocchio. Spesso sostituito all'60' per precauzione. Non garantisce 38 partite."
-    else:
-        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n✅ *FISICO INTEGRO*: Ottima tenuta atletica, ma ricorda ai tuoi amici che due anni fa si è operato, per fargli abbassare il prezzo! 😉"
+def get_storico_reale(nome, squadra=""):
+    query = f"{nome} {squadra} statistiche gol assist fantacalcio.it SOS Fanta transfermarkt"
+    return f"📊 *STORICO REALE WEB: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query)}"
+
+def get_cartella_clinica_reale(nome, squadra=""):
+    query = f"{nome} {squadra} infortuni tempi recupero SOS Fanta fantacalcio"
+    return f"🏥 *CARTELLA CLINICA REALE: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query)}"
 
 def is_macellaio(nome, ruolo, fvm):
     if ruolo in ['D', 'C'] and float(fvm) < 15:
@@ -197,7 +209,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     markup = InlineKeyboardMarkup(row_width=2)
     
     markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}"))
-    markup.add(InlineKeyboardButton("📊 Storico Freddo", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Cartella Clinica", callback_data=f"cl_{player_name}"))
+    markup.add(InlineKeyboardButton("📊 Storico (Web)", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica (Web)", callback_data=f"cl_{player_name}"))
     markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
     if is_scommessa:
@@ -223,43 +235,19 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
 
 def main_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("👕 Esplora", callback_data="sq_start"),
-        InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa")
-    )
-    markup.add(
-        InlineKeyboardButton("🏆 Top Liberi", callback_data="menu_top_start"),
-        InlineKeyboardButton("🛡️ Architetto Modificatore", callback_data="menu_modificatore")
-    )
-    markup.add(
-        InlineKeyboardButton("🚨 Panic Button", callback_data="menu_panic_start"),
-        InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist")
-    )
-    markup.add(
-        InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme_start"),
-        InlineKeyboardButton("🎲 Scommessa", callback_data="menu_scommessa_start")
-    )
-    markup.add(
-        InlineKeyboardButton("📊 Area Studio & Trade", callback_data="menu_studio_start"),
-        InlineKeyboardButton("🛠️ Strumenti PRO", callback_data="menu_pro")
-    )
-    markup.add(
-        InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"),
-        InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm")
-    )
+    markup.add(InlineKeyboardButton("👕 Esplora", callback_data="sq_start"), InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"))
+    markup.add(InlineKeyboardButton("🏆 Top Liberi", callback_data="menu_top_start"), InlineKeyboardButton("🛡️ Architetto Modificatore", callback_data="menu_modificatore"))
+    markup.add(InlineKeyboardButton("🚨 Panic Button", callback_data="menu_panic_start"), InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist"))
+    markup.add(InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme_start"), InlineKeyboardButton("🎲 Scommessa", callback_data="menu_scommessa_start"))
+    markup.add(InlineKeyboardButton("📊 Area Studio & Trade", callback_data="menu_studio_start"), InlineKeyboardButton("🛠️ Strumenti PRO", callback_data="menu_pro"))
+    markup.add(InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"), InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm"))
     markup.add(InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen"))
     return markup
 
 def pro_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🎰 Ultimi Spiccioli", callback_data="pro_spiccioli"),
-        InlineKeyboardButton("🧱 Stakanovisti", callback_data="pro_stakanov")
-    )
-    markup.add(
-        InlineKeyboardButton("🕸️ Griglia Perfetta (D)", callback_data="pro_griglia"),
-        InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home")
-    )
+    markup.add(InlineKeyboardButton("🎰 Ultimi Spiccioli", callback_data="pro_spiccioli"), InlineKeyboardButton("🧱 Stakanovisti", callback_data="pro_stakanov"))
+    markup.add(InlineKeyboardButton("🕸️ Griglia Perfetta (D)", callback_data="pro_griglia"), InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
     return markup
 
 def send_dashboard(chat_id, user_id, message_id=None):
@@ -371,10 +359,6 @@ def process_whatif_price(message, player_name, user_id):
     malus_warning = ""
     if is_macellaio(player_name, ruolo, fvm):
         malus_warning = "🪓 *IN PIÙ È UN MACELLAIO!* Prende cartellini a raffica, non buttare crediti qui.\n"
-
-    seed = sum(ord(c) for c in player_name)
-    if seed % 3 == 0 or seed % 3 == 1:
-         malus_warning += "🏥 *IN PIÙ È FRAGILE!* Rischio infortuni alto/medio. Vuoi davvero svenarti per uno che starà in infermeria?\n"
 
     if budget_left < slots_left:
         budget_verdict = "☠️ *IMPOSSIBILE!* Andresti in passivo matematico non potendo completare la rosa (ti serve almeno 1 cr. per giocatore)."
@@ -540,9 +524,22 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
+    # --- CHIAMATE AL WEB REALE PER NOME E SQUADRA ---
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
-        bot.send_message(chat_id, get_cartella_clinica(p_name), parse_mode="Markdown")
+        p_row = df[df['Nome'] == p_name].iloc[0]
+        sq_name = p_row.get('Squadra', '')
+        msg = bot.send_message(chat_id, f"⏳ _Ricerca dati reali infortuni per {p_name} ({sq_name}) sul web..._", parse_mode="Markdown")
+        real_data = get_cartella_clinica_reale(p_name, sq_name)
+        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown", disable_web_page_preview=True)
+
+    elif call.data.startswith("stats_"):
+        p_name = call.data.replace("stats_", "")
+        p_row = df[df['Nome'] == p_name].iloc[0]
+        sq_name = p_row.get('Squadra', '')
+        msg = bot.send_message(chat_id, f"⏳ _Ricerca statistiche reali per {p_name} ({sq_name}) sul web..._", parse_mode="Markdown")
+        real_data = get_storico_reale(p_name, sq_name)
+        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown", disable_web_page_preview=True)
 
     elif call.data.startswith("wi_"):
         p_name = call.data.replace("wi_", "")
@@ -555,7 +552,6 @@ def handle_callbacks(call):
         ruolo, fvm = row['R'], float(row.get('FVM', 0))
         avail = get_available_players(df, session)
         
-        # Eliminiamo la foto problematica per caricare il testo al suo posto
         try: bot.delete_message(chat_id, call.message.message_id)
         except Exception: pass
 
@@ -580,11 +576,6 @@ def handle_callbacks(call):
         if p_name not in session['wishlist']: session['wishlist'].append(p_name)
         safe_answer_callback(call.id, text=f"✅ {p_name} aggiunto alla Wishlist!", show_alert=True)
         send_dashboard(chat_id, user_id, call.message.message_id)
-
-    elif call.data.startswith("stats_"):
-        p_name = call.data.replace("stats_", "")
-        row = df[df['Nome'] == p_name].iloc[0]
-        bot.send_message(chat_id, get_storico_freddo(p_name, row['R'], row['FVM']), parse_mode="Markdown")
 
     elif call.data == "menu_modificatore":
         avail = get_available_players(df, session)
@@ -750,7 +741,6 @@ def handle_callbacks(call):
         if player_name in session['wishlist']: session['wishlist'].remove(player_name)
         else: session['wishlist'].append(player_name)
         
-        # Invece di tornare alla dashboard, ricarichiamo la card del giocatore (molto più comodo!)
         send_player_card_view(chat_id, player_name, call.message.message_id, df, session)
 
     elif call.data == "menu_wishlist":
@@ -779,5 +769,5 @@ def handle_document(message):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto con bug risolti!")
+    print("🚀 Bot in ascolto con Ricerca WEB Ottimizzata!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
