@@ -6,7 +6,6 @@ import pandas as pd
 import numpy as np
 import telebot
 import requests
-from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # Tenta di importare le librerie per i comandi vocali
@@ -16,6 +15,13 @@ try:
     VOICE_ENABLED = True
 except ImportError:
     VOICE_ENABLED = False
+
+# Importa la libreria per la ricerca web
+try:
+    from duckduckgo_search import DDGS
+    WEB_SEARCH_ENABLED = True
+except ImportError:
+    WEB_SEARCH_ENABLED = False
 
 # ==========================================
 # CONFIGURAZIONE INIZIALE & TOKEN
@@ -111,56 +117,51 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# RICERCHE WEB REALI (100% AUTOMATICHE, ZERO FILE)
+# MOTORE AI DI RICERCA WEB REALE
 # ==========================================
-def fetch_real_web_data(query, max_results=2):
-    """Scraper web autonomo: cerca su internet e legge il testo."""
-    
-    # 1. Tentativo primario: usa la libreria dedicata (se funziona sul server)
+def fetch_and_summarize_ai(nome, squadra, is_clinica=False):
+    """Estrae i dati dal web e usa l'AI integrata per fare un riassunto intelligente a punti."""
+    if not WEB_SEARCH_ENABLED:
+        return "⚠️ Errore: Libreria `duckduckgo_search` non trovata nel sistema."
     try:
-        from duckduckgo_search import DDGS
-        results = DDGS().text(query, max_results=max_results)
-        output = []
-        for r in results:
-            output.append(f"🔎 _{r['body']}_\n🔗 *Fonte:* [{r['title']}]({r['href']})")
-        if output:
-            return "\n\n---\n\n".join(output)
-    except Exception:
-        pass # Se fallisce, passa silenziosamente al piano B
+        ddgs = DDGS()
         
-    # 2. Tentativo secondario (Piano B Infallibile): usa BeautifulSoup
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
-    try:
-        url = f"https://html.duckduckgo.com/html/?q={query.replace(' ', '+')}"
-        res = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        results = soup.find_all('div', class_='result__body')
-        output = []
-        for r in results[:max_results]:
-            snippet = r.find('a', class_='result__snippet')
-            title_tag = r.find('h2', class_='result__title')
-            if snippet and title_tag and title_tag.find('a'):
-                testo = snippet.text.strip()
-                titolo = title_tag.find('a').text.strip()
-                link = title_tag.find('a')['href']
-                if link.startswith('//duckduckgo.com/l/?uddg='):
-                    link = link.split('uddg=')[1].split('&')[0]
-                    link = urllib.parse.unquote(link)
-                output.append(f"🔎 _{testo}_\n🔗 *Fonte:* [{titolo}]({link})")
-        if output:
-            return "\n\n---\n\n".join(output)
+        # RICERCA ESATTA (Con le virgolette per evitare omonimie tipo Isak Hien/Alexander Isak)
+        query_type = "infortunio tempi di recupero SOS Fanta" if is_clinica else "statistiche fantacalcio"
+        query = f'"{nome}" {squadra} {query_type}'
+        
+        # Prende i primi 3 testi degli articoli
+        results = ddgs.text(query, max_results=3)
+        testi_grezzi = " ".join([r.get('body', '') for r in results])
+        
+        if not testi_grezzi:
+            return "Nessuna informazione aggiornata trovata sul web per questo giocatore."
+            
+        # PROMPT INTELLIGENTE PER L'AI
+        if is_clinica:
+            prompt = f"Agisci come un esperto di Fantacalcio. Leggi questi testi estratti dal web sull'infortunio di {nome} ({squadra}). Estrai in modo schematico a punti: 1. Cosa si è rotto o natura dell'infortunio. 2. Quando è previsto il rientro stimato. 3. Quante giornate di campionato salta. Se non ci sono infortuni recenti, scrivi 'Attualmente nessun infortunio rilevato'. Sii brevissimo e chiaro. Testi: {testi_grezzi}"
+        else:
+            prompt = f"Agisci come un esperto di Fantacalcio. Leggi questi testi estratti dal web su {nome} ({squadra}) e riassumi in modo schematico le sue statistiche principali (gol e assist) della scorsa stagione. Sii brevissimo. Testi: {testi_grezzi}"
+        
+        try:
+            # Usa l'LLM interno di DuckDuckGo per "leggere" il testo e formulare il riassunto
+            summary = ddgs.chat(prompt)
+            return summary
+        except Exception:
+            # Se l'AI è momentaneamente fuori uso, restituisce il testo grezzo ripulito
+            testo_pulito = testi_grezzi.replace("...", ".\n")
+            return f"*(Riassunto AI non disponibile. Ecco i dati web estratti):*\n\n{testo_pulito}"
+            
     except Exception as e:
-        print(f"Errore Scraper Web: {e}")
-        
-    return "⚠️ Nessun risultato rilevante trovato sul web in automatico in questo momento."
+        return f"⚠️ Errore di connessione al motore di ricerca."
 
 def get_storico_reale(nome, squadra=""):
-    query = f"{nome} {squadra} statistiche gol assist stagioni fantacalcio.it transfermarkt"
-    return f"📊 *STORICO REALE WEB: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query)}"
+    riassunto = fetch_and_summarize_ai(nome, squadra, is_clinica=False)
+    return f"📊 *STORICO REALE WEB: {nome.upper()} ({squadra})*\n\n{riassunto}"
 
 def get_cartella_clinica_reale(nome, squadra=""):
-    query = f"{nome} {squadra} infortuni tempi recupero partite saltate SOS Fanta"
-    return f"🏥 *CARTELLA CLINICA REALE: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query)}"
+    riassunto = fetch_and_summarize_ai(nome, squadra, is_clinica=True)
+    return f"🏥 *CARTELLA CLINICA REALE: {nome.upper()} ({squadra})*\n\n{riassunto}"
 
 def is_macellaio(nome, ruolo, fvm):
     if ruolo in ['D', 'C'] and float(fvm) < 15:
@@ -230,7 +231,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     markup = InlineKeyboardMarkup(row_width=2)
     
     markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}"))
-    markup.add(InlineKeyboardButton("📊 Storico (Web)", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica (Web)", callback_data=f"cl_{player_name}"))
+    markup.add(InlineKeyboardButton("📊 Storico (AI)", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica (AI)", callback_data=f"cl_{player_name}"))
     markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
     if is_scommessa:
@@ -314,7 +315,7 @@ def menu_seleziona_giocatore(df, squadra, ruolo, prefisso, user_id):
     return markup
 
 # ==========================================
-# GESTIONE ACQUISTI E WHAT-IF (INTELLIGENTE)
+# GESTIONE ACQUISTI E WHAT-IF
 # ==========================================
 def process_buy_price(message, player_name, user_id):
     chat_id = message.chat.id
@@ -545,22 +546,22 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- CHIAMATE AL WEB REALE PER NOME E SQUADRA ---
+    # --- CHIAMATE AL WEB CON INTELLIGENZA ARTIFICIALE ---
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _Ricerca dati reali infortuni per {p_name} ({sq_name}) sul web..._", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ _L'AI sta leggendo le notizie su {p_name} per estrarre l'infortunio..._", parse_mode="Markdown")
         real_data = get_cartella_clinica_reale(p_name, sq_name)
-        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown", disable_web_page_preview=True)
+        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown")
 
     elif call.data.startswith("stats_"):
         p_name = call.data.replace("stats_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _Ricerca statistiche reali per {p_name} ({sq_name}) sul web..._", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ _L'AI sta leggendo i dati statistici su {p_name} dal web..._", parse_mode="Markdown")
         real_data = get_storico_reale(p_name, sq_name)
-        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown", disable_web_page_preview=True)
+        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown")
 
     elif call.data.startswith("wi_"):
         p_name = call.data.replace("wi_", "")
@@ -790,5 +791,5 @@ def handle_document(message):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: Ricerca WEB 100% Automatica ATTIVA!")
+    print("🚀 Bot in ascolto: Ricerca WEB AI-Powered 100% Automatica ATTIVA!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
