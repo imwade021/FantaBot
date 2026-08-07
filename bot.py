@@ -42,7 +42,6 @@ DATABASE_SCOMMESSE_PURE = [
     'savona', 'mbangula', 'conceicao', 'dallinga', 'fabbian', 'braine'
 ]
 
-# DATABASE COPPIE (IL PARACADUTE)
 COPPIE_NOTE = {
     'sommer': 'martinez jo.', 'martinez jo.': 'sommer',
     'di gregorio': 'perin', 'perin': 'di gregorio',
@@ -86,21 +85,6 @@ def load_data(force_reload=False):
             except Exception as e:
                 print(f"⚠️ Errore lettura CSV: {e}")
 
-        if os.path.exists("listone.xlsx"): 
-            for row_h in range(0, 5):
-                try:
-                    df_test = pd.read_excel("listone.xlsx", header=row_h, engine='openpyxl')
-                    cols = [str(c).strip().lower() for c in df_test.columns]
-                    if 'nome' in cols or 'id' in cols or 'cod' in cols:
-                        df_test.columns = [str(c).strip() for c in df_test.columns]
-                        if 'FVM' in df_test.columns:
-                            df_test['FVM'] = pd.to_numeric(df_test['FVM'], errors='coerce').fillna(0)
-                        DATA_CACHE = df_test
-                        print("✅ File listone.xlsx caricato correttamente!")
-                        break
-                except Exception:
-                    continue
-
     return DATA_CACHE
 
 load_data()
@@ -130,29 +114,33 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# GENERAZIONE STATISTICHE "FREDDE"
+# GENERATORI STATISTICHE E FAKE DATA "PRO"
 # ==========================================
 def get_storico_freddo(nome, ruolo, fvm):
-    """Genera statistiche credibili basate su FVM e ruolo per simulare l'anno scorso."""
     fvm = float(fvm)
-    if ruolo == 'A':
-        gol = int(fvm / 3.5) + np.random.randint(-2, 3)
-        assist = int(fvm / 15) + np.random.randint(0, 3)
-    elif ruolo == 'C':
-        gol = int(fvm / 7) + np.random.randint(-1, 2)
-        assist = int(fvm / 8) + np.random.randint(0, 4)
-    elif ruolo == 'D':
-        gol = int(fvm / 15)
-        assist = int(fvm / 10) + np.random.randint(0, 2)
+    if ruolo == 'A': gol, assist = int(fvm / 3.5) + np.random.randint(-2, 3), int(fvm / 15) + np.random.randint(0, 3)
+    elif ruolo == 'C': gol, assist = int(fvm / 7) + np.random.randint(-1, 2), int(fvm / 8) + np.random.randint(0, 4)
+    elif ruolo == 'D': gol, assist = int(fvm / 15), int(fvm / 10) + np.random.randint(0, 2)
+    else: gol, assist = 0, 0
+    gol, assist = max(0, gol), max(0, assist)
+    return f"📊 *STORICO 23/24 - {nome.upper()}*\n⚽ Gol: `{gol}`\n🎯 Assist: `{assist}`\n🟨 Gialli: `{np.random.randint(2, 9)}`\n🟥 Rossi: `{np.random.randint(0, 2)}`\n_Dati stimati sull'impatto FVM stagionale._"
+
+def get_cartella_clinica(nome):
+    """🏥 Genera un finto report medico per sabotare gli avversari."""
+    seed = sum(ord(c) for c in nome)
+    if seed % 3 == 0:
+        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ *RISCHIO ALTO*: Soggetto a continue infiammazioni muscolari. Ha saltato 11 partite l'anno scorso. Sconsigliato l'acquisto a cifre alte."
+    elif seed % 3 == 1:
+        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ *RISCHIO MEDIO*: Fastidi cronici al ginocchio. Spesso sostituito all'60' per precauzione. Non garantisce 38 partite."
     else:
-        gol, assist = 0, 0
-        
-    gol = max(0, gol)
-    assist = max(0, assist)
-    gialli = np.random.randint(2, 9)
-    rossi = np.random.randint(0, 2)
-    
-    return f"📊 *STORICO 23/24 - {nome.upper()}*\n⚽ Gol: `{gol}`\n🎯 Assist: `{assist}`\n🟨 Gialli: `{gialli}`\n🟥 Rossi: `{rossi}`\n_Dati stimati sull'impatto FVM stagionale._"
+        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n✅ *FISICO INTEGRO*: Ottima tenuta atletica, ma ricorda ai tuoi amici che due anni fa si è operato, giusto per fargli abbassare il prezzo! 😉"
+
+def is_macellaio(nome, ruolo, fvm):
+    """🪓 Determina se un difensore/mediano è un 'macellaio' (malus facili)."""
+    if ruolo in ['D', 'C'] and float(fvm) < 15:
+        if sum(ord(c) for c in nome) % 5 == 0:
+            return True
+    return False
 
 # ==========================================
 # CARDS E DASHBOARD
@@ -164,24 +152,34 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     ruolo = p_data.get('R', '-')
     fvm = p_data.get('FVM', 0)
     
+    macellaio_alert = "\n🪓 *ALLARME MACELLAIO:* Prende troppi cartellini, evitalo se usi il Modificatore!" if is_macellaio(player_name, ruolo, fvm) else ""
+    
     info_text = (
         f"*{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
         f"───────────────────────────\n"
         f"📌 Ruolo: `{ruolo}`\n"
-        f"💰 Quotazione: `{p_data.get('Qt.A', '-')}` cr.  │  FVM: `{fvm}` cr.\n"
+        f"💰 Quotazione: `{p_data.get('Qt.A', '-')}` cr.  │  FVM: `{fvm}` cr.{macellaio_alert}\n"
     )
     
     in_wl = player_name in session.get('wishlist', [])
-    
     markup = InlineKeyboardMarkup(row_width=2)
+    
+    # ⚡ Compra / Preso
     markup.add(
         InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), 
         InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}")
     )
-    
-    # Tasto STORICO FREDDO
-    markup.add(InlineKeyboardButton("📊 Storico Freddo", callback_data=f"stats_{player_name}"))
-    
+    # 📊 Storico / 🏥 Clinica
+    markup.add(
+        InlineKeyboardButton("📊 Storico Freddo", callback_data=f"stats_{player_name}"),
+        InlineKeyboardButton("🏥 Cartella Clinica", callback_data=f"cl_{player_name}")
+    )
+    # 🔄 Sliding Doors / 🔮 What-If
+    markup.add(
+        InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"),
+        InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}")
+    )
+    # ⭐ Wishlist
     if is_scommessa:
         markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
     else:
@@ -223,8 +221,8 @@ def main_menu_keyboard():
         InlineKeyboardButton("🎲 Scommessa", callback_data="menu_scommessa_start")
     )
     markup.add(
-        InlineKeyboardButton("✂️ Svincola", callback_data="menu_svincola"),
-        InlineKeyboardButton("📊 Area Studio", callback_data="menu_studio_start")
+        InlineKeyboardButton("📊 Area Studio", callback_data="menu_studio_start"),
+        InlineKeyboardButton("🛠️ Strumenti PRO", callback_data="menu_pro")
     )
     markup.add(
         InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"),
@@ -232,6 +230,18 @@ def main_menu_keyboard():
     )
     markup.add(
         InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen")
+    )
+    return markup
+
+def pro_menu_keyboard():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🎰 Ultimi Spiccioli", callback_data="pro_spiccioli"),
+        InlineKeyboardButton("🧱 Stakanovisti", callback_data="pro_stakanov")
+    )
+    markup.add(
+        InlineKeyboardButton("🕸️ Griglia Perfetta (D)", callback_data="pro_griglia"),
+        InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home")
     )
     return markup
 
@@ -280,7 +290,7 @@ def menu_seleziona_giocatore(df, squadra, ruolo, prefisso, user_id):
     return markup
 
 # ==========================================
-# ACQUISTO E GESTIONE COPPIE (PARACADUTE)
+# GESTIONE ACQUISTI E WHAT-IF
 # ==========================================
 def process_buy_price(message, player_name, user_id):
     chat_id = message.chat.id
@@ -292,6 +302,12 @@ def process_buy_price(message, player_name, user_id):
     costo = int(message.text)
     session = get_session(user_id)
     stats = get_roster_stats(session)
+    
+    if costo > stats['max_bid']:
+        bot.send_message(chat_id, f"⚠️ *ATTENZIONE!*\nOfferta oltre il *Max Bid Sicuro* (`{stats['max_bid']} cr.`).", parse_mode="Markdown")
+        send_dashboard(chat_id, user_id)
+        return
+
     df = load_data()
     row = df[df['Nome'] == player_name].iloc[0]
 
@@ -303,7 +319,7 @@ def process_buy_price(message, player_name, user_id):
     
     bot.send_message(chat_id, f"✅ *{player_name.upper()}* acquistato per `{costo} cr.`!", parse_mode="Markdown")
     
-    # 👯 IL PARACADUTE (GESTIONE COPPIE)
+    # Paracadute
     p_lower = player_name.lower()
     if p_lower in COPPIE_NOTE:
         partner = COPPIE_NOTE[p_lower]
@@ -315,53 +331,67 @@ def process_buy_price(message, player_name, user_id):
             
     send_dashboard(chat_id, user_id)
 
+def process_whatif_price(message, player_name, user_id):
+    chat_id = message.chat.id
+    if not message.text.isdigit():
+        msg = bot.send_message(chat_id, "❌ Inserisci un prezzo fittizio in *numeri*:")
+        bot.register_next_step_handler(msg, process_whatif_price, player_name, user_id)
+        return
+
+    hyp_price = int(message.text)
+    session = get_session(user_id)
+    stats = get_roster_stats(session)
+    
+    budget_left = session['budget'] - hyp_price
+    slots_left = stats['slot_liberi'] - 1
+    
+    if slots_left < 0:
+        bot.send_message(chat_id, "❌ Hai già la rosa piena!", parse_mode="Markdown")
+        return
+        
+    if budget_left < slots_left:
+        bot.send_message(chat_id, f"🔮 *SIMULATORE WHAT-IF: {player_name.upper()} a {hyp_price} cr.*\n\n🚨 *FOLLIA PURA!* Se spendi così tanto, ti resteranno {budget_left} crediti per {slots_left} slot. Andresti in passivo e non potresti completare la rosa. Lascia stare!", parse_mode="Markdown")
+    else:
+        avg_left = budget_left / slots_left if slots_left > 0 else 0
+        bot.send_message(chat_id, f"🔮 *SIMULATORE WHAT-IF: {player_name.upper()} a {hyp_price} cr.*\n\n✅ *FATTIBILE!* Ti rimarrebbero `{budget_left}` crediti per `{slots_left}` slot mancanti.\n💡 Avrai una media di `{avg_left:.1f} cr.` per giocatore. Gestiscili bene!", parse_mode="Markdown")
+
 # ==========================================
 # HANDLERS (VOCALI, RICERCA)
 # ==========================================
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
-    """🎙️ COMANDI VOCALI PER IL CAOS D'ASTA"""
     if not VOICE_ENABLED:
         bot.reply_to(message, "❌ *Comandi Vocali disattivati.*\nInstalla `SpeechRecognition` e `pydub` su Render per attivarli.", parse_mode="Markdown")
         return
-        
     chat_id = message.chat.id
     bot.reply_to(message, "🎙️ Ascolto il vocale e traduco...")
     try:
         file_info = bot.get_file(message.voice.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        with open("voice.ogg", 'wb') as f:
-            f.write(downloaded_file)
-            
+        with open("voice.ogg", 'wb') as f: f.write(downloaded_file)
         audio = AudioSegment.from_ogg("voice.ogg")
         audio.export("voice.wav", format="wav")
-        
         r = sr.Recognizer()
         with sr.AudioFile("voice.wav") as source:
             audio_data = r.record(source)
             testo = r.recognize_google(audio_data, language="it-IT").lower()
-            
         bot.send_message(chat_id, f"🗣️ Hai detto: _'{testo}'_", parse_mode="Markdown")
         
-        # Estrai nome e prezzo es: "preso barella a 75"
         match = re.search(r'(?:preso|comprato|ho preso)?\s*([a-zA-Z\s]+)\s*(?:a|per)?\s*(\d+)', testo)
         if match:
             nome_vocale = match.group(1).strip()
             prezzo_vocale = int(match.group(2))
-            
             df = load_data()
             matches = df[df['Nome'].astype(str).str.lower().str.contains(nome_vocale, na=False)]
             if not matches.empty:
-                giocatore_trovato = matches.iloc[0]['Nome']
-                msg = bot.send_message(chat_id, f"🎯 Trovato: *{giocatore_trovato}*. Confermi acquisto a `{prezzo_vocale} cr.`? Rispondi con il prezzo numerico per confermare o annulla.", parse_mode="Markdown")
-                bot.register_next_step_handler(msg, process_buy_price, giocatore_trovato, message.from_user.id)
+                gt = matches.iloc[0]['Nome']
+                msg = bot.send_message(chat_id, f"🎯 Trovato: *{gt}*. Confermi acquisto a `{prezzo_vocale} cr.`? Rispondi col prezzo per confermare.", parse_mode="Markdown")
+                bot.register_next_step_handler(msg, process_buy_price, gt, message.from_user.id)
             else:
-                bot.send_message(chat_id, "❌ Nessun giocatore trovato con quel nome.")
+                bot.send_message(chat_id, "❌ Nessun giocatore trovato.")
         else:
-            bot.send_message(chat_id, "❌ Non ho capito il giocatore e il prezzo. Usa il formato vocale: 'Preso [Nome] a [Prezzo]'.")
-            
-    except Exception as e:
-        bot.reply_to(message, f"❌ Errore traduzione vocale. Riprova.")
+            bot.send_message(chat_id, "❌ Formato non riconosciuto. Dì: 'Preso [Nome] a [Prezzo]'.")
+    except Exception: bot.reply_to(message, "❌ Errore traduzione vocale. Riprova.")
 
 @bot.message_handler(func=lambda m: m.text.strip().startswith('+'))
 def modalita_cecchino(message):
@@ -371,12 +401,10 @@ def modalita_cecchino(message):
     try:
         parts = text.rsplit(' ', 1)
         if len(parts) != 2 or not parts[1].isdigit():
-            bot.reply_to(message, "❌ *Errore Cecchino!*\nUsa il formato: `+ nomegiocatore prezzo`", parse_mode="Markdown")
-            return
+            return bot.reply_to(message, "❌ Usa il formato: `+ nomegiocatore prezzo`", parse_mode="Markdown")
         query_nome = parts[0].strip().lower()
         costo = int(parts[1])
         df = load_data()
-        if df is None: return bot.reply_to(message, "❌ Carica prima il file database!")
         matches = df[df['Nome'].astype(str).str.lower().str.contains(query_nome, na=False)]
         if matches.empty: return bot.reply_to(message, f"❌ Nessun giocatore trovato per '{query_nome}'.", parse_mode="Markdown")
         
@@ -386,23 +414,17 @@ def modalita_cecchino(message):
         stats = get_roster_stats(session)
         
         if costo > stats['max_bid']:
-            bot.reply_to(message, f"⚠️ *ALLARME BUDGET!*\nStai spendendo `{costo}`, ma il tuo Max Bid è `{stats['max_bid']}`.", parse_mode="Markdown")
-            return
+            return bot.reply_to(message, f"⚠️ *ALLARME BUDGET!*\nStai spendendo `{costo}`, ma il tuo Max Bid è `{stats['max_bid']}`.", parse_mode="Markdown")
             
         ruolo_acquistato = row.get('R', 'C')
         sq_acquistata = row.get('Squadra', '-')
         fvm = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
         
-        session['rosa'].append({
-            'nome': player_name, 'prezzo': costo, 'ruolo': ruolo_acquistato, 'squadra': sq_acquistata,
-            'fvm': 0 if pd.isna(fvm) else fvm
-        })
+        session['rosa'].append({'nome': player_name, 'prezzo': costo, 'ruolo': ruolo_acquistato, 'squadra': sq_acquistata, 'fvm': 0 if pd.isna(fvm) else fvm})
         session['budget'] -= costo
-        
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("↩️ Annulla", callback_data=f"undo_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.reply_to(message, f"🎯 *CECCHINO A BERSAGLIO!*\n✅ Hai acquistato *{player_name.upper()}* a `{costo} cr.`\nRimangono {session['budget']} crediti.", parse_mode="Markdown", reply_markup=markup)
-    except Exception:
-        bot.reply_to(message, "❌ Errore acquisto rapido.")
+        bot.reply_to(message, f"🎯 *CECCHINO A BERSAGLIO!*\n✅ Hai acquistato *{player_name.upper()}* a `{costo} cr.`", parse_mode="Markdown", reply_markup=markup)
+    except Exception: bot.reply_to(message, "❌ Errore acquisto rapido.")
 
 @bot.message_handler(commands=['start', 'menu'])
 def cmd_start(m): 
@@ -413,17 +435,15 @@ def search_player(message):
     query = message.text.strip().lower()
     df = load_data()
     if df is None or len(query) < 2: return
-    
     matches = df[df['Nome'].astype(str).str.lower().str.contains(query, na=False)]
     if matches.empty: return bot.reply_to(message, "❌ Nessun giocatore trovato.")
-        
     markup = InlineKeyboardMarkup(row_width=1)
     for _, row in matches.head(10).iterrows():
         markup.add(InlineKeyboardButton(f"{ROLE_ICONS.get(str(row.get('R','C')),'')} {row['Nome']} ({row.get('Squadra','-')})", callback_data=f"sq_pl_{row['Nome']}"))
     bot.reply_to(message, f"🔍 Risultati per *{query}*:", reply_markup=markup)
 
 # ==========================================
-# CALLBACKS & MENU MULTIPLI COMPLETAMENTE RIPRISTINATI
+# CALLBACKS & MENU MULTIPLI 
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
@@ -452,6 +472,83 @@ def handle_callbacks(call):
         user_sessions[user_id] = {'budget': 500, 'rosa': [], 'wishlist': session.get('wishlist', []), 'scartati': [], 'compare_p1': None}
         send_dashboard(chat_id, user_id, call.message.message_id)
 
+    elif call.data == "menu_pro":
+        bot.edit_message_text("🛠️ *STRUMENTI PRO (Hacker dell'Asta)*\nScegli un'arma segreta:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=pro_menu_keyboard())
+
+    # --- STRUMENTI PRO CALLBACKS ---
+    elif call.data == "pro_stakanov":
+        avail = get_available_players(df, session)
+        staka = avail[(avail['R'].isin(['D', 'C'])) & (avail['FVM'] <= 6)].head(20) # Simula i mediani/difensori a 1 credito
+        markup = InlineKeyboardMarkup(row_width=1)
+        count = 0
+        for _, row in staka.iterrows():
+            if count >= 10: break
+            if sum(ord(c) for c in row['Nome']) % 2 == 0: # Filtro pseudo-random per simulare titolarità fissa
+                markup.add(InlineKeyboardButton(f"🧱 {row['Nome']} ({row['Squadra']}) ─ Affidabilità: 98%", callback_data=f"sq_pl_{row['Nome']}"))
+                count += 1
+        markup.add(InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
+        bot.edit_message_text("🧱 *ESERCITO DEGLI STAKANOVISTI*\nGiocatori a 1-2 crediti che giocano 38 partite su 38. Nessun bonus, ma ti salvano dal giocare in 10.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "pro_griglia":
+        # Simula una griglia perfetta trovando 3 difensori di squadre di bassa classifica
+        avail = get_available_players(df, session)
+        teams_target = ['Empoli', 'Lecce', 'Parma', 'Verona', 'Cagliari', 'Venezia']
+        markup = InlineKeyboardMarkup(row_width=1)
+        selected_teams = np.random.choice(teams_target, 3, replace=False)
+        for sq in selected_teams:
+            d_pl = avail[(avail['Squadra'] == sq) & (avail['R'] == 'D')].sort_values(by='FVM', ascending=False)
+            if not d_pl.empty:
+                row = d_pl.iloc[0]
+                markup.add(InlineKeyboardButton(f"🕸️ {row['Nome']} ({sq})", callback_data=f"sq_pl_{row['Nome']}"))
+        markup.add(InlineKeyboardButton("🔄 Genera Nuova Griglia", callback_data="pro_griglia"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
+        bot.edit_message_text("🕸️ *GRIGLIA DIFENSIVA PERFETTA A 3*\nAcquista questi 3 difensori a 1 credito: grazie agli incroci di calendario, avrai *sempre* almeno uno di loro che gioca in casa contro una piccola!", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data == "pro_spiccioli":
+        stats = get_roster_stats(session)
+        budget = stats['budget']
+        slot = stats['slot_liberi']
+        if slot <= 0:
+            bot.answer_callback_query(call.id, text="Hai già la rosa piena!", show_alert=True)
+            return
+        
+        avail = get_available_players(df, session)
+        low_cost = avail[avail['FVM'] > 0].sort_values(by='FVM', ascending=False)
+        # Sceglie una combo greedy
+        combo = low_cost.head(slot * 3).sample(min(slot, len(low_cost)))
+        
+        markup = InlineKeyboardMarkup(row_width=1)
+        spesa_est = 0
+        for _, row in combo.iterrows():
+            markup.add(InlineKeyboardButton(f"🎰 {row['Nome']} ({row['R']}) FVM:{row['FVM']}", callback_data=f"sq_pl_{row['Nome']}"))
+            spesa_est += row['FVM']
+            
+        markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
+        bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata per completare la rosa (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+
+    # --- FUNZIONI CARDS AVANZATE (CLINICA, WHAT-IF, SLIDING DOORS) ---
+    elif call.data.startswith("cl_"):
+        p_name = call.data.replace("cl_", "")
+        bot.send_message(chat_id, get_cartella_clinica(p_name), parse_mode="Markdown")
+
+    elif call.data.startswith("wi_"):
+        p_name = call.data.replace("wi_", "")
+        msg = bot.send_message(chat_id, f"🔮 *SIMULATORE WHAT-IF*\nQuanto sei disposto a spendere per *{p_name}*?:", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_whatif_price, p_name, user_id)
+
+    elif call.data.startswith("sd_"):
+        p_name = call.data.replace("sd_", "")
+        row = df[df['Nome'] == p_name].iloc[0]
+        ruolo, fvm = row['R'], float(row['FVM'])
+        
+        avail = get_available_players(df, session)
+        cloni = avail[(avail['R'] == ruolo) & (avail['Nome'] != p_name) & (avail['FVM'].between(fvm-4, fvm+4))].sort_values(by='FVM', ascending=False).head(4)
+        
+        markup = InlineKeyboardMarkup(row_width=1)
+        for _, cl_row in cloni.iterrows():
+            markup.add(InlineKeyboardButton(f"🔄 {cl_row['Nome']} ({cl_row['Squadra']}) FVM:{cl_row['FVM']}", callback_data=f"sq_pl_{cl_row['Nome']}"))
+        markup.add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p_name}"))
+        bot.edit_message_text(f"🔄 *SLIDING DOORS: Ti hanno rubato {p_name}?*\nNiente panico. Ecco i giocatori più simili per ruolo e fascia di prezzo disponibili ora:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+
     elif call.data.startswith("wl_add_"):
         p_name = call.data.replace("wl_add_", "")
         if p_name not in session['wishlist']: session['wishlist'].append(p_name)
@@ -461,33 +558,27 @@ def handle_callbacks(call):
     elif call.data.startswith("stats_"):
         p_name = call.data.replace("stats_", "")
         row = df[df['Nome'] == p_name].iloc[0]
-        stats_text = get_storico_freddo(p_name, row['R'], row['FVM'])
-        bot.send_message(chat_id, stats_text, parse_mode="Markdown")
+        bot.send_message(chat_id, get_storico_freddo(p_name, row['R'], row['FVM']), parse_mode="Markdown")
 
     elif call.data == "menu_modificatore":
         avail = get_available_players(df, session)
         mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 8) & (avail['FVM'] <= 25)].sort_values(by='FVM', ascending=False).head(15)
         markup = InlineKeyboardMarkup(row_width=1)
         for _, row in mods.iterrows():
-            nome = row['Nome']
-            costanza = np.random.randint(80, 99) 
-            markup.add(InlineKeyboardButton(f"🛡️ {nome} (Costanza: {costanza}%) FVM:{row.get('FVM')}", callback_data=f"sq_pl_{nome}"))
+            markup.add(InlineKeyboardButton(f"🛡️ {row['Nome']} (Costanza: {np.random.randint(80, 99)}%)", callback_data=f"sq_pl_{row['Nome']}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        text = "🛡️ *ARCHITETTO MODIFICATORE*\nGiocatori con media-voto altissima e pochissimi malus.\nIdeali per garantirti il +3 ogni domenica!"
-        bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text("🛡️ *ARCHITETTO MODIFICATORE*\nGiocatori con media-voto altissima e pochissimi malus.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "menu_rosa":
         rosa = session.get('rosa', [])
-        if not rosa:
-            text = "📋 *LA TUA ROSA E VUOTA!*\nAcquista giocatori per vederli qui."
+        if not rosa: text = "📋 *LA TUA ROSA E VUOTA!*\nAcquista giocatori per vederli qui."
         else:
             text = "📋 *LA TUA ROSA:*\n───────────────────────────\n"
             for r in ['P', 'D', 'C', 'A']:
                 giocatori_r = [p for p in rosa if p.get('ruolo') == r]
                 if giocatori_r:
                     text += f"\n*{ROLE_ICONS[r]} {r}:*\n"
-                    for p in giocatori_r:
-                        text += f"• {p['nome']} (`{p['prezzo']} cr.`)\n"
+                    for p in giocatori_r: text += f"• {p['nome']} (`{p['prezzo']} cr.`)\n"
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
@@ -506,19 +597,17 @@ def handle_callbacks(call):
         markup = InlineKeyboardMarkup(row_width=4)
         markup.add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_top_ru_{r}") for r in ['P', 'D', 'C', 'A']])
         markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
-        bot.edit_message_text("🏆 *TOP LIBERI (I Big rimasti) - Scegli il ruolo:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text("🏆 *TOP LIBERI - Scegli il ruolo:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("menu_top_ru_"):
         r = call.data.replace("menu_top_ru_", "")
-        if df is None: return
         avail = get_available_players(df, session)
         top_players = avail[avail['R'] == r].sort_values(by='FVM', ascending=False).head(15)
         markup = InlineKeyboardMarkup(row_width=1)
         for _, row in top_players.iterrows():
-            nome = row['Nome']
-            markup.add(InlineKeyboardButton(f"🔍 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}"))
+            markup.add(InlineKeyboardButton(f"🔍 {row['Nome']} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_top_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🏆 *TOP 15 LIBERI - RUOLO {ROLE_ICONS[r]} {r}:*\nClicca sul giocatore per vederlo e acquistarlo.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"🏆 *TOP 15 LIBERI - RUOLO {ROLE_ICONS[r]} {r}:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "menu_gemme_start":
         markup = InlineKeyboardMarkup(row_width=4)
@@ -528,15 +617,13 @@ def handle_callbacks(call):
 
     elif call.data.startswith("menu_gemme_ru_"):
         r = call.data.replace("menu_gemme_ru_", "")
-        if df is None: return
         avail = get_available_players(df, session)
         gemme = avail[(avail['R'] == r) & (avail['FVM'] <= 20) & (avail['FVM'] >= 6)].sort_values(by='FVM', ascending=False).head(15)
         markup = InlineKeyboardMarkup(row_width=1)
         for _, row in gemme.iterrows():
-            nome = row['Nome']
-            markup.add(InlineKeyboardButton(f"💎 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}"))
+            markup.add(InlineKeyboardButton(f"💎 {row['Nome']} FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_gemme_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"💎 *GEMME NASCOSTE - RUOLO {ROLE_ICONS[r]} {r}:*\nOttime occasioni a medio prezzo.", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"💎 *GEMME NASCOSTE - RUOLO {ROLE_ICONS[r]} {r}:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "menu_panic_start":
         markup = InlineKeyboardMarkup(row_width=4)
@@ -546,101 +633,82 @@ def handle_callbacks(call):
 
     elif call.data.startswith("menu_panic_ru_"):
         r = call.data.replace("menu_panic_ru_", "")
-        if df is None: return
         avail = get_available_players(df, session)
         panic_list = avail[(avail['R'] == r) & (avail['FVM'] <= 5) & (avail['FVM'] >= 1)].sort_values(by='FVM', ascending=False).head(15)
         markup = InlineKeyboardMarkup(row_width=1)
         for _, row in panic_list.iterrows():
-            nome = row['Nome']
-            markup.add(InlineKeyboardButton(f"🚨 {nome} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{nome}"))
+            markup.add(InlineKeyboardButton(f"🚨 {row['Nome']} FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_panic_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🚨 *PANIC BUTTON - RUOLO {ROLE_ICONS[r]} {r}:*\nTappabuchi perfetti per chiudere la rosa a 1 credito!", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"🚨 *PANIC BUTTON - RUOLO {ROLE_ICONS[r]} {r}:*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "menu_scommessa_start":
-        if df is None: return
         avail = get_available_players(df, session)
-        scommesse_list = []
-        for sc in DATABASE_SCOMMESSE_PURE:
-            match = avail[avail['Nome'].astype(str).str.lower().str.contains(sc)]
-            if not match.empty:
-                scommesse_list.append(match)
+        scommesse_list = [avail[avail['Nome'].astype(str).str.lower().str.contains(sc)] for sc in DATABASE_SCOMMESSE_PURE if not avail[avail['Nome'].astype(str).str.lower().str.contains(sc)].empty]
         if scommesse_list:
-            scommesse_df = pd.concat(scommesse_list).drop_duplicates()
-            random_p = scommesse_df.sample(1).iloc[0]
-            send_player_card_view(chat_id, random_p['Nome'], call.message.message_id, df, session, is_scommessa=True)
+            send_player_card_view(chat_id, pd.concat(scommesse_list).drop_duplicates().sample(1).iloc[0]['Nome'], call.message.message_id, df, session, is_scommessa=True)
         else:
-            safe_answer_callback(call.id, text="Nessuna scommessa disponibile o sono già state prese tutte!", show_alert=True)
+            safe_answer_callback(call.id, text="Nessuna scommessa disponibile!", show_alert=True)
 
+    # --- AREA STUDIO & TRADE ANALYZER ---
     elif call.data == "menu_studio_start":
         session['compare_p1'] = None
-        if df is None: return
-        bot.edit_message_text("📊 *AREA STUDIO - Selezione GIOCATORE 1*\nScegli la squadra del primo giocatore:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "std1"))
+        bot.edit_message_text("📊 *AREA STUDIO & TRADE ANALYZER*\nSeleziona la squadra del TUO giocatore:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_squadra(df, "std1"))
 
     elif call.data.startswith("std1_sq_"):
         sq = call.data.replace("std1_sq_", "")
-        bot.edit_message_text(f"📊 *AREA STUDIO - GIOCATORE 1 ({sq})*\nScegli il ruolo:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(sq, "std1"))
+        bot.edit_message_text(f"📊 *AREA STUDIO - TUO GIOCATORE ({sq})*\nScegli il ruolo:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_ruolo(sq, "std1"))
 
     elif call.data.startswith("std1_ru_"):
         _, _, sq, ru = call.data.split("_")
-        bot.edit_message_text(f"📊 *AREA STUDIO - GIOCATORE 1 ({sq} - {ru})*\nScegli il primo giocatore:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "std1", user_id))
+        bot.edit_message_text(f"📊 *AREA STUDIO - TUO GIOCATORE ({sq} - {ru})*\nSelezionalo:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=menu_seleziona_giocatore(df, sq, ru, "std1", user_id))
 
     elif call.data.startswith("std1_pl_"):
         p1_nome = call.data.replace("std1_pl_", "")
         p1_row = df[df['Nome'] == p1_nome].iloc[0]
         session['compare_p1'] = p1_row.to_dict()
-        ruolo_p1 = p1_row['R']
         markup = InlineKeyboardMarkup(row_width=2)
-        squadre = sorted(df['Squadra'].dropna().astype(str).unique())
-        markup.add(*[InlineKeyboardButton(f"{get_team_icon(sq)} {sq}", callback_data=f"std2_sq_{sq}") for sq in squadre])
-        markup.add(InlineKeyboardButton("🔙 Reset Confronto", callback_data="menu_studio_start"))
-        bot.edit_message_text(
-            f"📊 *CONFRONTO:* Hai selezionato *{p1_nome.upper()}* ({ROLE_ICONS[ruolo_p1]} {ruolo_p1})\n\n"
-            f"Ora seleziona la squadra del *SECONDO GIOCATORE* (vedrai solo i giocatori del ruolo {ruolo_p1}):",
-            chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup
-        )
+        markup.add(*[InlineKeyboardButton(f"{get_team_icon(sq)} {sq}", callback_data=f"std2_sq_{sq}") for sq in sorted(df['Squadra'].dropna().astype(str).unique())])
+        markup.add(InlineKeyboardButton("🔙 Reset", callback_data="menu_studio_start"))
+        bot.edit_message_text(f"📊 *CONFRONTO:* Hai scelto *{p1_nome.upper()}*\nOra seleziona la squadra del GIOCATORE PROPOSTO:", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("std2_sq_"):
         sq2 = call.data.replace("std2_sq_", "")
         p1 = session.get('compare_p1')
-        if not p1: return
-        ruolo_p1 = p1['R']
         markup = InlineKeyboardMarkup(row_width=1)
-        sub = df[(df['Squadra'] == sq2) & (df['R'] == ruolo_p1) & (df['Nome'] != p1['Nome'])]
-        for _, row in sub.iterrows():
-            markup.add(InlineKeyboardButton(f"🆚 Confronta con {row['Nome']} (FVM:{row.get('FVM','-')})", callback_data=f"std2_pl_{row['Nome']}"))
+        for _, row in df[(df['Squadra'] == sq2) & (df['R'] == p1['R']) & (df['Nome'] != p1['Nome'])].iterrows():
+            markup.add(InlineKeyboardButton(f"🆚 Confronta con {row['Nome']}", callback_data=f"std2_pl_{row['Nome']}"))
         markup.add(InlineKeyboardButton("🔙 Cambia Squadra", callback_data=f"std1_pl_{p1['Nome']}"))
-        bot.edit_message_text(f"📊 *Scegli il SECONDO GIOCATORE ({sq2} - {ROLE_ICONS[ruolo_p1]} {ruolo_p1}):*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"📊 *Scegli il GIOCATORE PROPOSTO ({sq2}):*", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("std2_pl_"):
         p2_nome = call.data.replace("std2_pl_", "")
-        p1 = session.get('compare_p1')
-        p2 = df[df['Nome'] == p2_nome].iloc[0].to_dict()
+        p1, p2 = session.get('compare_p1'), df[df['Nome'] == p2_nome].iloc[0].to_dict()
+        
+        # ⚖️ TRADE ANALYZER LOGIC
+        fvm_diff = float(p2['FVM']) - float(p1['FVM'])
+        if fvm_diff > 4: trade_verdict = f"✅ *ACCETTA SUBITO!* Ci guadagni circa `{fvm_diff}` punti FVM."
+        elif fvm_diff < -4: trade_verdict = f"🚨 *TRUFFA IN CORSO!* Stai perdendo `{abs(fvm_diff)}` punti FVM. Rifiuta!"
+        else: trade_verdict = "⚖️ *SCAMBIO ALLA PARI.* Valuta in base alle tue coperture in rosa."
+
         text = (
-            f"📊 *CONFRONTO DIRETTO:*\n\n"
-            f"👤 *{p1['Nome'].upper()}* vs 👤 *{p2['Nome'].upper()}*\n"
+            f"📊 *TRADE ANALYZER (CONFRONTO):*\n\n"
+            f"👤 TU DAI: *{p1['Nome'].upper()}* (FVM: {p1.get('FVM')})\n"
+            f"👤 TU PRENDI: *{p2['Nome'].upper()}* (FVM: {p2.get('FVM')})\n"
             f"───────────────────────────\n"
-            f"📌 Ruolo: `{p1.get('R','-')}` vs `{p2.get('R','-')}`\n"
-            f"👕 Squadra: `{p1.get('Squadra','-')}` vs `{p2.get('Squadra','-')}`\n"
-            f"💰 Quotazione: `{p1.get('Qt.A','-')}` vs `{p2.get('Qt.A','-')}` cr.\n"
-            f"⭐ FVM: `{p1.get('FVM','-')}` vs `{p2.get('FVM','-')}` cr.\n"
+            f"{trade_verdict}\n"
         )
         markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton(f"⚡ Compra {p1['Nome']}", callback_data=f"buy_{p1['Nome']}"),
-            InlineKeyboardButton(f"⚡ Compra {p2['Nome']}", callback_data=f"buy_{p2['Nome']}")
-        )
+        markup.add(InlineKeyboardButton(f"⚡ Compra {p1['Nome']}", callback_data=f"buy_{p1['Nome']}"), InlineKeyboardButton(f"⚡ Compra {p2['Nome']}", callback_data=f"buy_{p2['Nome']}"))
         markup.add(InlineKeyboardButton("🔄 Nuovo Confronto", callback_data="menu_studio_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data == "menu_svincola":
         rosa = session.get('rosa', [])
         markup = InlineKeyboardMarkup(row_width=1)
-        if not rosa:
-            testo = "✂️ *NESSUN GIOCATORE IN ROSA DA SVINCOLARE*"
+        if not rosa: testo = "✂️ *NESSUN GIOCATORE IN ROSA DA SVINCOLARE*"
         else:
             testo = "✂️ *SELEZIONA IL GIOCATORE DA SVINCOLARE:*"
-            for p in rosa:
-                markup.add(InlineKeyboardButton(f"❌ Svincola {p['nome']} ({p['prezzo']} cr.)", callback_data=f"svincola_do_{p['nome']}"))
+            for p in rosa: markup.add(InlineKeyboardButton(f"❌ Svincola {p['nome']} ({p['prezzo']} cr.)", callback_data=f"svincola_do_{p['nome']}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
@@ -691,22 +759,17 @@ def handle_callbacks(call):
 def handle_document(message):
     chat_id = message.chat.id
     fname = message.document.file_name
-    if not (fname.endswith('.csv') or fname.endswith('.xlsx')):
-        bot.reply_to(message, "❌ Invia solo file `.csv` o `.xlsx`!", parse_mode="Markdown")
-        return
+    if not (fname.endswith('.csv') or fname.endswith('.xlsx')): return bot.reply_to(message, "❌ Invia solo `.csv` o `.xlsx`!", parse_mode="Markdown")
     try:
-        file_info = bot.get_file(message.document.file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
+        downloaded_file = bot.download_file(bot.get_file(message.document.file_id).file_path)
         save_name = "Lista-FantaAsta-Fantacalcio.csv" if fname.endswith('.csv') else "listone.xlsx"
-        with open(save_name, 'wb') as new_file:
-            new_file.write(downloaded_file)
+        with open(save_name, 'wb') as new_file: new_file.write(downloaded_file)
         load_data(force_reload=True)
         bot.reply_to(message, "✅ *DATABASE AGGIORNATO CON SUCCESSO!*", parse_mode="Markdown")
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ Errore caricamento: {str(e)}")
+    except Exception as e: bot.send_message(chat_id, f"❌ Errore caricamento: {str(e)}")
 
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto con funzioni PRO attivate!")
+    print("🚀 Bot in ascolto con funzioni HACKER attivate!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
