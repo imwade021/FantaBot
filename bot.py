@@ -4,7 +4,9 @@ import re
 import pandas as pd
 import numpy as np
 import telebot
+import requests
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from PIL import Image, ImageDraw, ImageFont
 
 # Token letto dalle variabili d'ambiente di Render
 TOKEN = os.getenv("BOT_TOKEN", "INSERISCI_QUI_IL_NUOVO_TOKEN")
@@ -37,8 +39,8 @@ def safe_answer_callback(call_id, text=None, show_alert=False):
 def get_team_icon(squadra): 
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
-def get_player_photo_url(row):
-    """Estrae l'ID del giocatore dal DataFrame e genera l'URL dell'immagine del CDN Fantacalcio."""
+def get_player_photo_bytes(row):
+    """Estrae l'ID e scarica la foto aggirando i blocchi anti-bot di Fantacalcio.it."""
     id_val = None
     for col in row.index:
         if str(col).strip().lower() in ['id', 'cod', 'codice']:
@@ -48,9 +50,81 @@ def get_player_photo_url(row):
                 break
     
     if id_val:
-        # Tenta il caricamento della foto profilo ufficale
-        return f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png"
+        url = f"https://content.fantacalcio.it/web/immagini/cadres/{id_val}.png"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.fantacalcio.it/"
+        }
+        try:
+            response = requests.get(url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                return io.BytesIO(response.content)
+        except Exception as e:
+            print(f"Errore download foto: {e}")
+            
     return None
+
+def crea_carta_fc(nome_giocatore, ruolo, fvm, photo_bytes):
+    """Fonde la foto del giocatore con il template della carta FC Rare Gold."""
+    if not photo_bytes:
+        return None
+        
+    try:
+        # Controllo se hai caricato il template su GitHub
+        if not os.path.exists("template_card.png"):
+            photo_bytes.seek(0)
+            return photo_bytes
+            
+        # 1. Carica e ridimensiona lo sfondo a misure standard (500x750)
+        sfondo = Image.open("template_card.png").convert("RGBA")
+        sfondo = sfondo.resize((500, 750)) 
+        
+        # 2. Prepara la faccia (bella grande)
+        faccia = Image.open(photo_bytes).convert("RGBA")
+        faccia = faccia.resize((280, 280)) 
+        
+        # 3. Incolla la faccia (centrata sulla destra)
+        sfondo.paste(faccia, (150, 140), faccia) 
+        
+        # 4. Prepara i font
+        draw = ImageDraw.Draw(sfondo)
+        try:
+            # Prova a usare il font personalizzato se lo hai caricato
+            font_nome = ImageFont.truetype("font.ttf", 45)
+            font_overall = ImageFont.truetype("font.ttf", 70)
+            font_ruolo = ImageFont.truetype("font.ttf", 50)
+        except IOError:
+            # Fallback in caso manchi il font.ttf
+            font_nome = ImageFont.load_default()
+            font_overall = ImageFont.load_default()
+            font_ruolo = ImageFont.load_default()
+        
+        # 5. Scrive le statistiche in alto a sinistra (in nero)
+        draw.text((70, 130), str(fvm), fill="#1a1a1a", font=font_overall)
+        draw.text((75, 210), str(ruolo), fill="#1a1a1a", font=font_ruolo)
+        
+        # 6. Scrive il nome centrato in basso
+        nome_str = str(nome_giocatore).upper()
+        # Calcolo dinamico per centrare il testo
+        try:
+            text_width = draw.textlength(nome_str, font=font_nome)
+        except AttributeError:
+            text_width = draw.textsize(nome_str, font=font_nome)[0] 
+            
+        x_nome = (500 - text_width) / 2
+        draw.text((x_nome, 460), nome_str, fill="#1a1a1a", font=font_nome)
+        
+        # 7. Salva e prepara l'invio
+        img_byte_arr = io.BytesIO()
+        sfondo.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+        
+        return img_byte_arr
+        
+    except Exception as e:
+        print(f"Errore generazione carta: {e}")
+        photo_bytes.seek(0)
+        return photo_bytes
 
 DATA_CACHE = None
 def load_data(force_reload=False):
@@ -470,8 +544,9 @@ def handle_callbacks(call):
             r_p = str(scommessa.get('R', 'C'))
             fvm_p = str(scommessa.get('FVM', scommessa.get('Qt.A', '1-3')))
             
-            # Recupera URL foto del calciatore
-            photo_url = get_player_photo_url(scommessa)
+            # Scarica la foto mascherandosi da browser e crea la carta FC
+            photo_bytes = get_player_photo_bytes(scommessa)
+            final_card = crea_carta_fc(nome_p, r_p, fvm_p, photo_bytes)
 
             testo_card = (
                 f"🎴 *SPECIAL CARD: SCOMMESSA*\n"
@@ -494,9 +569,9 @@ def handle_callbacks(call):
             try: bot.delete_message(chat_id, call.message.message_id)
             except Exception: pass
 
-            if photo_url:
+            if final_card:
                 try:
-                    bot.send_photo(chat_id, photo_url, caption=testo_card, parse_mode="Markdown", reply_markup=markup)
+                    bot.send_photo(chat_id, final_card, caption=testo_card, parse_mode="Markdown", reply_markup=markup)
                     return
                 except Exception: pass
 
@@ -515,7 +590,9 @@ def handle_callbacks(call):
         p_data = df[df['Nome'] == player_name].iloc[0]
         sq_name = p_data.get('Squadra', '-')
         
-        photo_url = get_player_photo_url(p_data)
+        # Generazione Carta FC anche per la visualizzazione standard
+        photo_bytes = get_player_photo_bytes(p_data)
+        final_card = crea_carta_fc(player_name, p_data.get('R', '-'), p_data.get('FVM', '-'), photo_bytes)
         
         info_text = (
             f"👤 *{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
@@ -531,13 +608,12 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton(wl_text, callback_data=f"wl_toggle_{player_name}"))
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         
-        # Elimina il vecchio messaggio di navigazione
         try: bot.delete_message(chat_id, call.message.message_id)
         except Exception: pass
 
-        if photo_url:
+        if final_card:
             try:
-                bot.send_photo(chat_id, photo_url, caption=info_text, parse_mode="Markdown", reply_markup=markup)
+                bot.send_photo(chat_id, final_card, caption=info_text, parse_mode="Markdown", reply_markup=markup)
                 return
             except Exception: pass
 
