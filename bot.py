@@ -47,7 +47,8 @@ load_data()
 user_sessions = {}
 def get_session(user_id):
     if user_id not in user_sessions: 
-        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': []}
+        # Ho aggiunto 'scartati' per memorizzare i giocatori comprati dagli altri
+        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': [], 'scartati': []}
     return user_sessions[user_id]
 
 def generate_progress_bar(current, target, length=8):
@@ -71,19 +72,22 @@ def main_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("👕 Esplora", callback_data="sq_start"),
-        InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"),
-        InlineKeyboardButton("📊 Area Studio", callback_data="menu_studio"),
-        InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme")
+        InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa")
     )
     markup.add(
-        InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist"),
-        InlineKeyboardButton("✂️ Svincola", callback_data="menu_svincola")
+        InlineKeyboardButton("🏆 Top Liberi", callback_data="menu_top"),
+        InlineKeyboardButton("📊 Area Studio", callback_data="menu_studio")
     )
     markup.add(
-        InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"),
-        InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm")
+        InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme"),
+        InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist")
     )
     markup.add(
+        InlineKeyboardButton("✂️ Svincola", callback_data="menu_svincola"),
+        InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel")
+    )
+    markup.add(
+        InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm"),
         InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen")
     )
     return markup
@@ -138,7 +142,7 @@ def menu_seleziona_giocatore(df, squadra, ruolo, prefisso, user_id):
     markup = InlineKeyboardMarkup(row_width=1)
     sub = df[(df['Squadra'] == squadra) & (df['R'] == ruolo)]
     for _, row in sub.iterrows():
-        star = "⭐ " if row['Nome'] in get_session(user_id)['wishlist'] else ""
+        star = "⭐ " if row['Nome'] in get_session(user_id).get('wishlist', []) else ""
         markup.add(InlineKeyboardButton(f"{star}{ROLE_ICONS.get(ruolo,'')} {row['Nome']} ─ FVM:{row.get('FVM', '-')}", callback_data=f"{prefisso}_pl_{row['Nome']}"))
     markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data=f"{prefisso}_sq_{squadra}"))
     return markup
@@ -226,21 +230,88 @@ def handle_callbacks(call):
         
     elif call.data == "reset_confirm":
         bot.answer_callback_query(call.id)
-        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session['wishlist']}
+        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'selected_for_compare': [], 'wishlist': session.get('wishlist', []), 'scartati': []}
         send_dashboard(chat_id, user_id, call.message.message_id)
+
+    # --- TOP LIBERI (METODO TINDER) ---
+    elif call.data == "menu_top":
+        bot.answer_callback_query(call.id)
+        markup = InlineKeyboardMarkup(row_width=4)
+        markup.add(
+            InlineKeyboardButton("🧤 P", callback_data="top_ruolo_P"),
+            InlineKeyboardButton("🛡️ D", callback_data="top_ruolo_D"),
+            InlineKeyboardButton("⚙️ C", callback_data="top_ruolo_C"),
+            InlineKeyboardButton("🎯 A", callback_data="top_ruolo_A")
+        )
+        markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
+        bot.edit_message_text("🏆 *TOP LIBERI*\nDi quale ruolo vuoi vedere i migliori giocatori ancora disponibili?", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data.startswith("top_ruolo_"):
+        bot.answer_callback_query(call.id)
+        ruolo = call.data.split("_")[-1]
+        
+        nomi_in_rosa = [p['nome'] for p in session['rosa']]
+        scartati = session.get('scartati', [])
+        
+        colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
+        df['Valore_Ord'] = df[colonna_base].astype(str).str.replace(',', '.').str.replace('-', '0')
+        df['Valore_Ord'] = pd.to_numeric(df['Valore_Ord'], errors='coerce').fillna(0)
+        
+        # Filtriamo chi è in rosa e chi è stato scartato
+        df_liberi = df[(df['R'] == ruolo) & (~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati))]
+        df_top = df_liberi.sort_values(by='Valore_Ord', ascending=False).head(5)
+        
+        testo = f"🏆 *MIGLIORI {ROLE_ICONS.get(ruolo, '')} ANCORA LIBERI*\n\n"
+        markup = InlineKeyboardMarkup(row_width=2)
+        
+        if df_top.empty: 
+            testo += "_Nessun giocatore rimasto in questo ruolo._"
+        else:
+            for _, row in df_top.iterrows():
+                nome = row['Nome']
+                testo += f"🔹 *{nome}* ({row.get('Squadra','-')}) ─ FVM: `{row['Valore_Ord']}`\n"
+                # Creiamo due pulsanti per riga: Info e Scarta
+                markup.row(
+                    InlineKeyboardButton(f"🔍 Info {nome[:10]}", callback_data=f"sq_pl_{nome}"),
+                    InlineKeyboardButton(f"❌ Scarta", callback_data=f"dsc_{ruolo}_{nome[:20]}")
+                )
+                
+        markup.add(InlineKeyboardButton("🔙 Torna ai Ruoli", callback_data="menu_top"))
+        markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+
+    elif call.data.startswith("dsc_"):
+        parts = call.data.split("_")
+        ruolo = parts[1]
+        nome_troncato = "_".join(parts[2:])
+        
+        if 'scartati' not in session: session['scartati'] = []
+            
+        # Troviamo il nome completo dall'excel partendo da quello troncato e lo aggiungiamo agli scartati
+        for n in df['Nome'].dropna().unique():
+            if str(n).startswith(nome_troncato):
+                if n not in session['scartati']:
+                    session['scartati'].append(n)
+                break
+                
+        bot.answer_callback_query(call.id, "❌ Giocatore scartato! Rimosso dalla lista.")
+        
+        # Ricarichiamo istantaneamente la classifica aggiornata
+        call.data = f"top_ruolo_{ruolo}"
+        return handle_callbacks(call)
 
     # --- GEMME NASCOSTE ---
     elif call.data == "menu_gemme":
         bot.answer_callback_query(call.id)
         nomi_in_rosa = [p['nome'] for p in session['rosa']]
+        scartati = session.get('scartati', []) # Nascondiamo anche chi hanno comprato gli altri
         
         colonna_base = 'FVM' if 'FVM' in df.columns else 'Qt.A'
         df['Valore_Gemma'] = df[colonna_base].astype(str)
-        
         df['Valore_Gemma'] = df['Valore_Gemma'].str.replace(',', '.').str.replace('-', '0')
         df['Valore_Gemma'] = pd.to_numeric(df['Valore_Gemma'], errors='coerce').fillna(0)
         
-        df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & (df['Valore_Gemma'] > 0) & (df['Valore_Gemma'] <= 5)]
+        df_gemme = df[(~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati)) & (df['Valore_Gemma'] > 0) & (df['Valore_Gemma'] <= 5)]
         df_gemme = df_gemme.sort_values(by='Valore_Gemma', ascending=False).head(5)
         
         testo_gemme = "💎 *GEMME NASCOSTE*\nGiocatori a 5 crediti o meno, ideali per completare la rosa:\n\n"
@@ -421,8 +492,9 @@ def handle_callbacks(call):
             fvm_target = pd.to_numeric(fvm_str, errors='coerce')
             
             nomi_in_rosa = [p['nome'] for p in session['rosa']]
+            scartati = session.get('scartati', [])
             
-            alternative = df[(df['R'] == ruolo) & (~df['Nome'].isin(nomi_in_rosa)) & (df['Nome'] != player_name)].copy()
+            alternative = df[(df['R'] == ruolo) & (~df['Nome'].isin(nomi_in_rosa)) & (~df['Nome'].isin(scartati)) & (df['Nome'] != player_name)].copy()
             alternative['FVM_num'] = pd.to_numeric(alternative['FVM'].astype(str).str.replace(',', '.').str.replace('-', '0'), errors='coerce').fillna(0)
             migliori_alternative = alternative[alternative['FVM_num'] <= (fvm_target + 5)].sort_values(by='FVM_num', ascending=False).head(3)
             
@@ -507,7 +579,7 @@ def handle_callbacks(call):
         bot.send_photo(chat_id, buf, caption=testo_confronto, parse_mode="Markdown", reply_markup=markup)
 
     elif call.data.startswith("buy_"):
-        bot.answer_callback_query(call.id)
+        bot.answer_callback_query(call.id) 
         player_name = call.data.replace("buy_", "")
         msg = bot.send_message(chat_id, f"💰 A quanti crediti hai acquistato *{player_name}*?\n_Scrivi un numero (es. 15):_", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
@@ -567,5 +639,5 @@ if __name__ == '__main__':
         bot.remove_webhook() 
     except Exception: 
         pass
-    print("🚀 FantaBot Pro Ready (God Mode v3.1)...")
+    print("🚀 FantaBot Pro Ready (God Mode v3.2)...")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
