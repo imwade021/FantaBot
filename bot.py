@@ -4,12 +4,14 @@ import re
 import html
 import unicodedata
 import urllib.parse
+import threading
 import pandas as pd
 import numpy as np
 import telebot
 import requests
 from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Tenta di importare la libreria per la grafica del campo
 try:
@@ -43,6 +45,9 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
+# URL UFFICIALE DOWNLOAD LISTONE FANTACALCIO (Excel/CSV)
+LISTONE_URL = "https://www.fantacalcio.it/servizi/download/listone" 
+
 ROLE_ICONS = {'P': '🧤', 'D': '🛡️', 'C': '⚙️', 'A': '🎯'}
 TEAM_COLORS = {
     'Atalanta': '🔵⚫', 'Bologna': '🔴🔵', 'Cagliari': '🔴🔵', 'Como': '🔵⚪',
@@ -53,7 +58,6 @@ TEAM_COLORS = {
     'Venezia': '🟠🟢'
 }
 
-# Gerarchie rigoristi e tiratori sincronizzate con le schede ufficiali
 GERARCHIE_RIGORISTI = {
     'Atalanta': {'rigoristi': ['Scamacca', 'Krstovic', 'Samardzic'], 'punizioni': ['De Ketelaere', 'Samardzic', 'Gaetano']},
     'Bologna': {'rigoristi': ['Orsolini', 'Bernardeschi', 'Dovbyk'], 'punizioni': ['Orsolini', 'Bernardeschi', 'Miranda J.']},
@@ -110,10 +114,29 @@ def get_team_icon(squadra):
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
 # ==========================================
-# GESTIONE DATABASE & STATISTICHE REALI
+# AUTO-DOWNLOADER & GESTIONE DATABASE
 # ==========================================
 DATA_CACHE = None
 STATS_CACHE = None
+
+def auto_download_listone():
+    """Scarica in automatico il listone aggiornato da internet."""
+    print("🔄 Avvio download automatico del Listone...")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    try:
+        res = requests.get(LISTONE_URL, headers=headers, timeout=15)
+        if res.status_code == 200:
+            with open("Lista-FantaAsta-Fantacalcio.csv", "wb") as f:
+                f.write(res.content)
+            print("✅ Listone aggiornato con successo da remoto!")
+            load_data(force_reload=True)
+            return True
+        else:
+            print(f"⚠️ Errore download listone, status code: {res.status_code}")
+            return False
+    except Exception as e:
+        print(f"❌ Errore durante l'auto-download: {e}")
+        return False
 
 def load_data(force_reload=False):
     global DATA_CACHE, STATS_CACHE
@@ -127,7 +150,7 @@ def load_data(force_reload=False):
                     'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
                 ]
                 DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE['FVM'], errors='coerce').fillna(0)
-                print("✅ File CSV Listone caricato con successo!")
+                print("✅ File CSV Listone caricato in memoria!")
             except Exception as e: print(f"⚠️ Errore lettura CSV Listone: {e}")
 
     if STATS_CACHE is None or force_reload:
@@ -150,7 +173,17 @@ def load_data(force_reload=False):
 
     return DATA_CACHE
 
+# Caricamento iniziale e avvio Pianificatore
 load_data()
+
+# Pianificazione Auto-Download (Ogni notte alle 04:00 AM)
+try:
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
+    scheduler.start()
+    print("⏰ Pianificatore Auto-Download attivo (Esecuzione ogni notte alle 04:00)")
+except Exception as e:
+    print(f"⚠️ Impossibile avviare il pianificatore: {e}")
 
 user_sessions = {}
 def get_session(user_id):
@@ -191,7 +224,6 @@ def find_player_in_stats(nome):
             return None
     
     norm_name = normalize_str(nome)
-    
     match = STATS_CACHE[STATS_CACHE['Nome_Norm'] == norm_name]
     if not match.empty: return match.iloc[0]
         
@@ -249,7 +281,7 @@ def get_storico_excel_o_web(nome, squadra=""):
 
 def fetch_real_web_data(query, max_results=2):
     output = []
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
         res = requests.get(url, headers=headers, timeout=8)
@@ -443,18 +475,12 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     try: fvm_val = float(str(fvm).replace(',', '.'))
     except ValueError: fvm_val = 0
 
-    # ==========================================
-    # 🧮 CALCOLO FASCIA DEL GIOCATORE
-    # ==========================================
     if fvm_val >= 90: fascia = "🥇 1° Fascia (Top Assoluto)"
     elif fvm_val >= 50: fascia = "🥈 2° Fascia (Semi-Top)"
     elif fvm_val >= 25: fascia = "🥉 3° Fascia (Ottimo Titolare)"
     elif fvm_val >= 10: fascia = "🚜 4° Fascia (Da Rotazione)"
     else: fascia = "🎲 5°/6° Fascia (Scommessa/Tappabuchi)"
 
-    # ==========================================
-    # 🎯 ALGORITMO FAIR PRICE DINAMICO (AUTOMATIZZATO)
-    # ==========================================
     lega_bud = session.get('lega_budget_iniziale', 500)
     lega_part = session.get('lega_partecipanti', 8)
     
@@ -467,9 +493,6 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
 
     if fair_price <= 0: fair_price, max_rilancio, asta_stop = 1, 1, 2
 
-    # ==========================================
-    # 📉 MATRIX DI OPPORTUNITÀ (CPM)
-    # ==========================================
     f_bud = lega_bud / 1000.0
     tag_matrix = "⚖️ <b>[IN MEDIA]</b> <i>Rendimento allineato al costo.</i>"
     row_stats = find_player_in_stats(player_name)
@@ -537,8 +560,8 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
 
 def system_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"), InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm"))
-    markup.add(InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen"))
+    markup.add(InlineKeyboardButton("📥 Download Remoto", callback_data="force_download_listone"), InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"))
+    markup.add(InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm"), InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen"))
     markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
     return markup
 
@@ -634,7 +657,6 @@ def process_buy_price(message, player_name, user_id):
     })
     session['budget'] -= costo
     
-    # Valutazione dell'affare
     lega_bud = session.get('lega_budget_iniziale', 500)
     lega_part = session.get('lega_partecipanti', 8)
     base_price = fvm_raw * (lega_bud / 1000.0)
@@ -682,14 +704,12 @@ def process_whatif_price(message, player_name, user_id):
     ruolo = row.get('R', 'A')
     fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
 
-    # Calcolo Fair Price Reale
     lega_bud = session.get('lega_budget_iniziale', 500)
     lega_part = session.get('lega_partecipanti', 8)
     base_price = fvm_raw * (lega_bud / 1000.0)
     f_part = 1 + ((lega_part - 8) * 0.025)
     fair_price = max(1, int(base_price * f_part))
 
-    # Calcolo Impatto
     budget_left = session['budget'] - hyp_price
     slots_left = stats['slot_liberi'] - 1
     
@@ -698,7 +718,6 @@ def process_whatif_price(message, player_name, user_id):
         
     avg_left = budget_left / slots_left if slots_left > 0 else 0
 
-    # 1. Valutazione dell'affare simulato
     if hyp_price <= fair_price * 0.70:
         analisi = f"🔥 <b>PREZZO D'OCCHIONE:</b> Sarebbe un affare clamoroso! Valore reale: <code>{fair_price} cr.</code>"
     elif hyp_price <= fair_price * 1.15:
@@ -706,7 +725,6 @@ def process_whatif_price(message, player_name, user_id):
     else:
         analisi = f"🚨 <b>OVERPAY RISCHIOSO:</b> Staresti pagando <code>{hyp_price - fair_price} cr.</code> in più del suo valore ideale."
 
-    # 2. Ricerca Target Raggiungibili per lo stesso ruolo
     avail = get_available_players(df, session)
     target = avail[(avail['R'] == ruolo) & (avail['Nome'] != player_name)].copy()
     target['base_p'] = target['FVM'] * (lega_bud / 1000.0) * f_part
@@ -807,7 +825,6 @@ def modalita_cecchino(message):
         })
         session['budget'] -= costo
         
-        # Stessa logica di valutazione anche per la mod cecchino
         lega_bud = session.get('lega_budget_iniziale', 500)
         lega_part = session.get('lega_partecipanti', 8)
         fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
@@ -881,6 +898,14 @@ def handle_callbacks(call):
             except Exception: pass
         send_dashboard(chat_id, user_id)
         
+    elif call.data == "force_download_listone":
+        msg = bot.send_message(chat_id, "⏳ <i>Collegamento ai server ufficiali per il download...</i>", parse_mode="HTML")
+        success = auto_download_listone()
+        if success:
+            bot.edit_message_text("✅ <b>LISTONE AGGIORNATO CON SUCCESSO DA REMOTO!</b>", chat_id, msg.message_id, parse_mode="HTML")
+        else:
+            bot.edit_message_text("❌ <b>Download fallito.</b> Utilizzo il file locale.", chat_id, msg.message_id, parse_mode="HTML")
+
     elif call.data == "menu_impostazioni_lega":
         b_iniziale = session.get('lega_budget_iniziale', 500)
         part = session.get('lega_partecipanti', 8)
