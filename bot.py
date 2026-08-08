@@ -315,32 +315,95 @@ def advanced_trade_analyzer(p1, p2):
 # CARDS E DASHBOARD (MINI THUMBNAIL HTML)
 # ==========================================
 def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
+    # Dati base dal listone
     p_data = df[df['Nome'] == player_name].iloc[0]
     sq_name = p_data.get('Squadra', '-')
     photo_url = str(p_data.get('PhotoURL', '')).strip()
     ruolo = str(p_data.get('R', '-'))
     fvm = p_data.get('FVM', 0)
     
+    # Prepara immagine e alert macellaio
+    photo_embed = f'<a href="{html.escape(photo_url)}">&#8203;</a>' if photo_url.startswith('http') else ''
     macellaio_alert = get_macellaio_info(player_name)
     
-    photo_embed = f'<a href="{html.escape(photo_url)}">&#8203;</a>' if photo_url.startswith('http') else ''
-    
+    # ------------------------------------------
+    # LOGICA MATEMATICA: SLOT, RISCHIO E BUDGET
+    # ------------------------------------------
+    try:
+        fvm_val = float(str(fvm).replace(',', '.'))
+    except ValueError:
+        fvm_val = 0
+
+    # 1. Calcolo Slot e Tip
+    if fvm_val >= 80:
+        slot = "1° Slot ⭐️⭐️⭐️"
+        tip = "💎 Top assoluto. Affonda il colpo, ma non farti prosciugare."
+    elif 40 <= fvm_val < 80:
+        slot = "2° Slot ⭐️⭐️"
+        tip = "⚖️ Ottima spalla. Cerca di prenderlo intorno al suo FVM."
+    elif 15 <= fvm_val < 40:
+        slot = "3°/4° Slot ⭐️"
+        tip = "🚜 Utile per rotazione. Non svenarti, max 10-15 cr."
+    else:
+        slot = "Scommessa / Tappabuchi ❓"
+        tip = "🎲 Scommessa low-cost. Prendilo a 1 o lascia stare."
+
+    # 2. Calcolo Rischio (pesca dal file Statistiche reale)
+    row_stats = find_player_in_stats(player_name)
+    if row_stats is not None:
+        pv = int(row_stats.get('Pv', 0))
+        amm = int(row_stats.get('Amm', 0))
+        if pv < 15 or amm > 8:
+            rischio = "🔴 ALTO (Poche presenze o troppi malus)"
+            if fvm_val < 40:
+                tip = "⚠️ Rischio alto di malus o panchina. Evita se cerchi certezze."
+        elif pv < 25 or amm > 4:
+            rischio = "🟡 MEDIO (Da alternare)"
+        else:
+            rischio = "🟢 BASSO (Regolarista affidabile)"
+    else:
+        rischio = "⚪ DATI STORICI NON DISPONIBILI"
+
+    # 3. Calcolo Budget dinamico (usa la tua get_roster_stats)
+    user_stats = get_roster_stats(session)
+    budget_rimasto = session['budget']
+    giocatori_mancanti = user_stats['slot_liberi']
+    limite_max = user_stats['max_bid']
+
+    # 4. Creazione testo HTML della scheda
     info_text = (
-        f"{photo_embed}<b>{html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n"
-        f"───────────────────────────\n"
-        f"📌 Ruolo: <code>{html.escape(ruolo)}</code>\n"
-        f"💰 Quotazione: <code>{p_data.get('Qt.A', '-')}</code> cr.  │  FVM: <code>{fvm}</code> cr.{macellaio_alert}\n"
+        f"{photo_embed}📋 <b>ANALISI GIOCATORE: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n"
+        f"💰 <b>FVM Consigliato:</b> <code>{fvm}</code> cr. (Qt: <code>{p_data.get('Qt.A', '-')}</code>)\n"
+        f"🧮 <b>Inquadramento:</b> {slot}\n"
+        f"⚠️ <b>Indice Storico:</b> {rischio}{macellaio_alert}\n\n"
+        f"💼 <b>SITUAZIONE DELLA TUA ROSA</b>\n"
+        f"• Budget attuale: <code>{budget_rimasto}</code> cr.\n"
+        f"• Slot da riempire: <code>{giocatori_mancanti}</code>\n"
+        f"🛑 <b>LIMITE MAX DI SPESA: <code>{limite_max}</code> cr.</b>\n"
+        f"<i>(Se superi questa cifra non potrai completare la rosa!)</i>\n\n"
+        f"💡 <b>IL CONSIGLIO DEL BOT:</b>\n"
+        f"<i>{tip}</i>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
     )
     
+    # ------------------------------------------
+    # PULSANTI (INLINE KEYBOARD) INVARIATI
+    # ------------------------------------------
     in_wl = player_name in session.get('wishlist', [])
     markup = InlineKeyboardMarkup(row_width=2)
     
-    markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}"))
-    markup.add(InlineKeyboardButton("📊 Storico Reale", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica Web", callback_data=f"cl_{player_name}"))
-    markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
+    markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), 
+               InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}"))
+    markup.add(InlineKeyboardButton("📊 Storico Reale", callback_data=f"stats_{player_name}"), 
+               InlineKeyboardButton("🏥 Clinica Web", callback_data=f"cl_{player_name}"))
+    markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), 
+               InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
     if is_scommessa:
-        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
+        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), 
+                   InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
     else:
         markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"))
         
