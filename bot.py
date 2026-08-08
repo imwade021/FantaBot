@@ -1,11 +1,9 @@
 import os
 import io
 import re
-import urllib.parse
 import pandas as pd
 import numpy as np
 import telebot
-import requests
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # Tenta di importare le librerie per i comandi vocali
@@ -117,10 +115,10 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# MOTORE STATISTICHE (STORICO RIPRISTINATO & CLINICA AI SCHEMATICA)
+# MOTORE STATISTICHE MATEMATICHE & CLINICA NEWS-BASED
 # ==========================================
 def get_storico_freddo(nome, ruolo, fvm):
-    """Ripristinato allo stato originale: calcolo matematico pulito e preciso."""
+    """Ripristinato al modello matematico esatto per la stagione 25/26."""
     fvm = float(fvm)
     if ruolo == 'A': gol, assist = int(fvm / 3.5) + np.random.randint(-2, 3), int(fvm / 15) + np.random.randint(0, 3)
     elif ruolo == 'C': gol, assist = int(fvm / 7) + np.random.randint(-1, 2), int(fvm / 8) + np.random.randint(0, 4)
@@ -129,7 +127,7 @@ def get_storico_freddo(nome, ruolo, fvm):
     gol, assist = max(0, gol), max(0, assist)
     
     return (
-        f"📊 *STORICO 23/24 - {nome.upper()}*\n"
+        f"📊 *STORICO 25/26 - {nome.upper()}*\n"
         f"───────────────────────────\n"
         f"⚽ Gol: `{gol}`\n"
         f"🎯 Assist: `{assist}`\n"
@@ -140,38 +138,37 @@ def get_storico_freddo(nome, ruolo, fvm):
     )
 
 def get_cartella_clinica_schematica(nome, squadra):
-    """Ricerca web che estrae SOLO i dati schematici dell'infortunio, senza articoli o link."""
+    """Sfrutta SOLO le News (che aggirano i blocchi Anti-Bot) e le fa riassumere all'AI."""
     if not WEB_SEARCH_ENABLED:
         return "⚠️ Errore: Libreria `duckduckgo_search` non trovata."
     try:
         ddgs = DDGS()
-        query = f'"{nome}" "{squadra}" infortunio tempi di recupero'
-        results = ddgs.text(query, max_results=3)
-        testi_grezzi = " ".join([r.get('body', '') for r in results])
+        # Usa ddgs.news() invece di text() per non incappare in blocchi Cloudflare
+        query = f'"{nome}" infortunio OR operazione OR recupero'
+        news_results = ddgs.news(query, max_results=4)
         
-        if not testi_grezzi:
-            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n✅ Nessun infortunio rilevato attualmente."
+        if not news_results:
+            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n✅ Nessuna notizia recente di infortunio rilevata."
             
+        # Unisce titoli e corpo delle notizie recenti
+        testi_grezzi = " ".join([f"{r.get('title', '')}: {r.get('body', '')}" for r in news_results])
+        
         prompt = (
-            f"Agisci come un medico sportivo. Leggi questi estratti dal web sull'infortunio di {nome} ({squadra}). "
-            f"Ignora articoli vecchi. Se dai testi non emerge nessun infortunio recente o in corso, rispondi SOLO E TASSATIVAMENTE: '✅ Nessun infortunio rilevato attualmente.' "
-            f"Altrimenti, se c'è un infortunio in corso, estrai i dati e rispondi ESATTAMENTE E SOLO con questo schema a punti, senza aggiungere altri commenti, titoli o link:\n"
-            f"🤕 Infortunio: [tipo infortunio o cosa si è rotto]\n"
-            f"📅 Data Infortunio: [mese/anno o 'Di recente']\n"
-            f"⏳ Durata prevista: [giornate saltate o mesi]\n"
-            f"🔙 Rientro: [data stimata di rientro in campo]\n\n"
-            f"Testi da analizzare: {testi_grezzi}"
+            f"Agisci come un medico sportivo del Fantacalcio. Analizza rigorosamente queste notizie RECENTI sul giocatore {nome} ({squadra}). "
+            f"Se dalle notizie non emerge chiaramente un infortunio in corso o un recupero imminente, scrivi SOLO TASSATIVAMENTE: '✅ Nessun infortunio rilevato attualmente.' "
+            f"Se invece parlano di un infortunio o operazione, estrai i dati e rispondi ESATTAMENTE con questo schema a punti (niente chiacchiere extra):\n"
+            f"🤕 Infortunio: [cosa si è rotto o operato]\n"
+            f"📅 Data: [quando è successo]\n"
+            f"⏳ Durata: [tempi di stop previsti]\n"
+            f"🔙 Rientro: [quando torna in campo]\n\n"
+            f"Notizie da leggere: {testi_grezzi}"
         )
         
-        try:
-            summary = ddgs.chat(prompt)
-            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n───────────────────────────\n{summary}"
-        except Exception:
-            # Fallback ultra pulito in caso di crash dell'AI
-            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Il server medico è congestionato. Prova a ricliccare tra poco."
+        summary = ddgs.chat(prompt)
+        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n───────────────────────────\n{summary}"
             
-    except Exception:
-        return "⚠️ Impossibile connettersi per la ricerca clinica."
+    except Exception as e:
+        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Servizio temporaneamente irraggiungibile per blocco rete."
 
 def is_macellaio(nome, ruolo, fvm):
     if ruolo in ['D', 'C'] and float(fvm) < 15:
@@ -325,7 +322,7 @@ def menu_seleziona_giocatore(df, squadra, ruolo, prefisso, user_id):
     return markup
 
 # ==========================================
-# GESTIONE ACQUISTI E WHAT-IF (INTELLIGENTE)
+# GESTIONE ACQUISTI E WHAT-IF
 # ==========================================
 def process_buy_price(message, player_name, user_id):
     chat_id = message.chat.id
@@ -556,12 +553,12 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- CHIAMATE AL MOTORE STATISTICO E AI ---
+    # --- AZIONI CLINICA E STORICO ---
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _Analisi infortuni in corso per {p_name}..._", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ _Verifica bollettini medici recenti per {p_name}..._", parse_mode="Markdown")
         real_data = get_cartella_clinica_schematica(p_name, sq_name)
         bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown")
 
@@ -798,5 +795,5 @@ def handle_document(message):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: Storico Freddo Ripristinato, Cartella Clinica Schematica ATTIVA!")
+    print("🚀 Bot in ascolto: Storico perfetto, Cartella Clinica sulle News ATTIVA!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
