@@ -46,24 +46,35 @@ bot = telebot.TeleBot(TOKEN)
 ROLE_ICONS = {'P': '🧤', 'D': '🛡️', 'C': '⚙️', 'A': '🎯'}
 TEAM_COLORS = {
     'Atalanta': '🔵⚫', 'Bologna': '🔴🔵', 'Cagliari': '🔴🔵', 'Como': '🔵⚪',
-    'Empoli': '🔵⚪', 'Fiorentina': '💜', 'Genoa': '🔴🔵', 'Inter': '🔵⚫',
-    'Juventus': '⚪⚫', 'Lazio': '🩵⚪', 'Lecce': '🟡🔴', 'Milan': '🔴⚫',
-    'Monza': '🔴⚪', 'Napoli': '🔵⚪', 'Parma': '🟡🔵', 'Roma': '🟡🔴',
-    'Torino': '🟤⚪', 'Udinese': '⚪⚫', 'Venezia': '🟠🟢', 'Verona': '🟡🔵'
+    'Empoli': '🔵⚪', 'Fiorentina': '💜', 'Frosinone': '🟡🔵', 'Genoa': '🔴🔵', 
+    'Inter': '🔵⚫', 'Juventus': '⚪⚫', 'Lazio': '🩵⚪', 'Lecce': '🟡🔴', 
+    'Milan': '🔴⚫', 'Monza': '🔴⚪', 'Napoli': '🔵⚪', 'Parma': '🟡🔵', 
+    'Roma': '🟡🔴', 'Sassuolo': '🟢⚫', 'Torino': '🟤⚪', 'Udinese': '⚪⚫', 
+    'Venezia': '🟠🟢'
 }
 
-# Gerarchie dinamiche di base (aggiornabili dal listone carito)
+# Gerarchie rigoristi e tiratori sincronizzate al 100% con le schede fornite
 GERARCHIE_RIGORISTI = {
-    'Inter': {'rigoristi': ['Calhanoglu', 'Lautaro', 'Zielinski'], 'punizioni': ['Calhanoglu', 'Dimarco']},
-    'Milan': {'rigoristi': ['Pulisic', 'Gimenez', 'Modric'], 'punizioni': ['Pulisic', 'Modric']},
-    'Juventus': {'rigoristi': ['Vlahovic', 'David', 'Yildiz'], 'punizioni': ['Yildiz', 'Vlahovic']},
-    'Napoli': {'rigoristi': ['Lukaku', 'De Bruyne', 'Politano'], 'punizioni': ['Politano', 'De Bruyne']},
-    'Roma': {'rigoristi': ['Dybala', 'Soulé', 'Dovbyk'], 'punizioni': ['Pellegrini', 'Dybala']},
-    'Lazio': {'rigoristi': ['Zaccagni', 'Castellanos', 'Dia'], 'punizioni': ['Rovella', 'Zaccagni']},
-    'Atalanta': {'rigoristi': ['Lookman', 'Ederson', 'De Ketelaere'], 'punizioni': ['Lookman', 'Ederson']},
-    'Fiorentina': {'rigoristi': ['Kean', 'Gudmundsson'], 'punizioni': ['Gudmundsson', 'Mandragora']},
-    'Bologna': {'rigoristi': ['Orsolini', 'Ferguson'], 'punizioni': ['Orsolini', 'Fabbian']},
-    'Torino': {'rigoristi': ['Zapata', 'Adams', 'Vlasic'], 'punizioni': ['Biraghi', 'Vlasic']}
+    'Atalanta': {'rigoristi': ['Scamacca', 'Krstovic', 'Samardzic'], 'punizioni': ['De Ketelaere', 'Samardzic', 'Gaetano']},
+    'Bologna': {'rigoristi': ['Orsolini', 'Bernardeschi', 'Dovbyk'], 'punizioni': ['Orsolini', 'Bernardeschi', 'Miranda J.']},
+    'Cagliari': {'rigoristi': ['Mina', 'Fazzini', 'Borrelli'], 'punizioni': ['Fazzini', 'Winks', 'Mina']},
+    'Como': {'rigoristi': ['Da Cunha', 'Douvikas', 'Paz N.'], 'punizioni': ['Paz N.', 'Baturina', 'Da Cunha']},
+    'Fiorentina': {'rigoristi': ['Gudmundsson A.', 'Kean', 'Mandragora'], 'punizioni': ['Gudmundsson A.', 'Mastantuono', 'Atta']},
+    'Frosinone': {'rigoristi': ['Calò', 'Raimondo', 'Ghedjemis'], 'punizioni': ['Calò', 'Ghedjemis', 'Zerbin']},
+    'Genoa': {'rigoristi': ['Colombo', 'Ostigard', 'Vitinha O.'], 'punizioni': ['Baldanzi', 'Martin', 'Vitinha O.']},
+    'Inter': {'rigoristi': ['Calhanoglu', 'Zielinski', 'Martinez L.'], 'punizioni': ['Calhanoglu', 'Dimarco', 'Zielinski']},
+    'Juventus': {'rigoristi': ['Kolo Muani', 'Yildiz', 'Locatelli'], 'punizioni': ['Locatelli', 'Cambiaso']},
+    'Lazio': {'rigoristi': ['Zaccagni', 'Taylor K.', 'Cataldi'], 'punizioni': ['Rovella', 'Zaccagni', 'Cataldi']},
+    'Lecce': {'rigoristi': ['Geubbels', 'Stengs', 'Berisha M.'], 'punizioni': ['Pierotti', 'Berisha M.', 'Gandelman']},
+    'Milan': {'rigoristi': ['Nkunku', 'Ramos G.', 'Pulisic'], 'punizioni': ['Modric', 'Pulisic', 'Saelemaekers']},
+    'Monza': {'rigoristi': ['Pessina', 'Cutrone', 'Petagna'], 'punizioni': ['Pessina', 'Colpani', 'Mota']},
+    'Napoli': {'rigoristi': ['De Bruyne', 'Hojlund', 'Politano'], 'punizioni': ['De Bruyne', 'Politano', 'Neres']},
+    'Parma': {'rigoristi': ['Pellegrino M.', 'Touré E.', 'Valeri'], 'punizioni': ['Bernabé', 'Nicolussi Caviglia', 'Valeri']},
+    'Roma': {'rigoristi': ['Malen', 'Dybala', 'Castro S.'], 'punizioni': ['Dybala', 'Malen', 'Soulé']},
+    'Sassuolo': {'rigoristi': ['Berardi', 'Pinamonti', 'Laurienté'], 'punizioni': ['Berardi', 'Laurienté', 'Adzic']},
+    'Torino': {'rigoristi': ['Vlasic', 'Kulenovic', 'Simeone'], 'punizioni': ['Vlasic', 'Oristanio', 'Gineitis']},
+    'Udinese': {'rigoristi': ['Davis K.', 'Solet', 'Zaniolo'], 'punizioni': ['Zaniolo', 'Ekkelenkamp', 'Unai Gomez']},
+    'Venezia': {'rigoristi': ['Adams A.', 'Rrahmani Al.', 'Adorante'], 'punizioni': ['Busio', 'Yeboah J.', 'Perez K.']}
 }
 
 DATABASE_SCOMMESSE_PURE = [
@@ -745,7 +756,7 @@ def handle_callbacks(call):
         else: bot.send_message(chat_id, testo_form, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_rigoristi":
-        testo = "🎯 <b>RADAR RIGORISTI & TIRATORI</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        testo = "🎯 <b>RADAR RIGORISTI & TIRATORI UFFICIALE</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
         for sq, dati in GERARCHIE_RIGORISTI.items():
             testo += f"<b>{get_team_icon(sq)} {sq}:</b>\n"
             testo += f"⚽ Rigoristi: {', '.join(dati['rigoristi'])}\n"
