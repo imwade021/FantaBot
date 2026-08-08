@@ -155,7 +155,15 @@ load_data()
 user_sessions = {}
 def get_session(user_id):
     if user_id not in user_sessions: 
-        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'wishlist': [], 'scartati': [], 'compare_p1': None}
+        user_sessions[user_id] = {
+            'budget': 500, 
+            'rosa': [], 
+            'wishlist': [], 
+            'scartati': [], 
+            'compare_p1': None,
+            'lega_budget_iniziale': 500,  
+            'lega_partecipanti': 8        
+        }
     return user_sessions[user_id]
 
 def get_roster_stats(session):
@@ -411,6 +419,17 @@ def calcola_formazione_ideale(session, df):
 # ==========================================
 # CARDS E DASHBOARD
 # ==========================================
+def main_menu_keyboard():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("👕 Esplora", callback_data="sq_start"), InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"))
+    markup.add(InlineKeyboardButton("⚽ Formazione Ideale", callback_data="menu_formazione"), InlineKeyboardButton("🎯 Radar Rigoristi", callback_data="menu_rigoristi"))
+    markup.add(InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist"), InlineKeyboardButton("📊 Studio & Trade 3D", callback_data="menu_studio_start"))
+    markup.add(InlineKeyboardButton("🔥 Power Index (Forma)", callback_data="menu_power"), InlineKeyboardButton("🛡️ Modificatore 6.5", callback_data="menu_modificatore"))
+    markup.add(InlineKeyboardButton("🏆 Top Liberi", callback_data="menu_top_start"), InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme_start"))
+    markup.add(InlineKeyboardButton("🚨 Panic Button", callback_data="menu_panic_start"), InlineKeyboardButton("🛠️ Strumenti PRO", callback_data="menu_pro"))
+    markup.add(InlineKeyboardButton("⚙️ Impostazioni Lega", callback_data="menu_impostazioni_lega"), InlineKeyboardButton("⚙️ Sistema", callback_data="menu_sistema"))
+    return markup
+
 def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
     p_data = df[df['Nome'] == player_name].iloc[0]
     sq_name = p_data.get('Squadra', '-')
@@ -424,34 +443,64 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     try: fvm_val = float(str(fvm).replace(',', '.'))
     except ValueError: fvm_val = 0
 
-    if fvm_val >= 80: slot, tip = "1° Slot ⭐️⭐️⭐️", "💎 Top assoluto."
-    elif 40 <= fvm_val < 80: slot, tip = "2° Slot ⭐️⭐️", "⚖️ Ottima spalla."
-    elif 15 <= fvm_val < 40: slot, tip = "3°/4° Slot ⭐️", "🚜 Utile per rotazione."
-    else: slot, tip = "Scommessa / Tappabuchi ❓", "🎲 Low-cost."
+    # ==========================================
+    # 🎯 ALGORITMO FAIR PRICE DINAMICO
+    # ==========================================
+    lega_bud = session.get('lega_budget_iniziale', 500)
+    lega_part = session.get('lega_partecipanti', 8)
+    
+    f_bud = lega_bud / 500.0
+    f_part = 1 + ((lega_part - 8) * 0.05)
+    
+    fair_price = int(fvm_val * f_bud * f_part)
+    max_rilancio = int(fair_price * 1.15) 
+    asta_stop = int(fair_price * 1.30)    
 
+    if fair_price == 0: fair_price, max_rilancio, asta_stop = 1, 1, 2
+
+    # ==========================================
+    # 📉 MATRIX DI OPPORTUNITÀ (CPM)
+    # ==========================================
+    tag_matrix = "⚖️ <b>[IN MEDIA]</b> <i>Rendimento allineato al costo.</i>"
     row_stats = find_player_in_stats(player_name)
+    
+    rischio = "⚪ NON DISPONIBILE"
     if row_stats is not None:
-        pv, amm = int(row_stats.get('Pv', 0)), int(row_stats.get('Amm', 0))
-        if pv < 15 or amm > 8: rischio = "🔴 ALTO"
-        elif pv < 25 or amm > 4: rischio = "🟡 MEDIO"
-        else: rischio = "🟢 BASSO"
-    else: rischio = "⚪ NON DISPONIBILE"
+        try:
+            pv, amm = int(row_stats.get('Pv', 0)), int(row_stats.get('Amm', 0))
+            fm = float(str(row_stats.get('Fm', 0)).replace(',', '.'))
+            mv = float(str(row_stats.get('Mv', 0)).replace(',', '.'))
+            gf, ass = int(row_stats.get('Gf', 0)), int(row_stats.get('Ass', 0))
+            
+            if pv < 15 or amm > 8: rischio = "🔴 ALTO"
+            elif pv < 25 or amm > 4: rischio = "🟡 MEDIO"
+            else: rischio = "🟢 BASSO"
+
+            if fair_price <= max(5, int(5 * f_bud)) and pv >= 15 and mv >= 5.90:
+                tag_matrix = "🛡️ <b>[DOLLAR-SAFETY]</b> <i>Titolare low-cost puro, salva-budget.</i>"
+            elif fair_price <= max(18, int(18 * f_bud)) and (fm >= 6.5 or (gf+ass) >= 4):
+                tag_matrix = "🔥 <b>[BONUS-UNDERPRICED]</b> <i>Affare d'oro! Sottovalutato.</i>"
+            elif fair_price >= int(40 * f_bud) and fm < 6.5 and pv < 20:
+                tag_matrix = "🚨 <b>[MONEY-TRAP]</b> <i>Trappola! Prezzo altissimo, scarso rendimento.</i>"
+                
+        except Exception: pass
 
     user_stats = get_roster_stats(session)
     budget_rimasto, giocatori_mancanti, limite_max = session['budget'], user_stats['slot_liberi'], user_stats['max_bid']
 
     info_text = (
-        f"{photo_embed}📋 <b>ANALISI GIOCATORE: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n"
+        f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n"
-        f"💰 <b>FVM Consigliato:</b> <code>{fvm}</code> cr. (Qt: <code>{p_data.get('Qt.A', '-')}</code>)\n"
-        f"🧮 <b>Inquadramento:</b> {slot}\n"
-        f"⚠️ <b>Indice Storico:</b> {rischio}{macellaio_alert}\n\n"
+        f"📉 <b>Matrix Opportunità:</b>\n{tag_matrix}\n"
+        f"⚠️ <b>Indice Storico (Rischio):</b> {rischio}{macellaio_alert}\n\n"
+        f"🎯 <b>VALUTAZIONE ASTA (Lega a {lega_part} - {lega_bud} cr)</b>\n"
+        f"💰 <b>Fair Price:</b> <code>{fair_price} cr.</code> (Valore Reale)\n"
+        f"🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n"
+        f"🛑 <b>OVERPAY (Asta Stop):</b> <code>> {asta_stop} cr.</code>\n\n"
         f"💼 <b>SITUAZIONE DELLA TUA ROSA</b>\n"
-        f"• Budget attuale: <code>{budget_rimasto}</code> cr.\n"
-        f"• Slot da riempire: <code>{giocatori_mancanti}</code>\n"
-        f"🛑 <b>LIMITE MAX DI SPESA: <code>{limite_max}</code> cr.</b>\n"
-        f"💡 <b>IL CONSIGLIO DEL BOT:</b> <i>{tip}</i>\n"
+        f"• Budget residuo: <code>{budget_rimasto}</code> cr. (Slot: <code>{giocatori_mancanti}</code>)\n"
+        f"🛑 <b>LIMITE DI SPESA (Max Bid): <code>{limite_max}</code> cr.</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
     )
     
@@ -475,20 +524,10 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         except Exception: pass
         bot.send_message(chat_id, info_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
 
-def main_menu_keyboard():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("👕 Esplora", callback_data="sq_start"), InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"))
-    markup.add(InlineKeyboardButton("⚽ Formazione Ideale", callback_data="menu_formazione"), InlineKeyboardButton("🎯 Radar Rigoristi", callback_data="menu_rigoristi"))
-    markup.add(InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist"), InlineKeyboardButton("📊 Studio & Trade 3D", callback_data="menu_studio_start"))
-    markup.add(InlineKeyboardButton("🔥 Power Index (Forma)", callback_data="menu_power"), InlineKeyboardButton("🛡️ Modificatore 6.5", callback_data="menu_modificatore"))
-    markup.add(InlineKeyboardButton("🏆 Top Liberi", callback_data="menu_top_start"), InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme_start"))
-    markup.add(InlineKeyboardButton("🚨 Panic Button", callback_data="menu_panic_start"), InlineKeyboardButton("🛠️ Strumenti PRO", callback_data="menu_pro"))
-    markup.add(InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen"), InlineKeyboardButton("⚙️ Sistema", callback_data="menu_sistema"))
-    return markup
-
 def system_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"), InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm"))
+    markup.add(InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen"))
     markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
     return markup
 
@@ -748,6 +787,50 @@ def handle_callbacks(call):
             try: bot.delete_message(chat_id, i)
             except Exception: pass
         send_dashboard(chat_id, user_id)
+        
+    elif call.data == "menu_impostazioni_lega":
+        b_iniziale = session.get('lega_budget_iniziale', 500)
+        part = session.get('lega_partecipanti', 8)
+        
+        markup = InlineKeyboardMarkup(row_width=3)
+        markup.row(
+            InlineKeyboardButton("💰 Bud: 300", callback_data="imposta_bud_300"),
+            InlineKeyboardButton("💰 500", callback_data="imposta_bud_500"),
+            InlineKeyboardButton("💰 1000", callback_data="imposta_bud_1000")
+        )
+        markup.row(
+            InlineKeyboardButton("👥 Lega: 8", callback_data="imposta_part_8"),
+            InlineKeyboardButton("👥 a 10", callback_data="imposta_part_10"),
+            InlineKeyboardButton("👥 a 12", callback_data="imposta_part_12")
+        )
+        markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
+        
+        testo = (
+            "⚙️ <b>IMPOSTAZIONI DELLA TUA LEGA</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>Budget Iniziale:</b> <code>{b_iniziale} cr.</code>\n"
+            f"👥 <b>Partecipanti:</b> <code>{part} squadre</code>\n\n"
+            "<i>Modifica questi valori per calcolare il <b>Fair Price dinamico esatto</b> durante l'asta!</i>\n"
+            "(Nota: modificare il budget resetterà la tua cassa attuale a quel valore)."
+        )
+        bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+    elif call.data.startswith("imposta_bud_"):
+        val = int(call.data.replace("imposta_bud_", ""))
+        session['lega_budget_iniziale'] = val
+        session['budget'] = val  # Rallinea la cassa attuale al nuovo budget
+        
+        safe_answer_callback(call.id, text=f"✅ Budget impostato a {val} cr!", show_alert=True)
+        call.data = "menu_impostazioni_lega"
+        handle_callbacks(call)
+
+    elif call.data.startswith("imposta_part_"):
+        val = int(call.data.replace("imposta_part_", ""))
+        session['lega_partecipanti'] = val
+        
+        safe_answer_callback(call.id, text=f"✅ Partecipanti impostati a {val}!", show_alert=True)
+        call.data = "menu_impostazioni_lega"
+        handle_callbacks(call)
 
     elif call.data == "menu_formazione":
         testo_form, img_buf = calcola_formazione_ideale(session, df)
@@ -786,7 +869,13 @@ def handle_callbacks(call):
         bot.send_message(chat_id, "⚡ <b>Dati sincronizzati con successo!</b>", parse_mode="HTML")
 
     elif call.data == "reset_confirm":
-        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'wishlist': session.get('wishlist', []), 'scartati': [], 'compare_p1': None}
+        # Conserverà anche i settings di lega preimpostati
+        lega_bud = session.get('lega_budget_iniziale', 500)
+        lega_part = session.get('lega_partecipanti', 8)
+        user_sessions[user_id] = {
+            'budget': lega_bud, 'rosa': [], 'wishlist': session.get('wishlist', []), 'scartati': [], 
+            'compare_p1': None, 'lega_budget_iniziale': lega_bud, 'lega_partecipanti': lega_part
+        }
         send_dashboard(chat_id, user_id, call.message.message_id)
 
     elif call.data == "menu_pro":
@@ -851,56 +940,54 @@ def handle_callbacks(call):
             return safe_answer_callback(call.id, text="⚠️ Hai già la rosa piena (25/25)!", show_alert=True)
             
         avail = get_available_players(df, session)
-        low_cost = avail[(avail['FVM'] >= 1) & (avail['FVM'] <= 5)].copy()
+        if avail.empty:
+            return safe_answer_callback(call.id, text="⚠️ Nessun giocatore disponibile nel listone!", show_alert=True)
+
+        low_cost = avail[pd.to_numeric(avail['FVM'], errors='coerce').fillna(0) <= 5].copy()
+        if low_cost.empty:
+            low_cost = avail.sort_values(by='FVM', ascending=True).head(20)
+
         spiccioli_top = []
-        
-        # Filtra e ordina in base alle statistiche reali se disponibili
         if STATS_CACHE is not None and not STATS_CACHE.empty:
             for _, row in low_cost.iterrows():
                 nome = row['Nome']
                 st = find_player_in_stats(nome)
                 if st is not None:
                     try:
-                        pv = int(st.get('Pv', 0))
+                        pv = int(pd.to_numeric(st.get('Pv', 0), errors='coerce'))
                         mv = float(str(st.get('Mv', 0)).replace(',', '.'))
                         fm = float(str(st.get('Fm', 0)).replace(',', '.'))
-                        gf = int(st.get('Gf', 0))
-                        ass = int(st.get('Ass', 0))
-                        amm = int(st.get('Amm', 0))
                         
-                        # Criterio di merito: presenze e rendimento solido
-                        if pv >= 10 and (mv >= 5.85 or fm >= 6.00 or (gf + ass) >= 1):
-                            score = fm + (pv * 0.05) - (amm * 0.1)
+                        if pv >= 1 or fm > 0:
                             spiccioli_top.append({
                                 'nome': nome,
                                 'ruolo': row['R'],
                                 'squadra': row['Squadra'],
-                                'fvm': row['FVM'],
-                                'mv': mv,
-                                'fm': fm,
-                                'pv': pv,
-                                'score': score
+                                'fvm': row.get('FVM', 1),
+                                'fm': fm if fm > 0 else mv,
+                                'pv': pv
                             })
                     except Exception: pass
-        
-        markup = InlineKeyboardMarkup(row_width=1)
-        
-        if spiccioli_top:
-            spiccioli_top = sorted(spiccioli_top, key=lambda x: x['score'], reverse=True)
-            for p in spiccioli_top[:10]:
-                text_btn = f"🎰 {p['nome']} ({p['ruolo']} - {p['squadra']}) ─ FM:{p['fm']} | Pres:{p['pv']}"
-                markup.add(InlineKeyboardButton(text_btn, callback_data=f"sq_pl_{p['nome']}"))
-            testo_header = f"🎰 <b>TAPPABUCHI LOW-COST TOP RENDIMENTO</b>\nSelezionati da 1-5 crediti con le migliori statistiche di presenze e voti reali:"
-        else:
-            low_cost_sorted = low_cost.sort_values(by='FVM', ascending=False).head(10)
-            for _, row in low_cost_sorted.iterrows():
-                markup.add(InlineKeyboardButton(f"🎰 {row['Nome']} ({row['R']} - {row['Squadra']}) ─ FVM: {row['FVM']}", callback_data=f"sq_pl_{row['Nome']}"))
-            testo_header = f"🎰 <b>ULTIMI SPICCIOLI LOW-COST</b>\nGiocatori economici da 1-5 crediti ancora disponibili:"
 
-        markup.add(InlineKeyboardButton("🔄 Aggiorna Lista", callback_data="pro_spiccioli"), 
+        markup = InlineKeyboardMarkup(row_width=1)
+        if spiccioli_top:
+            spiccioli_top = sorted(spiccioli_top, key=lambda x: (x['pv'], x['fm']), reverse=True)
+            for p in spiccioli_top[:10]:
+                markup.add(InlineKeyboardButton(f"🎰 {p['nome']} ({p['ruolo']} - {p['squadra']}) ─ FM:{p['fm']:.1f} | Pres:{p['pv']}", callback_data=f"sq_pl_{p['nome']}"))
+            testo_header = "🎰 <b>TAPPABUCHI LOW-COST (ORDINATI PER PRESENZE E FM)</b>\nI migliori calciatori economici con minutaggio reale:"
+        else:
+            sample_players = low_cost.sample(min(10, len(low_cost))) if len(low_cost) >= 10 else low_cost
+            for _, row in sample_players.iterrows():
+                markup.add(InlineKeyboardButton(f"🎰 {row['Nome']} ({row['R']} - {row['Squadra']}) ─ FVM: {row.get('FVM', 1)}", callback_data=f"sq_pl_{row['Nome']}"))
+            testo_header = "🎰 <b>ULTIMI SPICCIOLI LOW-COST</b>\nGiocatori economici ancora disponibili nel Listone:"
+
+        markup.add(InlineKeyboardButton("🔄 Aggiorna / Altri Nomi", callback_data="pro_spiccioli"), 
                    InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
-        
-        bot.edit_message_text(f"{testo_header}\n<i>(Budget residuo: {budget} cr. per {slot} slot)</i>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+        try:
+            bot.edit_message_text(f"{testo_header}\n<i>(Budget residuo: {budget} cr. per {slot} slot)</i>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            bot.send_message(chat_id, f"{testo_header}\n<i>(Budget residuo: {budget} cr. per {slot} slot)</i>", parse_mode="HTML", reply_markup=markup)
 
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
