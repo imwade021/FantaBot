@@ -846,18 +846,61 @@ def handle_callbacks(call):
     elif call.data == "pro_spiccioli":
         stats = get_roster_stats(session)
         budget, slot = stats['budget'], stats['slot_liberi']
-        if slot <= 0: return bot.answer_callback_query(call.id, text="⚠️ Rosa piena!", show_alert=True)
+        
+        if slot <= 0: 
+            return safe_answer_callback(call.id, text="⚠️ Hai già la rosa piena (25/25)!", show_alert=True)
             
         avail = get_available_players(df, session)
-        low_cost = avail[avail['FVM'] > 0].sort_values(by='FVM', ascending=False)
-        if low_cost.empty: return bot.answer_callback_query(call.id, text="⚠️ Nessun giocatore libero!", show_alert=True)
-            
-        combo = low_cost.head(slot * 3).sample(min(slot, len(low_cost)))
+        low_cost = avail[(avail['FVM'] >= 1) & (avail['FVM'] <= 5)].copy()
+        spiccioli_top = []
+        
+        # Filtra e ordina in base alle statistiche reali se disponibili
+        if STATS_CACHE is not None and not STATS_CACHE.empty:
+            for _, row in low_cost.iterrows():
+                nome = row['Nome']
+                st = find_player_in_stats(nome)
+                if st is not None:
+                    try:
+                        pv = int(st.get('Pv', 0))
+                        mv = float(str(st.get('Mv', 0)).replace(',', '.'))
+                        fm = float(str(st.get('Fm', 0)).replace(',', '.'))
+                        gf = int(st.get('Gf', 0))
+                        ass = int(st.get('Ass', 0))
+                        amm = int(st.get('Amm', 0))
+                        
+                        # Criterio di merito: presenze e rendimento solido
+                        if pv >= 10 and (mv >= 5.85 or fm >= 6.00 or (gf + ass) >= 1):
+                            score = fm + (pv * 0.05) - (amm * 0.1)
+                            spiccioli_top.append({
+                                'nome': nome,
+                                'ruolo': row['R'],
+                                'squadra': row['Squadra'],
+                                'fvm': row['FVM'],
+                                'mv': mv,
+                                'fm': fm,
+                                'pv': pv,
+                                'score': score
+                            })
+                    except Exception: pass
+        
         markup = InlineKeyboardMarkup(row_width=1)
-        for _, row in combo.iterrows():
-            markup.add(InlineKeyboardButton(f"🎰 {row['Nome']} ({row['R']}) FVM:{row['FVM']}", callback_data=f"sq_pl_{row['Nome']}"))
-        markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
-        bot.edit_message_text(f"🎰 <b>ROULETTE SPICCIOLI</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        
+        if spiccioli_top:
+            spiccioli_top = sorted(spiccioli_top, key=lambda x: x['score'], reverse=True)
+            for p in spiccioli_top[:10]:
+                text_btn = f"🎰 {p['nome']} ({p['ruolo']} - {p['squadra']}) ─ FM:{p['fm']} | Pres:{p['pv']}"
+                markup.add(InlineKeyboardButton(text_btn, callback_data=f"sq_pl_{p['nome']}"))
+            testo_header = f"🎰 <b>TAPPABUCHI LOW-COST TOP RENDIMENTO</b>\nSelezionati da 1-5 crediti con le migliori statistiche di presenze e voti reali:"
+        else:
+            low_cost_sorted = low_cost.sort_values(by='FVM', ascending=False).head(10)
+            for _, row in low_cost_sorted.iterrows():
+                markup.add(InlineKeyboardButton(f"🎰 {row['Nome']} ({row['R']} - {row['Squadra']}) ─ FVM: {row['FVM']}", callback_data=f"sq_pl_{row['Nome']}"))
+            testo_header = f"🎰 <b>ULTIMI SPICCIOLI LOW-COST</b>\nGiocatori economici da 1-5 crediti ancora disponibili:"
+
+        markup.add(InlineKeyboardButton("🔄 Aggiorna Lista", callback_data="pro_spiccioli"), 
+                   InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
+        
+        bot.edit_message_text(f"{testo_header}\n<i>(Budget residuo: {budget} cr. per {slot} slot)</i>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
