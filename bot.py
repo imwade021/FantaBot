@@ -885,7 +885,11 @@ def handle_callbacks(call):
         safe_answer_callback(call.id, text=f"✅ {p_name} aggiunto alla Wishlist!", show_alert=True)
         send_dashboard(chat_id, user_id, call.message.message_id)
 
-    elif call.data == "menu_modificatore":
+    elif call.data.startswith("menu_modificatore"):
+        parts = call.data.split("_page_")
+        page = int(parts[1]) if len(parts) > 1 else 1
+        per_page = 15
+
         avail = get_available_players(df, session)
         mod_players = []
         
@@ -893,7 +897,6 @@ def handle_callbacks(call):
             for _, row in avail[avail['R'] == 'D'].iterrows():
                 nome = row['Nome']
                 fvm = row.get('FVM', 0)
-                
                 stats = find_player_in_stats(nome)
                 if stats is not None:
                     try:
@@ -901,40 +904,39 @@ def handle_callbacks(call):
                         pv = int(stats.get('Pv', 0))
                         amm = int(stats.get('Amm', 0))
                         
-                        if pv >= 20 and mv >= 6.05 and fvm <= 35:
+                        if pv >= 15 and mv >= 6.00 and fvm <= 35:
                             indice_pulizia = mv - (amm * 0.02) 
                             mod_players.append({
-                                'nome': nome,
-                                'fvm': fvm,
-                                'mv': mv,
-                                'amm': amm,
-                                'pv': pv,
-                                'indice': indice_pulizia,
-                                'squadra': row.get('Squadra', '-')
+                                'nome': nome, 'fvm': fvm, 'mv': mv, 'amm': amm,
+                                'pv': pv, 'indice': indice_pulizia, 'squadra': row.get('Squadra', '-')
                             })
-                    except Exception:
-                        pass
+                    except Exception: pass
         
         markup = InlineKeyboardMarkup(row_width=1)
         
         if mod_players:
-            mod_players = sorted(mod_players, key=lambda x: x['indice'], reverse=True)[:25]
+            sorted_players = sorted(mod_players, key=lambda x: x['indice'], reverse=True)
+            start_idx = (page - 1) * per_page
+            end_idx = start_idx + per_page
+            page_players = sorted_players[start_idx:end_idx]
             
-            for p in mod_players:
+            for p in page_players:
                 btn_text = f"🛡️ {p['nome']} (MV:{p['mv']} | 🟨{p['amm']}) ─ {p['fvm']} cr."
                 markup.add(InlineKeyboardButton(btn_text, callback_data=f"sq_pl_{p['nome']}"))
             
-            testo = (
-                "🛡️ <b>MODIFICATORE 6.5 - DEFENCE ELITE</b>\n"
-                "<i>Dati incrociati con lo Storico Reale.</i>\n\n"
-                "Ecco i <b>TOP 25 Difensori</b> per il Modificatore: regolaristi con <b>MV > 6.05</b>, "
-                "tante presenze e pochi cartellini. (Ordinati dal migliore al peggiore)"
-            )
+            if len(sorted_players) > end_idx:
+                markup.add(InlineKeyboardButton(f"➕ Mostra altri {min(15, len(sorted_players) - end_idx)}", callback_data=f"menu_modificatore_page_{page + 1}"))
+            
+            testo = f"🛡️ <b>MODIFICATORE 6.5 - DEFENCE ELITE</b> (Pag. {page})\n<i>Ordinati per rendimento reale.</i>"
         else:
-            mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 5) & (avail['FVM'] <= 35)].sort_values(by='FVM', ascending=False).head(25)
-            for _, row in mods.iterrows(): 
+            mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 5) & (avail['FVM'] <= 35)].sort_values(by='FVM', ascending=False)
+            start_idx = (page - 1) * per_page
+            end_idx = start_idx + per_page
+            for _, row in mods.iloc[start_idx:end_idx].iterrows():
                 markup.add(InlineKeyboardButton(f"🛡️ {row['Nome']} (FVM: {row['FVM']})", callback_data=f"sq_pl_{row['Nome']}"))
-            testo = "🛡️ <b>MODIFICATORE 6.5</b>\nI 25 migliori difensori per il modificatore."
+            if len(mods) > end_idx:
+                markup.add(InlineKeyboardButton(f"➕ Mostra altri {min(15, len(mods) - end_idx)}", callback_data=f"menu_modificatore_page_{page + 1}"))
+            testo = f"🛡️ <b>MODIFICATORE 6.5</b> (Pag. {page})"
 
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
@@ -985,13 +987,31 @@ def handle_callbacks(call):
         bot.edit_message_text("💎 <b>GEMME NASCOSTE (FVM 6-20) - Scegli il ruolo:</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data.startswith("menu_gemme_ru_"):
-        r = call.data.replace("menu_gemme_ru_", "")
+        raw_data = call.data.replace("menu_gemme_ru_", "")
+        if "_page_" in raw_data:
+            r, p_str = raw_data.split("_page_")
+            page = int(p_str)
+        else:
+            r = raw_data
+            page = 1
+            
+        per_page = 15
         avail = get_available_players(df, session)
-        gemme = avail[(avail['R'] == r) & (avail['FVM'] <= 20) & (avail['FVM'] >= 6)].sort_values(by='FVM', ascending=False).head(15)
+        gemme = avail[(avail['R'] == r) & (avail['FVM'] <= 20) & (avail['FVM'] >= 6)].sort_values(by='FVM', ascending=False)
+        
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        page_gemme = gemme.iloc[start_idx:end_idx]
+        
         markup = InlineKeyboardMarkup(row_width=1)
-        for _, row in gemme.iterrows(): markup.add(InlineKeyboardButton(f"💎 {row['Nome']} FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
+        for _, row in page_gemme.iterrows():
+            markup.add(InlineKeyboardButton(f"💎 {row['Nome']} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
+            
+        if len(gemme) > end_idx:
+            markup.add(InlineKeyboardButton(f"➕ Mostra altri {min(15, len(gemme) - end_idx)}", callback_data=f"menu_gemme_ru_{r}_page_{page + 1}"))
+            
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_gemme_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"💎 <b>GEMME NASCOSTE - RUOLO {ROLE_ICONS[r]} {r}:</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text(f"💎 <b>GEMME NASCOSTE - {ROLE_ICONS[r]} {r}</b> (Pag. {page}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_panic_start":
         markup = InlineKeyboardMarkup(row_width=4)
@@ -1000,13 +1020,31 @@ def handle_callbacks(call):
         bot.edit_message_text("🚨 <b>PANIC BUTTON (FVM 1-5) - Scegli il ruolo:</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data.startswith("menu_panic_ru_"):
-        r = call.data.replace("menu_panic_ru_", "")
+        raw_data = call.data.replace("menu_panic_ru_", "")
+        if "_page_" in raw_data:
+            r, p_str = raw_data.split("_page_")
+            page = int(p_str)
+        else:
+            r = raw_data
+            page = 1
+            
+        per_page = 15
         avail = get_available_players(df, session)
-        panic_list = avail[(avail['R'] == r) & (avail['FVM'] <= 5) & (avail['FVM'] >= 1)].sort_values(by='FVM', ascending=False).head(15)
+        panic_list = avail[(avail['R'] == r) & (avail['FVM'] <= 5) & (avail['FVM'] >= 1)].sort_values(by='FVM', ascending=False)
+        
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        page_panic = panic_list.iloc[start_idx:end_idx]
+        
         markup = InlineKeyboardMarkup(row_width=1)
-        for _, row in panic_list.iterrows(): markup.add(InlineKeyboardButton(f"🚨 {row['Nome']} FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
+        for _, row in page_panic.iterrows():
+            markup.add(InlineKeyboardButton(f"🚨 {row['Nome']} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
+            
+        if len(panic_list) > end_idx:
+            markup.add(InlineKeyboardButton(f"➕ Mostra altri {min(15, len(panic_list) - end_idx)}", callback_data=f"menu_panic_ru_{r}_page_{page + 1}"))
+            
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_panic_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🚨 <b>PANIC BUTTON - RUOLO {ROLE_ICONS[r]} {r}:</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text(f"🚨 <b>PANIC BUTTON - {ROLE_ICONS[r]} {r}</b> (Pag. {page}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_scommessa_start":
         avail = get_available_players(df, session)
