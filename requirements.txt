@@ -1,10 +1,12 @@
-pyTelegramBotAPI==4.14.0
+pyTelegramBotAPI
 pandas
 numpy
 requests
 beautifulsoup4
-duckduckgo_search
-openpyxl
-SpeechRecognition
-pydub
 apscheduler
+flask
+Pillow
+pydub
+SpeechRecognition
+duckduckgo-search
+openpyxl
