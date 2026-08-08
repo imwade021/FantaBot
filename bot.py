@@ -496,10 +496,22 @@ def process_buy_price(message, player_name, user_id):
 
     df = load_data()
     row = df[df['Nome'] == player_name].iloc[0]
-    session['rosa'].append({'nome': player_name, 'prezzo': costo, 'ruolo': row.get('R', 'C'), 'squadra': row.get('Squadra', '-'), 'fvm': pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')})
+    ruolo = row.get('R', 'C')
+    squadra = row.get('Squadra', '-')
+    
+    session['rosa'].append({
+        'nome': player_name, 
+        'prezzo': costo, 
+        'ruolo': ruolo, 
+        'squadra': squadra, 
+        'fvm': pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+    })
     session['budget'] -= costo
     bot.send_message(chat_id, f"✅ <b>{html.escape(player_name.upper())}</b> acquistato per <code>{costo} cr.</code>!", parse_mode="HTML")
     
+    # ---------------------------------------------------------
+    # 1. PARACADUTE ATTIVO (Coppie note nella stessa squadra)
+    # ---------------------------------------------------------
     p_lower = player_name.lower()
     if p_lower in COPPIE_NOTE:
         partner = COPPIE_NOTE[p_lower]
@@ -509,6 +521,54 @@ def process_buy_price(message, player_name, user_id):
             mk_coppia = InlineKeyboardMarkup().add(InlineKeyboardButton(f"⭐ Aggiungi {partner_nome_reale}", callback_data=f"wl_add_{partner_nome_reale}"))
             bot.send_message(chat_id, f"🪂 <b>PARACADUTE ATTIVO</b>\nHai preso un giocatore a rischio rotazione!\n👉 <b>Vuoi aggiungere {html.escape(partner_nome_reale.upper())} alla Wishlist per tutelarti?</b>", parse_mode="HTML", reply_markup=mk_coppia)
             
+    # ---------------------------------------------------------
+    # 2. GRIGLIA PORTIERI AUTOMATICA
+    # ---------------------------------------------------------
+    if ruolo == 'P':
+        # Dizionario delle migliori alternanze storiche/geografiche (chi gioca in casa quando l'altro è in trasferta)
+        incroci_perfetti = {
+            'Inter': 'Milan', 'Milan': 'Inter',
+            'Roma': 'Lazio', 'Lazio': 'Roma',
+            'Juventus': 'Torino', 'Torino': 'Juventus',
+            'Empoli': 'Fiorentina', 'Fiorentina': 'Empoli',
+            'Napoli': 'Verona', 'Verona': 'Napoli',
+            'Atalanta': 'Bologna', 'Bologna': 'Atalanta',
+            'Genoa': 'Como', 'Como': 'Genoa',
+            'Parma': 'Udinese', 'Udinese': 'Parma',
+            'Cagliari': 'Lecce', 'Lecce': 'Cagliari',
+            'Venezia': 'Monza', 'Monza': 'Venezia'
+        }
+        
+        squadra_incrocio = incroci_perfetti.get(squadra)
+        
+        if squadra_incrocio:
+            # Trova il miglior portiere dell'incrocio perfetto (ordinato per FVM)
+            portieri_target = df[(df['Squadra'] == squadra_incrocio) & (df['R'] == 'P')].sort_values(by='FVM', ascending=False)
+            
+            if not portieri_target.empty:
+                nome_incrocio = portieri_target.iloc[0]['Nome']
+                
+                # Cerca un 3° portiere low-cost (FVM bassissimo) da un'altra squadra per tappare eventuali buchi
+                terzi_portieri = df[(df['R'] == 'P') & (df['FVM'] > 0) & (df['FVM'] <= 3) & (df['Squadra'] != squadra) & (df['Squadra'] != squadra_incrocio)].sort_values(by='FVM', ascending=False)
+                
+                markup_griglia = InlineKeyboardMarkup(row_width=1)
+                markup_griglia.add(InlineKeyboardButton(f"⭐ Aggiungi {nome_incrocio} ({squadra_incrocio})", callback_data=f"wl_add_{nome_incrocio}"))
+                
+                if not terzi_portieri.empty:
+                    # Ne prende uno casuale tra i low cost per darti sempre idee nuove
+                    terzo = terzi_portieri.sample(1).iloc[0]
+                    markup_griglia.add(InlineKeyboardButton(f"⭐ Aggiungi {terzo['Nome']} (3° Tappabuchi - {terzo['Squadra']})", callback_data=f"wl_add_{terzo['Nome']}"))
+                
+                testo_griglia = (
+                    f"🕸️ <b>ANALISI GRIGLIA PORTIERI!</b>\n"
+                    f"Hai comprato un portiere del <b>{squadra}</b>.\n"
+                    f"L'incrocio di calendario perfetto (che gioca in casa quando il tuo va in trasferta) è il <b>{squadra_incrocio}</b>.\n\n"
+                    f"👉 <i>Aggiungi subito questi nomi alla tua Wishlist per completare il trio ideale:</i>"
+                )
+                
+                bot.send_message(chat_id, testo_griglia, parse_mode="HTML", reply_markup=markup_griglia)
+
+    # Ricarica la dashboard per mostrare il budget aggiornato
     send_dashboard(chat_id, user_id)
 
 def process_whatif_price(message, player_name, user_id):
@@ -630,7 +690,17 @@ def modalita_cecchino(message):
         session = get_session(user_id)
         stats = get_roster_stats(session)
         if costo > stats['max_bid']: return bot.reply_to(message, f"⚠️ <b>ALLARME BUDGET!</b>\nStai spendendo <code>{costo}</code>, ma il tuo Max Bid è <code>{stats['max_bid']}</code>.", parse_mode="HTML")
-        session['rosa'].append({'nome': player_name, 'prezzo': costo, 'ruolo': row.get('R', 'C'), 'squadra': row.get('Squadra', '-'), 'fvm': pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')})
+        
+        ruolo = row.get('R', 'C')
+        squadra = row.get('Squadra', '-')
+        
+        session['rosa'].append({
+            'nome': player_name, 
+            'prezzo': costo, 
+            'ruolo': ruolo, 
+            'squadra': squadra, 
+            'fvm': pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+        })
         session['budget'] -= costo
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("↩️ Annulla", callback_data=f"undo_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.reply_to(message, f"🎯 <b>CECCHINO A BERSAGLIO!</b>\n✅ Hai acquistato <b>{html.escape(player_name.upper())}</b> a <code>{costo} cr.</code>", parse_mode="HTML", reply_markup=markup)
@@ -817,11 +887,66 @@ def handle_callbacks(call):
 
     elif call.data == "menu_modificatore":
         avail = get_available_players(df, session)
-        mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 8) & (avail['FVM'] <= 25)].sort_values(by='FVM', ascending=False).head(15)
+        mod_players = []
+        
+        # Sfruttiamo il database delle statistiche reali!
+        if STATS_CACHE is not None and not STATS_CACHE.empty:
+            for _, row in avail[avail['R'] == 'D'].iterrows():
+                nome = row['Nome']
+                fvm = row.get('FVM', 0)
+                
+                # Cerchiamo il giocatore nelle statistiche reali
+                stats = find_player_in_stats(nome)
+                if stats is not None:
+                    try:
+                        # Estraiamo i valori reali
+                        mv = float(str(stats.get('Mv', 0)).replace(',', '.'))
+                        pv = int(stats.get('Pv', 0))
+                        amm = int(stats.get('Amm', 0))
+                        
+                        # CRITERI D'ORO: Almeno 20 presenze, Media Voto alta, prezzo non esagerato (FVM <= 35)
+                        if pv >= 20 and mv >= 6.05 and fvm <= 35:
+                            # Calcoliamo il vero "Indice Modificatore" (Media Voto - peso dei cartellini gialli)
+                            indice_pulizia = mv - (amm * 0.02) 
+                            mod_players.append({
+                                'nome': nome,
+                                'fvm': fvm,
+                                'mv': mv,
+                                'amm': amm,
+                                'pv': pv,
+                                'indice': indice_pulizia,
+                                'squadra': row.get('Squadra', '-')
+                            })
+                    except Exception:
+                        pass
+        
+        # Impostiamo 2 colonne per far entrare 25 bottoni in modo più compatto e leggibile
         markup = InlineKeyboardMarkup(row_width=1)
-        for _, row in mods.iterrows(): markup.add(InlineKeyboardButton(f"🛡️ {row['Nome']} (Costanza: {np.random.randint(80, 99)}%)", callback_data=f"sq_pl_{row['Nome']}"))
+        
+        if mod_players:
+            # Ordiniamo i difensori per l'Indice Modificatore decrescente e ne prendiamo 25!
+            mod_players = sorted(mod_players, key=lambda x: x['indice'], reverse=True)[:25]
+            
+            for p in mod_players:
+                # Testo accorciato per essere perfetto sui display dei telefoni
+                btn_text = f"🛡️ {p['nome']} (MV:{p['mv']} | 🟨{p['amm']}) ─ {p['fvm']} cr."
+                markup.add(InlineKeyboardButton(btn_text, callback_data=f"sq_pl_{p['nome']}"))
+            
+            testo = (
+                "🛡️ <b>ARCHITETTO MODIFICATORE 2.0</b>\n"
+                "<i>Dati incrociati con lo Storico Reale.</i>\n\n"
+                "Ecco i <b>TOP 25 Difensori</b> per il Modificatore: regolaristi con <b>MV > 6.05</b>, "
+                "tante presenze e pochi cartellini. (Ordinati dal migliore al peggiore)"
+            )
+        else:
+            # Fallback di emergenza se manca il file statistiche: ne peschiamo comunque 25
+            mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 5) & (avail['FVM'] <= 35)].sort_values(by='FVM', ascending=False).head(25)
+            for _, row in mods.iterrows(): 
+                markup.add(InlineKeyboardButton(f"🛡️ {row['Nome']} (FVM: {row['FVM']})", callback_data=f"sq_pl_{row['Nome']}"))
+            testo = "🛡️ <b>ARCHITETTO MODIFICATORE</b>\nI 25 migliori difensori per il modificatore."
+
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text("🛡️ <b>ARCHITETTO MODIFICATORE</b>\nGiocatori con media-voto altissima e pochissimi malus.", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_rosa":
         rosa = session.get('rosa', [])
