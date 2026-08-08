@@ -72,11 +72,13 @@ def get_team_icon(squadra):
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
 # ==========================================
-# GESTIONE DATABASE & SESSIONI
+# GESTIONE DATABASE & STATISTICHE REALI
 # ==========================================
 DATA_CACHE = None
+STATS_CACHE = None
+
 def load_data(force_reload=False):
-    global DATA_CACHE
+    global DATA_CACHE, STATS_CACHE
     if DATA_CACHE is None or force_reload:
         if os.path.exists("Lista-FantaAsta-Fantacalcio.csv"):
             try:
@@ -87,9 +89,17 @@ def load_data(force_reload=False):
                     'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
                 ]
                 DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE['FVM'], errors='coerce').fillna(0)
-                print("✅ File CSV caricato con successo!")
-                return DATA_CACHE
-            except Exception as e: print(f"⚠️ Errore lettura CSV: {e}")
+                print("✅ File CSV Listone caricato con successo!")
+            except Exception as e: print(f"⚠️ Errore lettura CSV Listone: {e}")
+
+    if STATS_CACHE is None or force_reload:
+        if os.path.exists("Statistiche.xlsx"):
+            try:
+                # Legge l'excel partendo dalla riga delle intestazioni (header=1)
+                STATS_CACHE = pd.read_excel("Statistiche.xlsx", header=1)
+                print("✅ File Statistiche.xlsx caricato con successo!")
+            except Exception as e: print(f"⚠️ Errore lettura Statistiche.xlsx: {e}")
+
     return DATA_CACHE
 
 load_data()
@@ -118,13 +128,67 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# RICERCHE WEB REALI (IL MOTORE DELLA "FERRARI")
+# MACELLAIO MATEMATICO & RICERCHE WEB
 # ==========================================
-def fetch_real_web_data(query, max_results=2):
-    """Scraper web autonomo: cerca su internet e legge i riassunti succosi degli articoli."""
-    output = []
+def get_macellaio_info(nome):
+    """Calcola se il giocatore è un macellaio analizzando le ammonizioni reali nell'Excel."""
+    if STATS_CACHE is None or STATS_CACHE.empty:
+        return ""
     
-    # Tentativo primario: usa BeautifulSoup per raschiare il web nudo e crudo
+    match = STATS_CACHE[STATS_CACHE['Nome'].astype(str).str.lower() == nome.lower()]
+    if match.empty:
+        match = STATS_CACHE[STATS_CACHE['Nome'].astype(str).str.lower().str.contains(nome.lower(), na=False)]
+        
+    if not match.empty:
+        row = match.iloc[0]
+        try:
+            amm = int(row.get('Amm', 0))
+            esp = int(row.get('Esp', 0))
+            pv = int(row.get('Pv', 1))
+            
+            # Se ha preso almeno 6 gialli o 1 rosso ed ha giocato più di 5 partite
+            if (amm >= 6 or esp >= 1) and pv > 5:
+                return f"\n🪓 *ALLARME MACELLAIO REALE:* `{amm} Gialli` e `{esp} Rossi` in `{pv} presenze`!"
+        except Exception:
+            pass
+            
+    return ""
+
+def get_storico_excel_o_web(nome, squadra=""):
+    """Prima cerca i dati matematici nell'Excel Statistiche, se non li trova usa la ricerca web."""
+    if STATS_CACHE is not None and not STATS_CACHE.empty:
+        match = STATS_CACHE[STATS_CACHE['Nome'].astype(str).str.lower() == nome.lower()]
+        if match.empty:
+            match = STATS_CACHE[STATS_CACHE['Nome'].astype(str).str.lower().str.contains(nome.lower(), na=False)]
+            
+        if not match.empty:
+            row = match.iloc[0]
+            pv = row.get('Pv', 0)
+            mv = row.get('Mv', 0.0)
+            fm = row.get('Fm', 0.0)
+            gf = row.get('Gf', 0)
+            ass = row.get('Ass', 0)
+            amm = row.get('Amm', 0)
+            esp = row.get('Esp', 0)
+            
+            return (
+                f"📊 *STORICO REALE UFFICIALE: {nome.upper()}*\n"
+                f"───────────────────────────\n"
+                f"🏟 Presenze a Voto: `{pv}`\n"
+                f"📈 Media Voto: `{mv}`  │  Fantamedia: `{fm}`\n"
+                f"⚽ Gol: `{gf}`  │  🎯 Assist: `{ass}`\n"
+                f"🟨 Gialli: `{amm}`  │  🟥 Rossi: `{esp}`\n"
+                f"───────────────────────────\n"
+                f"_Dati estratti dal file Ufficiale Statistiche._"
+            )
+
+    # Fallback su ricerca web se il giocatore non è nell'Excel
+    query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni transfermarkt fantacalcio'
+    return f"📊 *STORICO WEB REALE: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query, max_results=2)}"
+
+def fetch_real_web_data(query, max_results=2):
+    """Scraper web per le notizie su infortuni o informazioni storiche."""
+    output = []
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     try:
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
@@ -145,7 +209,6 @@ def fetch_real_web_data(query, max_results=2):
     except Exception as e:
         print(f"Errore BeautifulSoup: {e}")
 
-    # Tentativo secondario: se BS4 fallisce, usa la libreria duckduckgo_search
     if not output and WEB_SEARCH_ENABLED:
         try:
             results = DDGS().text(query, max_results=max_results)
@@ -157,22 +220,11 @@ def fetch_real_web_data(query, max_results=2):
     if output:
         return "\n\n---\n\n".join(output)
         
-    return "⚠️ Nessun risultato rilevante trovato sul web in questo momento."
-
-def get_storico_reale(nome, squadra=""):
-    # Cerca specificamente le statistiche della passata stagione
-    query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni espulsioni transfermarkt fantacalcio'
-    return f"📊 *STORICO REALE WEB: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query, max_results=2)}"
+    return "⚠️ Nessun dettaglio rilevante trovato sul web."
 
 def get_cartella_clinica_reale(nome, squadra=""):
-    # Cerca specificamente dettagli medici
     query = f'"{nome}" {squadra} infortunio tempi recupero rientro partite saltate SOS Fanta'
     return f"🏥 *CARTELLA CLINICA REALE: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query, max_results=2)}"
-
-def is_macellaio(nome, ruolo, fvm):
-    if ruolo in ['D', 'C'] and float(fvm) < 15:
-        if sum(ord(c) for c in nome) % 5 == 0: return True
-    return False
 
 def advanced_trade_analyzer(p1, p2):
     try:
@@ -224,7 +276,8 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     ruolo = p_data.get('R', '-')
     fvm = p_data.get('FVM', 0)
     
-    macellaio_alert = "\n🪓 *ALLARME MACELLAIO:* Prende troppi cartellini, evitalo se usi il Modificatore!" if is_macellaio(player_name, ruolo, fvm) else ""
+    # Calcola l'allarme macellaio reale dai dati dell'Excel
+    macellaio_alert = get_macellaio_info(player_name)
     
     info_text = (
         f"*{player_name.upper()}* ({get_team_icon(sq_name)} {sq_name})\n"
@@ -237,7 +290,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     markup = InlineKeyboardMarkup(row_width=2)
     
     markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}"))
-    markup.add(InlineKeyboardButton("📊 Storico Web", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica Web", callback_data=f"cl_{player_name}"))
+    markup.add(InlineKeyboardButton("📊 Storico Reale", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica Web", callback_data=f"cl_{player_name}"))
     markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
     if is_scommessa:
@@ -385,7 +438,7 @@ def process_whatif_price(message, player_name, user_id):
         overpay_warning = f"🛑 *FERMATI!* Stai strapagando! Il suo FVM è `{fvm}` e tu vuoi spendere `{hyp_price}`. È un salasso ingiustificato.\n"
 
     malus_warning = ""
-    if is_macellaio(player_name, ruolo, fvm):
+    if get_macellaio_info(player_name):
         malus_warning = "🪓 *IN PIÙ È UN MACELLAIO!* Prende cartellini a raffica, non buttare crediti qui.\n"
 
     if budget_left < slots_left:
@@ -484,10 +537,16 @@ def handle_document(message):
     if not (fname.endswith('.csv') or fname.endswith('.xlsx')): return bot.reply_to(message, "❌ Invia solo `.csv` o `.xlsx`!", parse_mode="Markdown")
     try:
         downloaded_file = bot.download_file(bot.get_file(message.document.file_id).file_path)
-        save_name = "Lista-FantaAsta-Fantacalcio.csv" if fname.endswith('.csv') else "listone.xlsx"
-        with open(save_name, 'wb') as new_file: new_file.write(downloaded_file)
-        load_data(force_reload=True)
-        bot.reply_to(message, "✅ *DATABASE LISTONE AGGIORNATO CON SUCCESSO!*", parse_mode="Markdown")
+        if "statistiche" in fname:
+            save_name = "Statistiche.xlsx"
+            with open(save_name, 'wb') as new_file: new_file.write(downloaded_file)
+            load_data(force_reload=True)
+            bot.reply_to(message, "✅ *FILE STATISTICHE UFFICIALI CARICATO!*", parse_mode="Markdown")
+        else:
+            save_name = "Lista-FantaAsta-Fantacalcio.csv" if fname.endswith('.csv') else "listone.xlsx"
+            with open(save_name, 'wb') as new_file: new_file.write(downloaded_file)
+            load_data(force_reload=True)
+            bot.reply_to(message, "✅ *DATABASE LISTONE AGGIORNATO!*", parse_mode="Markdown")
     except Exception as e: bot.send_message(chat_id, f"❌ Errore caricamento: {str(e)}")
 
 # ==========================================
@@ -565,12 +624,12 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- AZIONI FERRARI WEB ---
+    # --- AZIONI STORICO REALE ED INFORMAZIONI WEB ---
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _Ricerca dati infortuni completi sul web per {p_name}..._", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ _Ricerca notizie infortuni sul web per {p_name}..._", parse_mode="Markdown")
         real_data = get_cartella_clinica_reale(p_name, sq_name)
         bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown", disable_web_page_preview=True)
 
@@ -578,9 +637,8 @@ def handle_callbacks(call):
         p_name = call.data.replace("stats_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _Ricerca storico e articoli statistici sul web per {p_name}..._", parse_mode="Markdown")
-        real_data = get_storico_reale(p_name, sq_name)
-        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown", disable_web_page_preview=True)
+        real_data = get_storico_excel_o_web(p_name, sq_name)
+        bot.edit_message_text(real_data, chat_id, call.message.message_id, parse_mode="Markdown", disable_web_page_preview=True)
 
     elif call.data.startswith("wi_"):
         p_name = call.data.replace("wi_", "")
@@ -797,5 +855,5 @@ def handle_callbacks(call):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: La Ferrari ORIGINALE è in pista!")
+    print("🚀 Bot in ascolto: La Ferrari con Macellaio Reale è attiva!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
