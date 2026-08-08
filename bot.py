@@ -53,7 +53,7 @@ TEAM_COLORS = {
     'Venezia': '🟠🟢'
 }
 
-# Gerarchie rigoristi e tiratori sincronizzate al 100% con le schede fornite
+# Gerarchie rigoristi e tiratori sincronizzate con le schede ufficiali
 GERARCHIE_RIGORISTI = {
     'Atalanta': {'rigoristi': ['Scamacca', 'Krstovic', 'Samardzic'], 'punizioni': ['De Ketelaere', 'Samardzic', 'Gaetano']},
     'Bologna': {'rigoristi': ['Orsolini', 'Bernardeschi', 'Dovbyk'], 'punizioni': ['Orsolini', 'Bernardeschi', 'Miranda J.']},
@@ -807,16 +807,41 @@ def handle_callbacks(call):
 
     elif call.data == "pro_griglia":
         avail = get_available_players(df, session)
-        teams_target = ['Empoli', 'Lecce', 'Parma', 'Verona', 'Cagliari', 'Venezia']
+        squadre_abbordabili = ['Empoli', 'Lecce', 'Parma', 'Verona', 'Cagliari', 'Venezia', 'Como', 'Monza', 'Frosinone', 'Sassuolo']
+        squadre_medio_alte = ['Fiorentina', 'Bologna', 'Torino', 'Lazio', 'Atalanta', 'Genoa', 'Udinese']
+        
+        d_liberi = avail[(avail['R'] == 'D') & (avail['FVM'] >= 1) & (avail['FVM'] <= 20)].copy()
+        trio_tattico = []
+        
+        d_abb1 = d_liberi[d_liberi['Squadra'].isin(squadre_abbordabili)].sort_values(by='FVM', ascending=False)
+        if not d_abb1.empty:
+            p1 = d_abb1.sample(1).iloc[0]
+            trio_tattico.append(p1)
+            
+        sq_usate = [p['Squadra'] for p in trio_tattico]
+        d_abb2 = d_liberi[(d_liberi['Squadra'].isin(squadre_abbordabili)) & (~d_liberi['Squadra'].isin(sq_usate))].sort_values(by='FVM', ascending=False)
+        if not d_abb2.empty:
+            p2 = d_abb2.sample(1).iloc[0]
+            trio_tattico.append(p2)
+            
+        d_media = d_liberi[d_liberi['Squadra'].isin(squadre_medio_alte)].sort_values(by='FVM', ascending=False)
+        if not d_media.empty:
+            p3 = d_media.sample(1).iloc[0]
+            trio_tattico.append(p3)
+            
         markup = InlineKeyboardMarkup(row_width=1)
-        selected_teams = np.random.choice(teams_target, min(3, len(teams_target)), replace=False)
-        for sq in selected_teams:
-            d_pl = avail[(avail['Squadra'] == sq) & (avail['R'] == 'D')].sort_values(by='FVM', ascending=False)
-            if not d_pl.empty:
-                row = d_pl.iloc[0]
-                markup.add(InlineKeyboardButton(f"🕸️ {row['Nome']} ({sq})", callback_data=f"sq_pl_{row['Nome']}"))
-        markup.add(InlineKeyboardButton("🔄 Genera Nuova Griglia", callback_data="pro_griglia"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
-        bot.edit_message_text("🕸️ <b>GRIGLIA DIFENSIVA PERFETTA A 3</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        for row in trio_tattico:
+            markup.add(InlineKeyboardButton(f"🛡️ {row['Nome']} ({row['Squadra']}) ─ FVM: {row['FVM']}", callback_data=f"sq_pl_{row['Nome']}"))
+
+        markup.add(InlineKeyboardButton("🔄 Genera Altro Trio Tattico", callback_data="pro_griglia"), 
+                   InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
+        
+        testo = (
+            "🕸️ <b>GRIGLIA TATTICA \"PARTITE FACILI\" (TRIO IDEALE)</b>\n\n"
+            "Questo trio combina <b>2 difensori da squadre piccole</b> (per sfruttare le sfide dirette in casa) "
+            "e <b>1 difensore da squadra di fascia media</b> per darti sempre almeno una copertura da 6.5 in pagella:\n"
+        )
+        bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "pro_spiccioli":
         stats = get_roster_stats(session)
