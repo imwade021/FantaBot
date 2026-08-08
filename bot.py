@@ -1,10 +1,23 @@
 import os
 import io
 import re
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+import datetime
+import email.utils
 import pandas as pd
 import numpy as np
 import telebot
+import requests
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# Tenta di importare l'AI di Google Gemini
+try:
+    import google.generativeai as genai
+    AI_ENABLED = True
+except ImportError:
+    AI_ENABLED = False
 
 # Tenta di importare le librerie per i comandi vocali
 try:
@@ -14,22 +27,20 @@ try:
 except ImportError:
     VOICE_ENABLED = False
 
-# Importa la libreria per la ricerca web
-try:
-    from duckduckgo_search import DDGS
-    WEB_SEARCH_ENABLED = True
-except ImportError:
-    WEB_SEARCH_ENABLED = False
-
 # ==========================================
 # CONFIGURAZIONE INIZIALE & TOKEN
 # ==========================================
 TOKEN = os.getenv("BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TOKEN:
     raise ValueError("⚠️ ERRORE: La variabile d'ambiente BOT_TOKEN non è impostata su Render!")
 
 bot = telebot.TeleBot(TOKEN)
+
+# Configura Gemini se la chiave è presente
+if AI_ENABLED and GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
 ROLE_ICONS = {'P': '🧤', 'D': '🛡️', 'C': '⚙️', 'A': '🎯'}
 TEAM_COLORS = {
@@ -39,14 +50,6 @@ TEAM_COLORS = {
     'Monza': '🔴⚪', 'Napoli': '🔵⚪', 'Parma': '🟡🔵', 'Roma': '🟡🔴',
     'Torino': '🟤⚪', 'Udinese': '⚪⚫', 'Venezia': '🟠🟢', 'Verona': '🟡🔵'
 }
-
-DATABASE_SCOMMESSE_PURE = [
-    'bernabe', 'fazzini', 'bonny', 'oristanio', 'paz', 'marchwinski', 'castro', 
-    'belahyane', 'tengstedt', 'da cunha', 'moro', 'traore', 'pisilli', 'ekhator', 
-    'solet', 'idzes', 'mangas', 'milla', 'ndour', 'viti', 'goglichidze', 
-    'alajbegovic', 'suslov', 'mosquera', 'tchaouna', 'camarda', 'vitinha', 
-    'savona', 'mbangula', 'conceicao', 'dallinga', 'fabbian', 'braine'
-]
 
 COPPIE_NOTE = {
     'sommer': 'martinez jo.', 'martinez jo.': 'sommer',
@@ -115,10 +118,10 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# MOTORE STATISTICHE MATEMATICHE & CLINICA NEWS-BASED
+# STORICO FREDDO (MATEMATICO) E CARTELLA CLINICA "LASER"
 # ==========================================
 def get_storico_freddo(nome, ruolo, fvm):
-    """Ripristinato al modello matematico esatto per la stagione 25/26."""
+    """Storico puramente matematico e istantaneo."""
     fvm = float(fvm)
     if ruolo == 'A': gol, assist = int(fvm / 3.5) + np.random.randint(-2, 3), int(fvm / 15) + np.random.randint(0, 3)
     elif ruolo == 'C': gol, assist = int(fvm / 7) + np.random.randint(-1, 2), int(fvm / 8) + np.random.randint(0, 4)
@@ -137,44 +140,83 @@ def get_storico_freddo(nome, ruolo, fvm):
         f"_Dati stimati sull'impatto FVM stagionale._"
     )
 
-def get_cartella_clinica_schematica(nome, squadra):
-    """Sfrutta SOLO le News (che aggirano i blocchi Anti-Bot) e le fa riassumere all'AI."""
-    if not WEB_SEARCH_ENABLED:
-        return "⚠️ Errore: Libreria `duckduckgo_search` non trovata."
+def get_cartella_clinica_laser(nome, squadra):
+    """Feed RSS + API Gemini per schema laser a 4 righe."""
+    if not AI_ENABLED or not GEMINI_API_KEY:
+        return "⚠️ Errore: Manca la libreria `google-generativeai` o la `GEMINI_API_KEY` su Render."
+    
     try:
-        ddgs = DDGS()
-        # Usa ddgs.news() invece di text() per non incappare in blocchi Cloudflare
-        query = f'"{nome}" infortunio OR operazione OR recupero'
-        news_results = ddgs.news(query, max_results=4)
+        # FASE 1: RSS Infallibile
+        query = urllib.parse.quote(f'"{nome}" {squadra} infortunio OR lesione OR recupero OR operazione')
+        url = f"https://news.google.com/rss/search?q={query}&hl=it&gl=IT&ceid=IT:it"
         
-        if not news_results:
-            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n✅ Nessuna notizia recente di infortunio rilevata."
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            xml_data = response.read()
             
-        # Unisce titoli e corpo delle notizie recenti
-        testi_grezzi = " ".join([f"{r.get('title', '')}: {r.get('body', '')}" for r in news_results])
+        root = ET.fromstring(xml_data)
+        items = root.findall('.//item')
         
+        now = datetime.datetime.now()
+        testi_notizie = ""
+        count = 0
+        
+        for item in items:
+            pubDate = item.find('pubDate').text
+            title = item.find('title').text
+            
+            try:
+                date_tuple = email.utils.parsedate_tz(pubDate)
+                if date_tuple:
+                    dt = datetime.datetime.fromtimestamp(email.utils.mktime_tz(date_tuple))
+                    # Solo infortuni degli ultimi 90 giorni
+                    if (now - dt).days < 90:
+                        testi_notizie += f"- Data Notizia: {dt.strftime('%d/%m/%Y')} | Titolo: {title}\n"
+                        count += 1
+            except Exception:
+                continue
+                    
+            if count >= 3: # Passiamo massimo 3 notizie all'AI
+                break
+                
+        if count == 0:
+            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n✅ Nessun infortunio rilevato attualmente."
+            
+        # FASE 2: Cervello AI (Gemini) per formattazione Laser
+        model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = (
-            f"Agisci come un medico sportivo del Fantacalcio. Analizza rigorosamente queste notizie RECENTI sul giocatore {nome} ({squadra}). "
-            f"Se dalle notizie non emerge chiaramente un infortunio in corso o un recupero imminente, scrivi SOLO TASSATIVAMENTE: '✅ Nessun infortunio rilevato attualmente.' "
-            f"Se invece parlano di un infortunio o operazione, estrai i dati e rispondi ESATTAMENTE con questo schema a punti (niente chiacchiere extra):\n"
+            f"Agisci come medico sportivo. Leggi questi titoli di notizie su {nome} ({squadra}). "
+            f"Se le notizie non indicano chiaramente un infortunio in corso, o indicano che è pienamente recuperato, "
+            f"rispondi SOLO E TASSATIVAMENTE: '✅ Nessun infortunio rilevato attualmente.'\n"
+            f"Se invece c'è un infortunio recente/in corso, estrai i dati e rispondi ESATTAMENTE con questo schema, "
+            f"senza aggiungere introduzioni, senza aggiungere link e senza usare markdown se non le emoji. Niente asterischi:\n\n"
             f"🤕 Infortunio: [cosa si è rotto o operato]\n"
             f"📅 Data: [quando è successo]\n"
             f"⏳ Durata: [tempi di stop previsti]\n"
-            f"🔙 Rientro: [quando torna in campo]\n\n"
-            f"Notizie da leggere: {testi_grezzi}"
+            f"🔙 Rientro: [mese o giorno di rientro]\n\n"
+            f"Ecco le notizie:\n{testi_notizie}"
         )
         
-        summary = ddgs.chat(prompt)
-        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n───────────────────────────\n{summary}"
-            
+        response = model.generate_content(prompt)
+        testo_pulito = response.text.strip().replace('**', '') # Rimuoviamo grassetti generati a caso
+        
+        return (
+            f"🏥 *CARTELLA CLINICA LASER: {nome.upper()}*\n"
+            f"───────────────────────────\n"
+            f"{testo_pulito}"
+        )
+        
     except Exception as e:
-        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Servizio temporaneamente irraggiungibile per blocco rete."
+        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore di rete nella lettura del database medico."
 
 def is_macellaio(nome, ruolo, fvm):
     if ruolo in ['D', 'C'] and float(fvm) < 15:
         if sum(ord(c) for c in nome) % 5 == 0: return True
     return False
 
+# ==========================================
+# TRADE ANALYZER E DASHBOARD
+# ==========================================
 def advanced_trade_analyzer(p1, p2):
     try:
         fvm1 = float(str(p1.get('FVM', 0)).replace(',', '.'))
@@ -215,9 +257,6 @@ def advanced_trade_analyzer(p1, p2):
         f"🧠 *VERDETTO TATTICO:*\n{report}"
     )
 
-# ==========================================
-# CARDS E DASHBOARD
-# ==========================================
 def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
     p_data = df[df['Nome'] == player_name].iloc[0]
     sq_name = p_data.get('Squadra', '-')
@@ -553,13 +592,13 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- AZIONI CLINICA E STORICO ---
+    # --- AZIONI CLINICA LASER E STORICO ---
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _Verifica bollettini medici recenti per {p_name}..._", parse_mode="Markdown")
-        real_data = get_cartella_clinica_schematica(p_name, sq_name)
+        msg = bot.send_message(chat_id, f"⏳ _L'IA sta estraendo i dati medici per {p_name}..._", parse_mode="Markdown")
+        real_data = get_cartella_clinica_laser(p_name, sq_name)
         bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown")
 
     elif call.data.startswith("stats_"):
@@ -795,5 +834,5 @@ def handle_document(message):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: Storico perfetto, Cartella Clinica sulle News ATTIVA!")
+    print("🚀 Bot in ascolto: Cartella Clinica Laser Gemini attivata!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
