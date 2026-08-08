@@ -2,7 +2,6 @@ import os
 import io
 import re
 import urllib.parse
-import urllib.request
 import xml.etree.ElementTree as ET
 import datetime
 import email.utils
@@ -118,7 +117,7 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# STORICO FREDDO (MATEMATICO) E CARTELLA CLINICA "LASER"
+# STORICO FREDDO (MATEMATICO) E CARTELLA CLINICA "LASER" BLINDATA
 # ==========================================
 def get_storico_freddo(nome, ruolo, fvm):
     """Storico puramente matematico e istantaneo."""
@@ -141,20 +140,24 @@ def get_storico_freddo(nome, ruolo, fvm):
     )
 
 def get_cartella_clinica_laser(nome, squadra):
-    """Feed RSS + API Gemini per schema laser a 4 righe."""
+    """Feed RSS blindato + API Gemini senza filtri etici per schema laser a 4 righe."""
     if not AI_ENABLED or not GEMINI_API_KEY:
         return "⚠️ Errore: Manca la libreria `google-generativeai` o la `GEMINI_API_KEY` su Render."
     
+    # FASE 1: Estrazione RSS sicura con Requests e User-Agent Chrome
     try:
-        # FASE 1: RSS Infallibile
         query = urllib.parse.quote(f'"{nome}" {squadra} infortunio OR lesione OR recupero OR operazione')
         url = f"https://news.google.com/rss/search?q={query}&hl=it&gl=IT&ceid=IT:it"
         
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=5) as response:
-            xml_data = response.read()
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        res = requests.get(url, headers=headers, timeout=8)
+        
+        if res.status_code != 200:
+            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore lettura News: Status {res.status_code}"
             
-        root = ET.fromstring(xml_data)
+        root = ET.fromstring(res.text)
         items = root.findall('.//item')
         
         now = datetime.datetime.now()
@@ -169,20 +172,23 @@ def get_cartella_clinica_laser(nome, squadra):
                 date_tuple = email.utils.parsedate_tz(pubDate)
                 if date_tuple:
                     dt = datetime.datetime.fromtimestamp(email.utils.mktime_tz(date_tuple))
-                    # Solo infortuni degli ultimi 90 giorni
                     if (now - dt).days < 90:
                         testi_notizie += f"- Data Notizia: {dt.strftime('%d/%m/%Y')} | Titolo: {title}\n"
                         count += 1
             except Exception:
                 continue
                     
-            if count >= 3: # Passiamo massimo 3 notizie all'AI
+            if count >= 3:
                 break
                 
         if count == 0:
             return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n✅ Nessun infortunio rilevato attualmente."
             
-        # FASE 2: Cervello AI (Gemini) per formattazione Laser
+    except Exception as e:
+        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore estrazione News RSS: {str(e)[:50]}"
+
+    # FASE 2: Cervello AI (Gemini) con spegnimento filtri sicurezza
+    try:
         model = genai.GenerativeModel('gemini-1.5-flash')
         prompt = (
             f"Agisci come medico sportivo. Leggi questi titoli di notizie su {nome} ({squadra}). "
@@ -197,8 +203,20 @@ def get_cartella_clinica_laser(nome, squadra):
             f"Ecco le notizie:\n{testi_notizie}"
         )
         
-        response = model.generate_content(prompt)
-        testo_pulito = response.text.strip().replace('**', '') # Rimuoviamo grassetti generati a caso
+        # Disabilitiamo esplicitamente i blocchi etici/medici di Google che causavano il crash
+        safety_settings = [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ]
+        
+        response = model.generate_content(prompt, safety_settings=safety_settings)
+        
+        if not response.text:
+            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore AI: Risposta bloccata o vuota."
+            
+        testo_pulito = response.text.strip().replace('**', '') 
         
         return (
             f"🏥 *CARTELLA CLINICA LASER: {nome.upper()}*\n"
@@ -207,7 +225,7 @@ def get_cartella_clinica_laser(nome, squadra):
         )
         
     except Exception as e:
-        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore di rete nella lettura del database medico."
+        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore AI Gemini: {str(e)[:50]}"
 
 def is_macellaio(nome, ruolo, fvm):
     if ruolo in ['D', 'C'] and float(fvm) < 15:
@@ -592,12 +610,12 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- AZIONI CLINICA LASER E STORICO ---
+    # --- AZIONI CLINICA E STORICO ---
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _L'IA sta estraendo i dati medici per {p_name}..._", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ _Accesso ai bollettini medici per {p_name}..._", parse_mode="Markdown")
         real_data = get_cartella_clinica_laser(p_name, sq_name)
         bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown")
 
@@ -834,5 +852,5 @@ def handle_document(message):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: Cartella Clinica Laser Gemini attivata!")
+    print("🚀 Bot in ascolto: API Gemini e RSS blindati attivati!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
