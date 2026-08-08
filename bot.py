@@ -924,8 +924,14 @@ def handle_callbacks(call):
                 btn_text = f"🛡️ {p['nome']} (MV:{p['mv']} | 🟨{p['amm']}) ─ {p['fvm']} cr."
                 markup.add(InlineKeyboardButton(btn_text, callback_data=f"sq_pl_{p['nome']}"))
             
+            nav_buttons = []
+            if page > 1:
+                nav_buttons.append(InlineKeyboardButton("◀️ Precedenti", callback_data=f"menu_modificatore_page_{page - 1}"))
             if len(sorted_players) > end_idx:
-                markup.add(InlineKeyboardButton(f"➕ Mostra altri {min(15, len(sorted_players) - end_idx)}", callback_data=f"menu_modificatore_page_{page + 1}"))
+                nav_buttons.append(InlineKeyboardButton(f"➕ Altri {min(15, len(sorted_players) - end_idx)}", callback_data=f"menu_modificatore_page_{page + 1}"))
+            
+            if nav_buttons:
+                markup.row(*nav_buttons)
             
             testo = f"🛡️ <b>MODIFICATORE 6.5 - DEFENCE ELITE</b> (Pag. {page})\n<i>Ordinati per rendimento reale.</i>"
         else:
@@ -934,8 +940,15 @@ def handle_callbacks(call):
             end_idx = start_idx + per_page
             for _, row in mods.iloc[start_idx:end_idx].iterrows():
                 markup.add(InlineKeyboardButton(f"🛡️ {row['Nome']} (FVM: {row['FVM']})", callback_data=f"sq_pl_{row['Nome']}"))
+            
+            nav_buttons = []
+            if page > 1:
+                nav_buttons.append(InlineKeyboardButton("◀️ Precedenti", callback_data=f"menu_modificatore_page_{page - 1}"))
             if len(mods) > end_idx:
-                markup.add(InlineKeyboardButton(f"➕ Mostra altri {min(15, len(mods) - end_idx)}", callback_data=f"menu_modificatore_page_{page + 1}"))
+                nav_buttons.append(InlineKeyboardButton(f"➕ Altri {min(15, len(mods) - end_idx)}", callback_data=f"menu_modificatore_page_{page + 1}"))
+            
+            if nav_buttons:
+                markup.row(*nav_buttons)
             testo = f"🛡️ <b>MODIFICATORE 6.5</b> (Pag. {page})"
 
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
@@ -972,13 +985,37 @@ def handle_callbacks(call):
         bot.edit_message_text("🏆 <b>TOP LIBERI - Scegli il ruolo:</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data.startswith("menu_top_ru_"):
-        r = call.data.replace("menu_top_ru_", "")
+        raw_data = call.data.replace("menu_top_ru_", "")
+        if "_page_" in raw_data:
+            r, p_str = raw_data.split("_page_")
+            page = int(p_str)
+        else:
+            r = raw_data
+            page = 1
+            
+        per_page = 15
         avail = get_available_players(df, session)
-        top_players = avail[avail['R'] == r].sort_values(by='FVM', ascending=False).head(15)
+        top_players = avail[avail['R'] == r].sort_values(by='FVM', ascending=False)
+        
+        start_idx = (page - 1) * per_page
+        end_idx = start_idx + per_page
+        page_top = top_players.iloc[start_idx:end_idx]
+        
         markup = InlineKeyboardMarkup(row_width=1)
-        for _, row in top_players.iterrows(): markup.add(InlineKeyboardButton(f"🔍 {row['Nome']} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
+        for _, row in page_top.iterrows(): 
+            markup.add(InlineKeyboardButton(f"🔍 {row['Nome']} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
+            
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("◀️ Precedenti", callback_data=f"menu_top_ru_{r}_page_{page - 1}"))
+        if len(top_players) > end_idx:
+            nav_buttons.append(InlineKeyboardButton(f"➕ Altri {min(15, len(top_players) - end_idx)}", callback_data=f"menu_top_ru_{r}_page_{page + 1}"))
+            
+        if nav_buttons:
+            markup.row(*nav_buttons)
+            
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_top_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🏆 <b>TOP 15 LIBERI - RUOLO {ROLE_ICONS[r]} {r}:</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text(f"🏆 <b>TOP LIBERI - RUOLO {ROLE_ICONS[r]} {r}</b> (Pag. {page}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_gemme_start":
         markup = InlineKeyboardMarkup(row_width=4)
@@ -1007,8 +1044,14 @@ def handle_callbacks(call):
         for _, row in page_gemme.iterrows():
             markup.add(InlineKeyboardButton(f"💎 {row['Nome']} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
             
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("◀️ Precedenti", callback_data=f"menu_gemme_ru_{r}_page_{page - 1}"))
         if len(gemme) > end_idx:
-            markup.add(InlineKeyboardButton(f"➕ Mostra altri {min(15, len(gemme) - end_idx)}", callback_data=f"menu_gemme_ru_{r}_page_{page + 1}"))
+            nav_buttons.append(InlineKeyboardButton(f"➕ Altri {min(15, len(gemme) - end_idx)}", callback_data=f"menu_gemme_ru_{r}_page_{page + 1}"))
+            
+        if nav_buttons:
+            markup.row(*nav_buttons)
             
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_gemme_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(f"💎 <b>GEMME NASCOSTE - {ROLE_ICONS[r]} {r}</b> (Pag. {page}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
@@ -1040,8 +1083,14 @@ def handle_callbacks(call):
         for _, row in page_panic.iterrows():
             markup.add(InlineKeyboardButton(f"🚨 {row['Nome']} ({row.get('Squadra','-')}) FVM:{row.get('FVM','-')}", callback_data=f"sq_pl_{row['Nome']}"))
             
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("◀️ Precedenti", callback_data=f"menu_panic_ru_{r}_page_{page - 1}"))
         if len(panic_list) > end_idx:
-            markup.add(InlineKeyboardButton(f"➕ Mostra altri {min(15, len(panic_list) - end_idx)}", callback_data=f"menu_panic_ru_{r}_page_{page + 1}"))
+            nav_buttons.append(InlineKeyboardButton(f"➕ Altri {min(15, len(panic_list) - end_idx)}", callback_data=f"menu_panic_ru_{r}_page_{page + 1}"))
+            
+        if nav_buttons:
+            markup.row(*nav_buttons)
             
         markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data="menu_panic_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(f"🚨 <b>PANIC BUTTON - {ROLE_ICONS[r]} {r}</b> (Pag. {page}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
