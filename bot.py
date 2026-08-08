@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 import telebot
 import requests
-from bs4 import BeautifulSoup
+from bs4 import 
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # Tenta di importare le librerie per i comandi vocali
