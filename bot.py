@@ -444,23 +444,37 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     except ValueError: fvm_val = 0
 
     # ==========================================
-    # 🎯 ALGORITMO FAIR PRICE DINAMICO
+    # 🧮 CALCOLO FASCIA DEL GIOCATORE
+    # ==========================================
+    if fvm_val >= 90: fascia = "🥇 1° Fascia (Top Assoluto)"
+    elif fvm_val >= 50: fascia = "🥈 2° Fascia (Semi-Top)"
+    elif fvm_val >= 25: fascia = "🥉 3° Fascia (Ottimo Titolare)"
+    elif fvm_val >= 10: fascia = "🚜 4° Fascia (Da Rotazione)"
+    else: fascia = "🎲 5°/6° Fascia (Scommessa/Tappabuchi)"
+
+    # ==========================================
+    # 🎯 ALGORITMO FAIR PRICE DINAMICO (AUTOMATIZZATO)
     # ==========================================
     lega_bud = session.get('lega_budget_iniziale', 500)
     lega_part = session.get('lega_partecipanti', 8)
     
-    f_bud = lega_bud / 500.0
-    f_part = 1 + ((lega_part - 8) * 0.05)
+    # Proporzione automatica sul budget (L'FVM grezzo è calibrato su 1000)
+    base_price = fvm_val * (lega_bud / 1000.0)
     
-    fair_price = int(fvm_val * f_bud * f_part)
+    # Moltiplicatore partecipanti: sale del 2.5% per ogni squadra oltre le 8
+    f_part = 1 + ((lega_part - 8) * 0.025)
+    
+    fair_price = int(base_price * f_part)
     max_rilancio = int(fair_price * 1.15) 
-    asta_stop = int(fair_price * 1.30)    
+    asta_stop = int(fair_price * 1.25)    
 
-    if fair_price == 0: fair_price, max_rilancio, asta_stop = 1, 1, 2
+    if fair_price <= 0: fair_price, max_rilancio, asta_stop = 1, 1, 2
 
     # ==========================================
     # 📉 MATRIX DI OPPORTUNITÀ (CPM)
     # ==========================================
+    # Base di calcolo standardizzata sul FVM effettivo del database
+    f_bud = lega_bud / 1000.0
     tag_matrix = "⚖️ <b>[IN MEDIA]</b> <i>Rendimento allineato al costo.</i>"
     row_stats = find_player_in_stats(player_name)
     
@@ -476,11 +490,11 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
             elif pv < 25 or amm > 4: rischio = "🟡 MEDIO"
             else: rischio = "🟢 BASSO"
 
-            if fair_price <= max(5, int(5 * f_bud)) and pv >= 15 and mv >= 5.90:
+            if fair_price <= max(5, int(10 * f_bud)) and pv >= 15 and mv >= 5.90:
                 tag_matrix = "🛡️ <b>[DOLLAR-SAFETY]</b> <i>Titolare low-cost puro, salva-budget.</i>"
-            elif fair_price <= max(18, int(18 * f_bud)) and (fm >= 6.5 or (gf+ass) >= 4):
+            elif fair_price <= max(18, int(30 * f_bud)) and (fm >= 6.5 or (gf+ass) >= 4):
                 tag_matrix = "🔥 <b>[BONUS-UNDERPRICED]</b> <i>Affare d'oro! Sottovalutato.</i>"
-            elif fair_price >= int(40 * f_bud) and fm < 6.5 and pv < 20:
+            elif fair_price >= int(60 * f_bud) and fm < 6.5 and pv < 20:
                 tag_matrix = "🚨 <b>[MONEY-TRAP]</b> <i>Trappola! Prezzo altissimo, scarso rendimento.</i>"
                 
         except Exception: pass
@@ -492,6 +506,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n"
+        f"🧮 <b>Inquadramento:</b> {fascia}\n"
         f"📉 <b>Matrix Opportunità:</b>\n{tag_matrix}\n"
         f"⚠️ <b>Indice Storico (Rischio):</b> {rischio}{macellaio_alert}\n\n"
         f"🎯 <b>VALUTAZIONE ASTA (Lega a {lega_part} - {lega_bud} cr)</b>\n"
@@ -803,6 +818,7 @@ def handle_callbacks(call):
             InlineKeyboardButton("👥 a 10", callback_data="imposta_part_10"),
             InlineKeyboardButton("👥 a 12", callback_data="imposta_part_12")
         )
+        markup.add(InlineKeyboardButton("🔄 Reset (500 cr - 8 sq)", callback_data="imposta_reset"))
         markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
         
         testo = (
@@ -810,16 +826,14 @@ def handle_callbacks(call):
             "━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💰 <b>Budget Iniziale:</b> <code>{b_iniziale} cr.</code>\n"
             f"👥 <b>Partecipanti:</b> <code>{part} squadre</code>\n\n"
-            "<i>Modifica questi valori per calcolare il <b>Fair Price dinamico esatto</b> durante l'asta!</i>\n"
-            "(Nota: modificare il budget resetterà la tua cassa attuale a quel valore)."
+            "<i>Il bot applicherà in automatico questi parametri per calcolare le valutazioni d'asta reali.</i>"
         )
         bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data.startswith("imposta_bud_"):
         val = int(call.data.replace("imposta_bud_", ""))
         session['lega_budget_iniziale'] = val
-        session['budget'] = val  # Rallinea la cassa attuale al nuovo budget
-        
+        session['budget'] = val  # Riallinea la cassa attuale al nuovo budget scelto
         safe_answer_callback(call.id, text=f"✅ Budget impostato a {val} cr!", show_alert=True)
         call.data = "menu_impostazioni_lega"
         handle_callbacks(call)
@@ -827,8 +841,15 @@ def handle_callbacks(call):
     elif call.data.startswith("imposta_part_"):
         val = int(call.data.replace("imposta_part_", ""))
         session['lega_partecipanti'] = val
-        
         safe_answer_callback(call.id, text=f"✅ Partecipanti impostati a {val}!", show_alert=True)
+        call.data = "menu_impostazioni_lega"
+        handle_callbacks(call)
+
+    elif call.data == "imposta_reset":
+        session['lega_budget_iniziale'] = 500
+        session['lega_partecipanti'] = 8
+        session['budget'] = 500
+        safe_answer_callback(call.id, text="✅ Lega resettata ai valori standard!", show_alert=True)
         call.data = "menu_impostazioni_lega"
         handle_callbacks(call)
 
@@ -869,7 +890,6 @@ def handle_callbacks(call):
         bot.send_message(chat_id, "⚡ <b>Dati sincronizzati con successo!</b>", parse_mode="HTML")
 
     elif call.data == "reset_confirm":
-        # Conserverà anche i settings di lega preimpostati
         lega_bud = session.get('lega_budget_iniziale', 500)
         lega_part = session.get('lega_partecipanti', 8)
         user_sessions[user_id] = {
