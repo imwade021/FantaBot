@@ -634,9 +634,7 @@ def process_buy_price(message, player_name, user_id):
     })
     session['budget'] -= costo
     
-    # ----------------------------------------------------
-    # NUOVA LOGICA: VALUTAZIONE DELL'AFFARE "GAMIFICATION"
-    # ----------------------------------------------------
+    # Valutazione dell'affare
     lega_bud = session.get('lega_budget_iniziale', 500)
     lega_part = session.get('lega_partecipanti', 8)
     base_price = fvm_raw * (lega_bud / 1000.0)
@@ -678,19 +676,65 @@ def process_whatif_price(message, player_name, user_id):
     hyp_price = int(message.text)
     session = get_session(user_id)
     stats = get_roster_stats(session)
-    
     df = load_data()
+    
     row = df[df['Nome'] == player_name].iloc[0]
-    fvm = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+    ruolo = row.get('R', 'A')
+    fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
 
+    # Calcolo Fair Price Reale
+    lega_bud = session.get('lega_budget_iniziale', 500)
+    lega_part = session.get('lega_partecipanti', 8)
+    base_price = fvm_raw * (lega_bud / 1000.0)
+    f_part = 1 + ((lega_part - 8) * 0.025)
+    fair_price = max(1, int(base_price * f_part))
+
+    # Calcolo Impatto
     budget_left = session['budget'] - hyp_price
     slots_left = stats['slot_liberi'] - 1
     
-    if slots_left < 0: return bot.send_message(chat_id, "❌ Hai già la rosa piena!", parse_mode="HTML")
+    if slots_left < 0: 
+        return bot.send_message(chat_id, "❌ Hai già la rosa piena!", parse_mode="HTML")
         
     avg_left = budget_left / slots_left if slots_left > 0 else 0
-    final_text = f"🔮 <b>SIMULATORE WHAT-IF: {html.escape(player_name.upper())} a {hyp_price} cr.</b>\n\nBudget residuo: <code>{budget_left}</code> cr. (Media: <code>{avg_left:.1f}</code> cr)."
-    markup = InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Torna al Giocatore", callback_data=f"sq_pl_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+
+    # 1. Valutazione dell'affare simulato
+    if hyp_price <= fair_price * 0.70:
+        analisi = f"🔥 <b>PREZZO D'OCCHIONE:</b> Sarebbe un affare clamoroso! Valore reale: <code>{fair_price} cr.</code>"
+    elif hyp_price <= fair_price * 1.15:
+        analisi = f"✅ <b>PREZZO CONGRUITA:</b> Cifra perfettamente in linea con il valore del giocatore (Fair Price: <code>{fair_price} cr.</code>)."
+    else:
+        analisi = f"🚨 <b>OVERPAY RISCHIOSO:</b> Staresti pagando <code>{hyp_price - fair_price} cr.</code> in più del suo valore ideale."
+
+    # 2. Ricerca Target Raggiungibili per lo stesso ruolo
+    avail = get_available_players(df, session)
+    target = avail[(avail['R'] == ruolo) & (avail['Nome'] != player_name)].copy()
+    target['base_p'] = target['FVM'] * (lega_bud / 1000.0) * f_part
+    
+    compatibili = target[target['base_p'] <= avg_left].sort_values(by='FVM', ascending=False).head(3)
+    
+    nomi_target = []
+    for _, t_row in compatibili.iterrows():
+        nomi_target.append(f"• {t_row['Nome']} ({t_row['Squadra']}) ─ Fair Price: ~{int(t_row['base_p'])} cr.")
+    
+    txt_target = "\n".join(nomi_target) if nomi_target else "• Solamente scommesse o tappabuchi a 1 credito."
+
+    final_text = (
+        f"🔮 <b>SIMULATORE WHAT-IF: {html.escape(player_name.upper())} a {hyp_price} cr.</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{analisi}\n\n"
+        f"💼 <b>IMPATTO SUL BUDGET:</b>\n"
+        f"• Crediti Residui: <code>{budget_left} cr.</code>\n"
+        f"• Media per i restanti {slots_left} slot: <code>{avg_left:.1f} cr.</code>\n\n"
+        f"🎯 <b>CON QUESTA MEDIA IN {ruolo} POTRAI ANCORA PUNTARE SU:</b>\n"
+        f"{txt_target}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    
+    markup = InlineKeyboardMarkup(row_width=2).add(
+        InlineKeyboardButton("🔙 Torna al Giocatore", callback_data=f"sq_pl_{player_name}"), 
+        InlineKeyboardButton("🏠 Home", callback_data="go_home")
+    )
     bot.send_message(chat_id, final_text, parse_mode="HTML", reply_markup=markup)
 
 # ==========================================
@@ -867,7 +911,7 @@ def handle_callbacks(call):
     elif call.data.startswith("imposta_bud_"):
         val = int(call.data.replace("imposta_bud_", ""))
         session['lega_budget_iniziale'] = val
-        session['budget'] = val  # Riallinea la cassa attuale al nuovo budget scelto
+        session['budget'] = val
         safe_answer_callback(call.id, text=f"✅ Budget impostato a {val} cr!", show_alert=True)
         call.data = "menu_impostazioni_lega"
         handle_callbacks(call)
