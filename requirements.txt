@@ -7,3 +7,4 @@ duckduckgo_search
 openpyxl
 SpeechRecognition
 pydub
+apscheduler
