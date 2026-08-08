@@ -494,7 +494,12 @@ def process_whatif_price(message, player_name, user_id):
     else:
         final_text = f"🔮 <b>SIMULATORE WHAT-IF: {html.escape(player_name.upper())} a {hyp_price} cr.</b>\n\n{budget_verdict}\n👍 Ottima mossa, il prezzo è in linea col suo valore e non ci sono campanelli d'allarme."
 
-    bot.send_message(chat_id, final_text, parse_mode="HTML")
+    # I famosi bottoni salva-vita
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🔙 Torna al Giocatore", callback_data=f"sq_pl_{player_name}"), 
+               InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+               
+    bot.send_message(chat_id, final_text, parse_mode="HTML", reply_markup=markup)
 
 # ==========================================
 # HANDLERS (COMANDI, VOCALI E FILE)
@@ -694,14 +699,22 @@ def handle_callbacks(call):
         sq_name = p_row.get('Squadra', '')
         msg = bot.send_message(chat_id, f"⏳ <i>Ricerca notizie infortuni sul web per {html.escape(p_name)}...</i>", parse_mode="HTML")
         real_data = get_cartella_clinica_reale(p_name, sq_name)
-        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="HTML", disable_web_page_preview=True)
+        
+        # Tasti salvavita (Nessun vicolo cieco!)
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup)
 
     elif call.data.startswith("stats_"):
         p_name = call.data.replace("stats_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
         real_data = get_storico_excel_o_web(p_name, sq_name)
-        bot.edit_message_text(real_data, chat_id, call.message.message_id, parse_mode="HTML", disable_web_page_preview=True)
+        
+        # Tasti salvavita (Nessun vicolo cieco!)
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.edit_message_text(real_data, chat_id, call.message.message_id, parse_mode="HTML", disable_web_page_preview=True, reply_markup=markup)
 
     elif call.data.startswith("wi_"):
         p_name = call.data.replace("wi_", "")
@@ -918,5 +931,5 @@ def handle_callbacks(call):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: Auto-pulizia, HTML Thumbnail, Normalizzazione Nomi e DuckDuckGo attivi!")
+    print("🚀 Bot in ascolto: La Ferrari finale è in pista! (No vicoli ciechi)")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
