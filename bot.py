@@ -458,10 +458,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     lega_bud = session.get('lega_budget_iniziale', 500)
     lega_part = session.get('lega_partecipanti', 8)
     
-    # Proporzione automatica sul budget (L'FVM grezzo è calibrato su 1000)
     base_price = fvm_val * (lega_bud / 1000.0)
-    
-    # Moltiplicatore partecipanti: sale del 2.5% per ogni squadra oltre le 8
     f_part = 1 + ((lega_part - 8) * 0.025)
     
     fair_price = int(base_price * f_part)
@@ -473,7 +470,6 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     # ==========================================
     # 📉 MATRIX DI OPPORTUNITÀ (CPM)
     # ==========================================
-    # Base di calcolo standardizzata sul FVM effettivo del database
     f_bud = lega_bud / 1000.0
     tag_matrix = "⚖️ <b>[IN MEDIA]</b> <i>Rendimento allineato al costo.</i>"
     row_stats = find_player_in_stats(player_name)
@@ -630,13 +626,36 @@ def process_buy_price(message, player_name, user_id):
     df = load_data()
     row = df[df['Nome'] == player_name].iloc[0]
     ruolo, squadra = row.get('R', 'C'), row.get('Squadra', '-')
+    fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
     
     session['rosa'].append({
         'nome': player_name, 'prezzo': costo, 'ruolo': ruolo, 'squadra': squadra, 
-        'fvm': pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+        'fvm': fvm_raw
     })
     session['budget'] -= costo
-    bot.send_message(chat_id, f"✅ <b>{html.escape(player_name.upper())}</b> acquistato per <code>{costo} cr.</code>!", parse_mode="HTML")
+    
+    # ----------------------------------------------------
+    # NUOVA LOGICA: VALUTAZIONE DELL'AFFARE "GAMIFICATION"
+    # ----------------------------------------------------
+    lega_bud = session.get('lega_budget_iniziale', 500)
+    lega_part = session.get('lega_partecipanti', 8)
+    base_price = fvm_raw * (lega_bud / 1000.0)
+    f_part = 1 + ((lega_part - 8) * 0.025)
+    fair_price = max(1, int(base_price * f_part))
+    
+    if costo <= fair_price * 0.75:
+        giudizio = f"🔥 <b>AFFARE D'ORO!</b> Hai risparmiato circa {fair_price - costo} cr. sul suo valore reale."
+    elif costo <= fair_price * 0.95:
+        giudizio = f"✅ <b>OTTIMO COLPO!</b> Preso sotto costo (Fair Price: {fair_price} cr)."
+    elif costo <= fair_price * 1.15:
+        giudizio = f"⚖️ <b>PREZZO GIUSTO.</b> Pagato esattamente il suo valore."
+    elif costo <= fair_price * 1.30:
+        giudizio = f"⚠️ <b>LEGGERO OVERPAY.</b> L'hai pagato un po' di più (Fair Price: {fair_price} cr)."
+    else:
+        giudizio = f"🚨 <b>SALASSO!</b> Strapagato! Hai speso ben {costo - fair_price} cr. in più del dovuto."
+        
+    msg_text = f"✅ <b>{html.escape(player_name.upper())}</b> acquistato per <code>{costo} cr.</code>!\n\n📊 <b>Valutazione Acquisto:</b>\n{giudizio}"
+    bot.send_message(chat_id, msg_text, parse_mode="HTML")
     
     p_lower = player_name.lower()
     if p_lower in COPPIE_NOTE:
@@ -743,8 +762,23 @@ def modalita_cecchino(message):
             'fvm': pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
         })
         session['budget'] -= costo
+        
+        # Stessa logica di valutazione anche per la mod cecchino
+        lega_bud = session.get('lega_budget_iniziale', 500)
+        lega_part = session.get('lega_partecipanti', 8)
+        fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+        base_price = fvm_raw * (lega_bud / 1000.0)
+        f_part = 1 + ((lega_part - 8) * 0.025)
+        fair_price = max(1, int(base_price * f_part))
+        
+        if costo <= fair_price * 0.75: giudizio = f"🔥 <b>AFFARE D'ORO!</b> Hai risparmiato circa {fair_price - costo} cr."
+        elif costo <= fair_price * 0.95: giudizio = f"✅ <b>OTTIMO COLPO!</b> Preso sotto costo (Fair Price: {fair_price})."
+        elif costo <= fair_price * 1.15: giudizio = f"⚖️ <b>PREZZO GIUSTO.</b> Pagato il suo reale valore."
+        elif costo <= fair_price * 1.30: giudizio = f"⚠️ <b>LEGGERO OVERPAY.</b> Pagato un po' di più (Fair Price: {fair_price})."
+        else: giudizio = f"🚨 <b>SALASSO!</b> Strapagato! Hai speso ben {costo - fair_price} cr. in più."
+
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("↩️ Annulla", callback_data=f"undo_{player_name}"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.reply_to(message, f"🎯 <b>CECCHINO A BERSAGLIO!</b>\n✅ Acquistato <b>{html.escape(player_name.upper())}</b> a <code>{costo} cr.</code>", parse_mode="HTML", reply_markup=markup)
+        bot.reply_to(message, f"🎯 <b>CECCHINO A BERSAGLIO!</b>\n✅ Acquistato <b>{html.escape(player_name.upper())}</b> a <code>{costo} cr.</code>\n\n📊 <b>Valutazione Acquisto:</b>\n{giudizio}", parse_mode="HTML", reply_markup=markup)
     except Exception: bot.reply_to(message, "❌ Errore acquisto rapido.")
 
 @bot.message_handler(func=lambda m: not m.text.startswith('/') and not m.text.startswith('+') and not m.text.isdigit())
