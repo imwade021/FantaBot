@@ -2,22 +2,12 @@ import os
 import io
 import re
 import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
-import datetime
-import email.utils
 import pandas as pd
 import numpy as np
 import telebot
 import requests
+from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-
-# Tenta di importare l'AI di Google Gemini
-try:
-    import google.generativeai as genai
-    AI_ENABLED = True
-except ImportError:
-    AI_ENABLED = False
 
 # Tenta di importare le librerie per i comandi vocali
 try:
@@ -27,20 +17,22 @@ try:
 except ImportError:
     VOICE_ENABLED = False
 
+# Importa la libreria per la ricerca web
+try:
+    from duckduckgo_search import DDGS
+    WEB_SEARCH_ENABLED = True
+except ImportError:
+    WEB_SEARCH_ENABLED = False
+
 # ==========================================
 # CONFIGURAZIONE INIZIALE & TOKEN
 # ==========================================
 TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TOKEN:
     raise ValueError("⚠️ ERRORE: La variabile d'ambiente BOT_TOKEN non è impostata su Render!")
 
 bot = telebot.TeleBot(TOKEN)
-
-# Configura Gemini se la chiave è presente
-if AI_ENABLED and GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
 
 ROLE_ICONS = {'P': '🧤', 'D': '🛡️', 'C': '⚙️', 'A': '🎯'}
 TEAM_COLORS = {
@@ -50,6 +42,14 @@ TEAM_COLORS = {
     'Monza': '🔴⚪', 'Napoli': '🔵⚪', 'Parma': '🟡🔵', 'Roma': '🟡🔴',
     'Torino': '🟤⚪', 'Udinese': '⚪⚫', 'Venezia': '🟠🟢', 'Verona': '🟡🔵'
 }
+
+DATABASE_SCOMMESSE_PURE = [
+    'bernabe', 'fazzini', 'bonny', 'oristanio', 'paz', 'marchwinski', 'castro', 
+    'belahyane', 'tengstedt', 'da cunha', 'moro', 'traore', 'pisilli', 'ekhator', 
+    'solet', 'idzes', 'mangas', 'milla', 'ndour', 'viti', 'goglichidze', 
+    'alajbegovic', 'suslov', 'mosquera', 'tchaouna', 'camarda', 'vitinha', 
+    'savona', 'mbangula', 'conceicao', 'dallinga', 'fabbian', 'braine'
+]
 
 COPPIE_NOTE = {
     'sommer': 'martinez jo.', 'martinez jo.': 'sommer',
@@ -118,125 +118,62 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # ==========================================
-# STORICO FREDDO (MATEMATICO) E CARTELLA CLINICA "LASER" BLINDATA
+# RICERCHE WEB REALI (IL MOTORE DELLA "FERRARI")
 # ==========================================
-def get_storico_freddo(nome, ruolo, fvm):
-    """Storico puramente matematico e istantaneo."""
-    fvm = float(fvm)
-    if ruolo == 'A': gol, assist = int(fvm / 3.5) + np.random.randint(-2, 3), int(fvm / 15) + np.random.randint(0, 3)
-    elif ruolo == 'C': gol, assist = int(fvm / 7) + np.random.randint(-1, 2), int(fvm / 8) + np.random.randint(0, 4)
-    elif ruolo == 'D': gol, assist = int(fvm / 15), int(fvm / 10) + np.random.randint(0, 2)
-    else: gol, assist = 0, 0
-    gol, assist = max(0, gol), max(0, assist)
+def fetch_real_web_data(query, max_results=2):
+    """Scraper web autonomo: cerca su internet e legge i riassunti succosi degli articoli."""
+    output = []
     
-    return (
-        f"📊 *STORICO 25/26 - {nome.upper()}*\n"
-        f"───────────────────────────\n"
-        f"⚽ Gol: `{gol}`\n"
-        f"🎯 Assist: `{assist}`\n"
-        f"🟨 Gialli: `{np.random.randint(2, 9)}`\n"
-        f"🟥 Rossi: `{np.random.randint(0, 2)}`\n"
-        f"───────────────────────────\n"
-        f"_Dati stimati sull'impatto FVM stagionale._"
-    )
-
-def get_cartella_clinica_laser(nome, squadra):
-    """Feed RSS blindato + API Gemini (versione universale) senza filtri etici."""
-    if not AI_ENABLED or not GEMINI_API_KEY:
-        return "⚠️ Errore: Manca la libreria `google-generativeai` o la `GEMINI_API_KEY` su Render."
-    
-    # FASE 1: Estrazione RSS sicura con Requests e User-Agent Chrome
+    # Tentativo primario: usa BeautifulSoup per raschiare il web nudo e crudo
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     try:
-        query = urllib.parse.quote(f'"{nome}" {squadra} infortunio OR lesione OR recupero OR operazione')
-        url = f"https://news.google.com/rss/search?q={query}&hl=it&gl=IT&ceid=IT:it"
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
         res = requests.get(url, headers=headers, timeout=8)
-        
-        if res.status_code != 200:
-            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore lettura News: Status {res.status_code}"
-            
-        root = ET.fromstring(res.text)
-        items = root.findall('.//item')
-        
-        now = datetime.datetime.now()
-        testi_notizie = ""
-        count = 0
-        
-        for item in items:
-            pubDate = item.find('pubDate').text
-            title = item.find('title').text
-            
-            try:
-                date_tuple = email.utils.parsedate_tz(pubDate)
-                if date_tuple:
-                    dt = datetime.datetime.fromtimestamp(email.utils.mktime_tz(date_tuple))
-                    if (now - dt).days < 90:
-                        testi_notizie += f"- Data Notizia: {dt.strftime('%d/%m/%Y')} | Titolo: {title}\n"
-                        count += 1
-            except Exception:
-                continue
-                    
-            if count >= 3:
-                break
-                
-        if count == 0:
-            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n✅ Nessun infortunio rilevato attualmente."
-            
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            results = soup.find_all('div', class_='result__body')
+            for r in results[:max_results]:
+                snippet = r.find('a', class_='result__snippet')
+                title_tag = r.find('h2', class_='result__title')
+                if snippet and title_tag and title_tag.find('a'):
+                    testo = snippet.text.strip()
+                    titolo = title_tag.find('a').text.strip()
+                    link = title_tag.find('a')['href']
+                    if link.startswith('//duckduckgo.com/l/?uddg='):
+                        link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
+                    output.append(f"🔎 _{testo}_\n🔗 *Fonte:* [{titolo}]({link})")
     except Exception as e:
-        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore estrazione News RSS: {str(e)[:50]}"
+        print(f"Errore BeautifulSoup: {e}")
 
-    # FASE 2: Cervello AI (Gemini Pro) con spegnimento filtri sicurezza
-    try:
-        # Usa 'gemini-pro', il modello più stabile e universale che non va mai in 404
-        model = genai.GenerativeModel('gemini-pro')
-        prompt = (
-            f"Agisci come medico sportivo. Leggi questi titoli di notizie su {nome} ({squadra}). "
-            f"Se le notizie non indicano chiaramente un infortunio in corso, o indicano che è pienamente recuperato, "
-            f"rispondi SOLO E TASSATIVAMENTE: '✅ Nessun infortunio rilevato attualmente.'\n"
-            f"Se invece c'è un infortunio recente/in corso, estrai i dati e rispondi ESATTAMENTE con questo schema, "
-            f"senza aggiungere introduzioni, senza aggiungere link e senza usare markdown se non le emoji. Niente asterischi:\n\n"
-            f"🤕 Infortunio: [cosa si è rotto o operato]\n"
-            f"📅 Data: [quando è successo]\n"
-            f"⏳ Durata: [tempi di stop previsti]\n"
-            f"🔙 Rientro: [mese o giorno di rientro]\n\n"
-            f"Ecco le notizie:\n{testi_notizie}"
-        )
+    # Tentativo secondario: se BS4 fallisce, usa la libreria duckduckgo_search
+    if not output and WEB_SEARCH_ENABLED:
+        try:
+            results = DDGS().text(query, max_results=max_results)
+            for r in results:
+                output.append(f"🔎 _{r['body']}_\n🔗 *Fonte:* [{r['title']}]({r['href']})")
+        except Exception as e:
+            print(f"Errore DDGS: {e}")
+
+    if output:
+        return "\n\n---\n\n".join(output)
         
-        # Disabilitiamo esplicitamente i blocchi etici/medici di Google che causavano il crash
-        safety_settings = [
-            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
-        
-        response = model.generate_content(prompt, safety_settings=safety_settings)
-        
-        if not response.text:
-            return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore AI: Risposta bloccata o vuota."
-            
-        testo_pulito = response.text.strip().replace('**', '') 
-        
-        return (
-            f"🏥 *CARTELLA CLINICA LASER: {nome.upper()}*\n"
-            f"───────────────────────────\n"
-            f"{testo_pulito}"
-        )
-        
-    except Exception as e:
-        return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore AI Gemini: {str(e)[:50]}"
+    return "⚠️ Nessun risultato rilevante trovato sul web in questo momento."
+
+def get_storico_reale(nome, squadra=""):
+    # Cerca specificamente le statistiche della passata stagione
+    query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni espulsioni transfermarkt fantacalcio'
+    return f"📊 *STORICO REALE WEB: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query, max_results=2)}"
+
+def get_cartella_clinica_reale(nome, squadra=""):
+    # Cerca specificamente dettagli medici
+    query = f'"{nome}" {squadra} infortunio tempi recupero rientro partite saltate SOS Fanta'
+    return f"🏥 *CARTELLA CLINICA REALE: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query, max_results=2)}"
 
 def is_macellaio(nome, ruolo, fvm):
     if ruolo in ['D', 'C'] and float(fvm) < 15:
         if sum(ord(c) for c in nome) % 5 == 0: return True
     return False
 
-# ==========================================
-# TRADE ANALYZER E DASHBOARD
-# ==========================================
 def advanced_trade_analyzer(p1, p2):
     try:
         fvm1 = float(str(p1.get('FVM', 0)).replace(',', '.'))
@@ -277,6 +214,9 @@ def advanced_trade_analyzer(p1, p2):
         f"🧠 *VERDETTO TATTICO:*\n{report}"
     )
 
+# ==========================================
+# CARDS E DASHBOARD
+# ==========================================
 def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
     p_data = df[df['Nome'] == player_name].iloc[0]
     sq_name = p_data.get('Squadra', '-')
@@ -297,7 +237,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     markup = InlineKeyboardMarkup(row_width=2)
     
     markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}"))
-    markup.add(InlineKeyboardButton("📊 Storico Freddo", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Cartella Clinica", callback_data=f"cl_{player_name}"))
+    markup.add(InlineKeyboardButton("📊 Storico Web", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica Web", callback_data=f"cl_{player_name}"))
     markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
     if is_scommessa:
@@ -465,7 +405,7 @@ def process_whatif_price(message, player_name, user_id):
     bot.send_message(chat_id, final_text, parse_mode="Markdown")
 
 # ==========================================
-# HANDLERS (VOCALI, RICERCA, CECCHINO)
+# HANDLERS (VOCALI E FILE)
 # ==========================================
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
@@ -536,6 +476,19 @@ def search_player(message):
     for _, row in matches.head(10).iterrows():
         markup.add(InlineKeyboardButton(f"{ROLE_ICONS.get(str(row.get('R','C')),'')} {row['Nome']} ({row.get('Squadra','-')})", callback_data=f"sq_pl_{row['Nome']}"))
     bot.reply_to(message, f"🔍 Risultati per *{query}*:", reply_markup=markup)
+
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    chat_id = message.chat.id
+    fname = message.document.file_name.lower()
+    if not (fname.endswith('.csv') or fname.endswith('.xlsx')): return bot.reply_to(message, "❌ Invia solo `.csv` o `.xlsx`!", parse_mode="Markdown")
+    try:
+        downloaded_file = bot.download_file(bot.get_file(message.document.file_id).file_path)
+        save_name = "Lista-FantaAsta-Fantacalcio.csv" if fname.endswith('.csv') else "listone.xlsx"
+        with open(save_name, 'wb') as new_file: new_file.write(downloaded_file)
+        load_data(force_reload=True)
+        bot.reply_to(message, "✅ *DATABASE LISTONE AGGIORNATO CON SUCCESSO!*", parse_mode="Markdown")
+    except Exception as e: bot.send_message(chat_id, f"❌ Errore caricamento: {str(e)}")
 
 # ==========================================
 # CALLBACKS & MENU MULTIPLI 
@@ -612,19 +565,22 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- AZIONI CLINICA LASER E STORICO ---
+    # --- AZIONI FERRARI WEB ---
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _L'IA sta estraendo i dati medici per {p_name}..._", parse_mode="Markdown")
-        real_data = get_cartella_clinica_laser(p_name, sq_name)
-        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ _Ricerca dati infortuni completi sul web per {p_name}..._", parse_mode="Markdown")
+        real_data = get_cartella_clinica_reale(p_name, sq_name)
+        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown", disable_web_page_preview=True)
 
     elif call.data.startswith("stats_"):
         p_name = call.data.replace("stats_", "")
-        row = df[df['Nome'] == p_name].iloc[0]
-        bot.send_message(chat_id, get_storico_freddo(p_name, row['R'], row['FVM']), parse_mode="Markdown")
+        p_row = df[df['Nome'] == p_name].iloc[0]
+        sq_name = p_row.get('Squadra', '')
+        msg = bot.send_message(chat_id, f"⏳ _Ricerca storico e articoli statistici sul web per {p_name}..._", parse_mode="Markdown")
+        real_data = get_storico_reale(p_name, sq_name)
+        bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown", disable_web_page_preview=True)
 
     elif call.data.startswith("wi_"):
         p_name = call.data.replace("wi_", "")
@@ -838,21 +794,8 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-@bot.message_handler(content_types=['document'])
-def handle_document(message):
-    chat_id = message.chat.id
-    fname = message.document.file_name
-    if not (fname.endswith('.csv') or fname.endswith('.xlsx')): return bot.reply_to(message, "❌ Invia solo `.csv` o `.xlsx`!", parse_mode="Markdown")
-    try:
-        downloaded_file = bot.download_file(bot.get_file(message.document.file_id).file_path)
-        save_name = "Lista-FantaAsta-Fantacalcio.csv" if fname.endswith('.csv') else "listone.xlsx"
-        with open(save_name, 'wb') as new_file: new_file.write(downloaded_file)
-        load_data(force_reload=True)
-        bot.reply_to(message, "✅ *DATABASE AGGIORNATO CON SUCCESSO!*", parse_mode="Markdown")
-    except Exception as e: bot.send_message(chat_id, f"❌ Errore caricamento: {str(e)}")
-
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: API Gemini e RSS blindati attivati!")
+    print("🚀 Bot in ascolto: La Ferrari ORIGINALE è in pista!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
