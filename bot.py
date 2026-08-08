@@ -95,9 +95,10 @@ def load_data(force_reload=False):
     if STATS_CACHE is None or force_reload:
         if os.path.exists("Statistiche.xlsx"):
             try:
-                # Legge l'excel partendo dalla riga delle intestazioni (header=1)
                 STATS_CACHE = pd.read_excel("Statistiche.xlsx", header=1)
-                print("✅ File Statistiche.xlsx caricato con successo!")
+                # Pulizia preventiva dei nomi nelle statistiche
+                STATS_CACHE['Nome_Clean'] = STATS_CACHE['Nome'].astype(str).str.strip().str.lower()
+                print("✅ File Statistiche.xlsx caricato e indicizzato con successo!")
             except Exception as e: print(f"⚠️ Errore lettura Statistiche.xlsx: {e}")
 
     return DATA_CACHE
@@ -130,25 +131,45 @@ def get_available_players(df, session):
 # ==========================================
 # MACELLAIO MATEMATICO & RICERCHE WEB
 # ==========================================
+def find_player_in_stats(nome):
+    """Trova un giocatore nel dataframe delle statistiche con ricerca flessibile."""
+    if STATS_CACHE is None or STATS_CACHE.empty:
+        return None
+    
+    nome_clean = str(nome).strip().lower()
+    
+    # 1. Ricerca esatta
+    match = STATS_CACHE[STATS_CACHE['Nome_Clean'] == nome_clean]
+    if not match.empty:
+        return match.iloc[0]
+        
+    # 2. Ricerca per contenimento
+    match = STATS_CACHE[STATS_CACHE['Nome_Clean'].str.contains(nome_clean, regex=False, na=False)]
+    if not match.empty:
+        return match.iloc[0]
+        
+    # 3. Ricerca per prima parola (es. Cognome)
+    first_word = nome_clean.split()[0]
+    if len(first_word) > 2:
+        match = STATS_CACHE[STATS_CACHE['Nome_Clean'].str.contains(first_word, regex=False, na=False)]
+        if not match.empty:
+            return match.iloc[0]
+            
+    return None
+
 def get_macellaio_info(nome):
     """Calcola se il giocatore è un macellaio analizzando le ammonizioni reali nell'Excel."""
-    if STATS_CACHE is None or STATS_CACHE.empty:
-        return ""
-    
-    match = STATS_CACHE[STATS_CACHE['Nome'].astype(str).str.lower() == nome.lower()]
-    if match.empty:
-        match = STATS_CACHE[STATS_CACHE['Nome'].astype(str).str.lower().str.contains(nome.lower(), na=False)]
-        
-    if not match.empty:
-        row = match.iloc[0]
+    row = find_player_in_stats(nome)
+    if row is not None:
         try:
             amm = int(row.get('Amm', 0))
             esp = int(row.get('Esp', 0))
             pv = int(row.get('Pv', 1))
             
-            # Se ha preso almeno 6 gialli o 1 rosso ed ha giocato più di 5 partite
             if (amm >= 6 or esp >= 1) and pv > 5:
                 return f"\n🪓 *ALLARME MACELLAIO REALE:* `{amm} Gialli` e `{esp} Rossi` in `{pv} presenze`!"
+            else:
+                return f"\n🛡 *Disciplinato:* `{amm} Gialli` e `{esp} Rossi` in `{pv} presenze`."
         except Exception:
             pass
             
@@ -156,38 +177,32 @@ def get_macellaio_info(nome):
 
 def get_storico_excel_o_web(nome, squadra=""):
     """Prima cerca i dati matematici nell'Excel Statistiche, se non li trova usa la ricerca web."""
-    if STATS_CACHE is not None and not STATS_CACHE.empty:
-        match = STATS_CACHE[STATS_CACHE['Nome'].astype(str).str.lower() == nome.lower()]
-        if match.empty:
-            match = STATS_CACHE[STATS_CACHE['Nome'].astype(str).str.lower().str.contains(nome.lower(), na=False)]
-            
-        if not match.empty:
-            row = match.iloc[0]
-            pv = row.get('Pv', 0)
-            mv = row.get('Mv', 0.0)
-            fm = row.get('Fm', 0.0)
-            gf = row.get('Gf', 0)
-            ass = row.get('Ass', 0)
-            amm = row.get('Amm', 0)
-            esp = row.get('Esp', 0)
-            
-            return (
-                f"📊 *STORICO REALE UFFICIALE: {nome.upper()}*\n"
-                f"───────────────────────────\n"
-                f"🏟 Presenze a Voto: `{pv}`\n"
-                f"📈 Media Voto: `{mv}`  │  Fantamedia: `{fm}`\n"
-                f"⚽ Gol: `{gf}`  │  🎯 Assist: `{ass}`\n"
-                f"🟨 Gialli: `{amm}`  │  🟥 Rossi: `{esp}`\n"
-                f"───────────────────────────\n"
-                f"_Dati estratti dal file Ufficiale Statistiche._"
-            )
+    row = find_player_in_stats(nome)
+    if row is not None:
+        pv = row.get('Pv', 0)
+        mv = row.get('Mv', 0.0)
+        fm = row.get('Fm', 0.0)
+        gf = row.get('Gf', 0)
+        ass = row.get('Ass', 0)
+        amm = row.get('Amm', 0)
+        esp = row.get('Esp', 0)
+        
+        return (
+            f"📊 *STORICO REALE UFFICIALE: {nome.upper()}*\n"
+            f"───────────────────────────\n"
+            f"🏟 Presenze a Voto: `{pv}`\n"
+            f"📈 Media Voto: `{mv}`  │  Fantamedia: `{fm}`\n"
+            f"⚽ Gol: `{gf}`  │  🎯 Assist: `{ass}`\n"
+            f"🟨 Gialli: `{amm}`  │  🟥 Rossi: `{esp}`\n"
+            f"───────────────────────────\n"
+            f"_Dati estratti dal file Ufficiale Statistiche._"
+        )
 
     # Fallback su ricerca web se il giocatore non è nell'Excel
     query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni transfermarkt fantacalcio'
     return f"📊 *STORICO WEB REALE: {nome.upper()} ({squadra})*\n\n{fetch_real_web_data(query, max_results=2)}"
 
 def fetch_real_web_data(query, max_results=2):
-    """Scraper web per le notizie su infortuni o informazioni storiche."""
     output = []
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
     try:
@@ -276,7 +291,6 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     ruolo = p_data.get('R', '-')
     fvm = p_data.get('FVM', 0)
     
-    # Calcola l'allarme macellaio reale dai dati dell'Excel
     macellaio_alert = get_macellaio_info(player_name)
     
     info_text = (
@@ -438,7 +452,7 @@ def process_whatif_price(message, player_name, user_id):
         overpay_warning = f"🛑 *FERMATI!* Stai strapagando! Il suo FVM è `{fvm}` e tu vuoi spendere `{hyp_price}`. È un salasso ingiustificato.\n"
 
     malus_warning = ""
-    if get_macellaio_info(player_name):
+    if "MACELLAIO" in get_macellaio_info(player_name):
         malus_warning = "🪓 *IN PIÙ È UN MACELLAIO!* Prende cartellini a raffica, non buttare crediti qui.\n"
 
     if budget_left < slots_left:
@@ -599,7 +613,7 @@ def handle_callbacks(call):
         avail = get_available_players(df, session)
         teams_target = ['Empoli', 'Lecce', 'Parma', 'Verona', 'Cagliari', 'Venezia']
         markup = InlineKeyboardMarkup(row_width=1)
-        selected_teams = np.random.choice(teams_target, 3, replace=False)
+        selected_teams = np.random.choice(teams_target, min(3, len(teams_target)), replace=False)
         for sq in selected_teams:
             d_pl = avail[(avail['Squadra'] == sq) & (avail['R'] == 'D')].sort_values(by='FVM', ascending=False)
             if not d_pl.empty:
@@ -612,17 +626,25 @@ def handle_callbacks(call):
         stats = get_roster_stats(session)
         budget = stats['budget']
         slot = stats['slot_liberi']
-        if slot <= 0: return bot.answer_callback_query(call.id, text="Hai già la rosa piena!", show_alert=True)
+        
+        if slot <= 0:
+            return bot.answer_callback_query(call.id, text="⚠️ Hai già la rosa piena (25/25)!", show_alert=True)
+            
         avail = get_available_players(df, session)
         low_cost = avail[avail['FVM'] > 0].sort_values(by='FVM', ascending=False)
-        combo = low_cost.head(slot * 3).sample(min(slot, len(low_cost)))
+        
+        if low_cost.empty:
+            return bot.answer_callback_query(call.id, text="⚠️ Nessun giocatore svincolato disponibile!", show_alert=True)
+            
+        sample_size = min(slot, len(low_cost))
+        combo = low_cost.head(slot * 3).sample(sample_size)
         markup = InlineKeyboardMarkup(row_width=1)
         spesa_est = 0
         for _, row in combo.iterrows():
             markup.add(InlineKeyboardButton(f"🎰 {row['Nome']} ({row['R']}) FVM:{row['FVM']}", callback_data=f"sq_pl_{row['Nome']}"))
             spesa_est += row['FVM']
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
-        bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
+        bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot liberi.\nEcco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
     # --- AZIONI STORICO REALE ED INFORMAZIONI WEB ---
     elif call.data.startswith("cl_"):
@@ -686,7 +708,7 @@ def handle_callbacks(call):
 
     elif call.data == "menu_rosa":
         rosa = session.get('rosa', [])
-        if not rosa: text = "📋 *LA TUA ROSA E VUOTA!*\nAcquista giocatori per vederli qui."
+        if not rosa: text = "📋 *LA TUA ROSA È VUOTA!*\nAcquista giocatori per vederli qui."
         else:
             text = "📋 *LA TUA ROSA:*\n───────────────────────────\n"
             for r in ['P', 'D', 'C', 'A']:
@@ -855,5 +877,5 @@ def handle_callbacks(call):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: La Ferrari con Macellaio Reale è attiva!")
+    print("🚀 Bot in ascolto: Correzioni applicate con successo!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
