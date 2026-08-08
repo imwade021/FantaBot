@@ -2,6 +2,7 @@ import os
 import io
 import re
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 import datetime
 import email.utils
@@ -140,7 +141,7 @@ def get_storico_freddo(nome, ruolo, fvm):
     )
 
 def get_cartella_clinica_laser(nome, squadra):
-    """Feed RSS blindato + API Gemini senza filtri etici per schema laser a 4 righe."""
+    """Feed RSS blindato + API Gemini (versione universale) senza filtri etici."""
     if not AI_ENABLED or not GEMINI_API_KEY:
         return "⚠️ Errore: Manca la libreria `google-generativeai` o la `GEMINI_API_KEY` su Render."
     
@@ -187,9 +188,10 @@ def get_cartella_clinica_laser(nome, squadra):
     except Exception as e:
         return f"🏥 *CARTELLA CLINICA: {nome.upper()}*\n⚠️ Errore estrazione News RSS: {str(e)[:50]}"
 
-    # FASE 2: Cervello AI (Gemini) con spegnimento filtri sicurezza
+    # FASE 2: Cervello AI (Gemini Pro) con spegnimento filtri sicurezza
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Usa 'gemini-pro', il modello più stabile e universale che non va mai in 404
+        model = genai.GenerativeModel('gemini-pro')
         prompt = (
             f"Agisci come medico sportivo. Leggi questi titoli di notizie su {nome} ({squadra}). "
             f"Se le notizie non indicano chiaramente un infortunio in corso, o indicano che è pienamente recuperato, "
@@ -610,12 +612,12 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Ritenta", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 *ROULETTE ULTIMI SPICCIOLI*\nHai `{budget}` cr. e `{slot}` slot. Ecco la miglior combo trovata (Valore stimato: {spesa_est} cr):", chat_id, call.message.message_id, parse_mode="Markdown", reply_markup=markup)
 
-    # --- AZIONI CLINICA E STORICO ---
+    # --- AZIONI CLINICA LASER E STORICO ---
     elif call.data.startswith("cl_"):
         p_name = call.data.replace("cl_", "")
         p_row = df[df['Nome'] == p_name].iloc[0]
         sq_name = p_row.get('Squadra', '')
-        msg = bot.send_message(chat_id, f"⏳ _Accesso ai bollettini medici per {p_name}..._", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ _L'IA sta estraendo i dati medici per {p_name}..._", parse_mode="Markdown")
         real_data = get_cartella_clinica_laser(p_name, sq_name)
         bot.edit_message_text(real_data, chat_id, msg.message_id, parse_mode="Markdown")
 
