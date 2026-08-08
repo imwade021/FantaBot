@@ -9,7 +9,7 @@ import numpy as np
 import telebot
 import requests
 from bs4 import BeautifulSoup
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, LinkPreviewOptions
 
 # Tenta di importare la libreria per la grafica del campo
 try:
@@ -528,12 +528,26 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         
     markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
     
+    # OPZIONE MINIATURA (LinkPreviewOptions per forzare l'immagine piccola di fianco al testo)
+    preview_opts = None
+    if photo_url.startswith('http'):
+        try:
+            preview_opts = LinkPreviewOptions(url=photo_url, prefer_small_media=True)
+        except NameError:
+            pass # In caso di libreria non aggiornata
+            
     try:
-        bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
+        if preview_opts is not None:
+            bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup, link_preview_options=preview_opts)
+        else:
+            bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
     except Exception:
         try: bot.delete_message(chat_id, message_id)
         except Exception: pass
-        bot.send_message(chat_id, info_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
+        if preview_opts is not None:
+            bot.send_message(chat_id, info_text, parse_mode="HTML", reply_markup=markup, link_preview_options=preview_opts)
+        else:
+            bot.send_message(chat_id, info_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
 
 def system_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
