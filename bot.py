@@ -497,8 +497,23 @@ def process_whatif_price(message, player_name, user_id):
     bot.send_message(chat_id, final_text, parse_mode="HTML")
 
 # ==========================================
-# HANDLERS (VOCALI E FILE)
+# HANDLERS (COMANDI, VOCALI E FILE)
 # ==========================================
+@bot.message_handler(commands=['clean', 'pulisci'])
+def cmd_clean(m):
+    chat_id = m.chat.id
+    curr_id = m.message_id
+    for i in range(curr_id, max(0, curr_id - 80), -1):
+        try: bot.delete_message(chat_id, i)
+        except Exception: pass
+    send_dashboard(chat_id, m.from_user.id)
+
+@bot.message_handler(commands=['start', 'menu'])
+def cmd_start(m): 
+    try: bot.delete_message(m.chat.id, m.message_id)
+    except Exception: pass
+    send_dashboard(m.chat.id, m.from_user.id)
+
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
     if not VOICE_ENABLED: return bot.reply_to(message, "❌ <b>Comandi Vocali disattivati.</b>", parse_mode="HTML")
@@ -553,10 +568,6 @@ def modalita_cecchino(message):
         bot.reply_to(message, f"🎯 <b>CECCHINO A BERSAGLIO!</b>\n✅ Hai acquistato <b>{html.escape(player_name.upper())}</b> a <code>{costo} cr.</code>", parse_mode="HTML", reply_markup=markup)
     except Exception: bot.reply_to(message, "❌ Errore acquisto rapido.")
 
-@bot.message_handler(commands=['start', 'menu'])
-def cmd_start(m): 
-    send_dashboard(m.chat.id, m.from_user.id)
-
 @bot.message_handler(func=lambda m: not m.text.startswith('/') and not m.text.startswith('+') and not m.text.isdigit())
 def search_player(message):
     query = message.text.strip().lower()
@@ -609,7 +620,12 @@ def handle_callbacks(call):
 
     elif call.data == "go_home": 
         session['compare_p1'] = None
-        send_dashboard(chat_id, user_id, call.message.message_id)
+        # Pulisce gli ultimi 10 messaggi per fare spazio
+        curr_id = call.message.message_id
+        for i in range(curr_id, max(0, curr_id - 10), -1):
+            try: bot.delete_message(chat_id, i)
+            except Exception: pass
+        send_dashboard(chat_id, user_id)
 
     elif call.data == "reload_excel": 
         load_data(force_reload=True)
@@ -902,5 +918,5 @@ def handle_callbacks(call):
 if __name__ == '__main__':
     try: bot.remove_webhook()
     except: pass
-    print("🚀 Bot in ascolto: La Ferrari con normalizzazione nomi ed escaping HTML è attiva!")
+    print("🚀 Bot in ascolto: Auto-pulizia, HTML Thumbnail, Normalizzazione Nomi e DuckDuckGo attivi!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
