@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Flask server fittizio per tenere aperta la porta su Render (evita il crash Web Service / Port Timeout)
+# Flask server fittizio per tenere aperta la porta su Render
 from flask import Flask
 app = Flask(__name__)
 
@@ -145,7 +145,6 @@ def load_data(force_reload=False):
     return DATA_CACHE
 
 def auto_download_official_listone():
-    """Scarica e aggiorna il Listone Ufficiale da Fantacalcio.it"""
     print("🔄 Avvio download automatico Listone Ufficiale Fantacalcio.it...")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
@@ -161,36 +160,27 @@ def auto_download_official_listone():
     return False
 
 def auto_sync_transfermarkt_new_signings():
-    """Scansiona Transfermarkt per i trasferimenti e aggiorna le schede con la Fantamedia Pura"""
     print("🌐 Scansione Transfermarkt per nuovi trasferimenti ufficiali Serie A...")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         res = requests.get(TRANSFERMARKT_SERIE_A_URL, headers=headers, timeout=15)
-        if res.status_code != 200:
-            print("⚠️ Transfermarkt irraggiungibile.")
-            return False
-        
-        soup = BeautifulSoup(res.text, 'html.parser')
-        print("✅ Scansione Transfermarkt completata con successo.")
+        if res.status_code != 200: return False
         return True
     except Exception as e:
         print(f"❌ Errore scansione Transfermarkt: {e}")
         return False
 
 def full_sync_pipeline():
-    """Esegue la sincronizzazione completa dei dati"""
     s1 = auto_download_official_listone()
     s2 = auto_sync_transfermarkt_new_signings()
     return s1 or s2
 
 load_data()
 
-# Pianificatore in Background (Download ogni notte alle 04:00 AM)
 try:
     scheduler = BackgroundScheduler()
     scheduler.add_job(full_sync_pipeline, 'cron', hour=4, minute=0)
     scheduler.start()
-    print("⏰ Schedulatore notturno (04:00 AM) avviato con successo!")
 except Exception as e:
     print(f"⚠️ Scheduler error: {e}")
 
@@ -433,6 +423,34 @@ def system_menu_keyboard():
     markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
     return markup
 
+def pro_menu_keyboard():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("🎰 Ultimi Spiccioli", callback_data="pro_spiccioli"), InlineKeyboardButton("🧱 Stakanovisti", callback_data="pro_stakanov"))
+    markup.add(InlineKeyboardButton("🕸️ Griglia Perfetta (D)", callback_data="pro_griglia"), InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
+    return markup
+
+def menu_seleziona_squadra(df, prefisso):
+    markup = InlineKeyboardMarkup(row_width=2)
+    squadre = sorted(df['Squadra'].dropna().astype(str).unique())
+    markup.add(*[InlineKeyboardButton(f"{get_team_icon(sq)} {sq}", callback_data=f"{prefisso}_sq_{sq}") for sq in squadre])
+    markup.add(InlineKeyboardButton("🔙 Home", callback_data="go_home"))
+    return markup
+
+def menu_seleziona_ruolo(squadra, prefisso):
+    markup = InlineKeyboardMarkup(row_width=4)
+    markup.add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"{prefisso}_ru_{squadra}_{r}") for r in ['P', 'D', 'C', 'A']])
+    markup.add(InlineKeyboardButton("🔙 Squadre", callback_data=f"{prefisso}_start"))
+    return markup
+
+def menu_seleziona_giocatore(df, squadra, ruolo, prefisso, user_id):
+    markup = InlineKeyboardMarkup(row_width=1)
+    sub = df[(df['Squadra'] == squadra) & (df['R'] == ruolo)]
+    for _, row in sub.iterrows():
+        star = "⭐ " if row['Nome'] in get_session(user_id).get('wishlist', []) else ""
+        markup.add(InlineKeyboardButton(f"{star}{ROLE_ICONS.get(ruolo,'')} {row['Nome']} ─ FVM:{row.get('FVM', '-')}", callback_data=f"{prefisso}_pl_{row['Nome']}"))
+    markup.add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data=f"{prefisso}_sq_{squadra}"))
+    return markup
+
 def send_dashboard(chat_id, user_id, message_id=None):
     session = get_session(user_id)
     stats = get_roster_stats(session)
@@ -467,9 +485,54 @@ def send_dashboard(chat_id, user_id, message_id=None):
         except Exception: bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard())
     else: bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard())
 
-# ==========================================
-# WHAT-IF ANALITICO POTENZIATO
-# ==========================================
+def process_buy_price(message, player_name, user_id):
+    chat_id = message.chat.id
+    if not message.text.isdigit():
+        msg = bot.send_message(chat_id, "❌ Inserisci <b>solo numeri</b>:", parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
+        return
+
+    costo = int(message.text)
+    session = get_session(user_id)
+    stats = get_roster_stats(session)
+    
+    if costo > stats['max_bid']:
+        bot.send_message(chat_id, f"⚠️ <b>ATTENZIONE!</b>\nOfferta oltre il <b>Max Bid Sicuro</b> (<code>{stats['max_bid']} cr.</code>).", parse_mode="HTML")
+        send_dashboard(chat_id, user_id)
+        return
+
+    df = load_data()
+    row = df[df['Nome'] == player_name].iloc[0]
+    ruolo, squadra = row.get('R', 'C'), row.get('Squadra', '-')
+    fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+    
+    session['rosa'].append({
+        'nome': player_name, 'prezzo': costo, 'ruolo': ruolo, 'squadra': squadra, 
+        'fvm': fvm_raw
+    })
+    session['budget'] -= costo
+    
+    lega_bud = session.get('lega_budget_iniziale', 500)
+    lega_part = session.get('lega_partecipanti', 8)
+    base_price = fvm_raw * (lega_bud / 1000.0)
+    f_part = 1 + ((lega_part - 8) * 0.025)
+    fair_price = max(1, int(base_price * f_part))
+    
+    if costo <= fair_price * 0.75:
+        giudizio = f"🔥 <b>AFFARE D'ORO!</b> Hai risparmiato circa {fair_price - costo} cr. sul suo valore reale."
+    elif costo <= fair_price * 0.95:
+        giudizio = f"✅ <b>OTTIMO COLPO!</b> Preso sotto costo (Fair Price: {fair_price} cr)."
+    elif costo <= fair_price * 1.15:
+        giudizio = f"⚖️ <b>PREZZO GIUSTO.</b> Pagato esattamente il suo valore."
+    elif costo <= fair_price * 1.30:
+        giudizio = f"⚠️ <b>LEGGERO OVERPAY.</b> L'hai pagato un po' di più (Fair Price: {fair_price} cr)."
+    else:
+        giudizio = f"🚨 <b>SALASSO!</b> Strapagato! Hai speso ben {costo - fair_price} cr. in più del dovuto."
+        
+    msg_text = f"✅ <b>{html.escape(player_name.upper())}</b> acquistato per <code>{costo} cr.</code>!\n\n📊 <b>Valutazione Acquisto:</b>\n{giudizio}"
+    bot.send_message(chat_id, msg_text, parse_mode="HTML")
+    send_dashboard(chat_id, user_id)
+
 def process_whatif_price(message, player_name, user_id):
     chat_id = message.chat.id
     if not message.text.isdigit():
@@ -538,7 +601,7 @@ def process_whatif_price(message, player_name, user_id):
     bot.send_message(chat_id, final_text, parse_mode="HTML", reply_markup=markup)
 
 # ==========================================
-# HANDLERS (COMANDI, VOCALI E FILE)
+# HANDLERS PRINCIPALI
 # ==========================================
 @bot.message_handler(commands=['clean', 'pulisci'])
 def cmd_clean(m):
@@ -588,7 +651,7 @@ def handle_document(message):
     except Exception as e: bot.send_message(chat_id, f"❌ Errore caricamento: {str(e)}")
 
 # ==========================================
-# CALLBACKS GENERALI
+# CALLBACK HANDLER COMPLETO DI TUTTI I MENU
 # ==========================================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
@@ -626,22 +689,73 @@ def handle_callbacks(call):
         load_data(force_reload=True)
         bot.send_message(chat_id, "⚡ <b>Dati ricaricati in memoria con successo!</b>", parse_mode="HTML")
 
+    elif call.data == "sq_start":
+        if df is None: return
+        bot.edit_message_text("👕 <b>ESPLORA SQUADRE</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=menu_seleziona_squadra(df, "sq"))
+
+    elif call.data.startswith("sq_sq_"):
+        bot.edit_message_text("Scegli il ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=menu_seleziona_ruolo(call.data.replace("sq_sq_", ""), "sq"))
+
+    elif call.data.startswith("sq_ru_"):
+        _, _, sq, ru = call.data.split("_")
+        bot.edit_message_text(f"Giocatori ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=menu_seleziona_giocatore(df, sq, ru, "sq", user_id))
+
     elif call.data.startswith("sq_pl_"):
         player_name = call.data.replace("sq_pl_", "")
         if df is None: return
         send_player_card_view(chat_id, player_name, call.message.message_id, df, session)
+
+    elif call.data.startswith("buy_"):
+        player_name = call.data.replace("buy_", "")
+        msg = bot.send_message(chat_id, f"💰 Crediti spesi per <b>{html.escape(player_name)}</b>?:", parse_mode="HTML")
+        bot.register_next_step_handler(msg, process_buy_price, player_name, user_id)
+
+    elif call.data.startswith("taken_"):
+        p_name = call.data.replace("taken_", "")
+        if p_name not in session['scartati']: session['scartati'].append(p_name)
+        safe_answer_callback(call.id, text=f"🚫 {p_name} segnato come già preso!", show_alert=False)
+        send_dashboard(chat_id, user_id, call.message.message_id)
 
     elif call.data.startswith("wi_"):
         p_name = call.data.replace("wi_", "")
         msg = bot.send_message(chat_id, f"🔮 <b>SIMULATORE WHAT-IF</b> per <b>{html.escape(p_name)}</b>:", parse_mode="HTML")
         bot.register_next_step_handler(msg, process_whatif_price, p_name, user_id)
 
+    elif call.data == "menu_rosa":
+        rosa = session.get('rosa', [])
+        if not rosa: text = "📋 <b>LA TUA ROSA È VUOTA!</b>"
+        else:
+            text = "📋 <b>LA TUA ROSA:</b>\n───────────────────────────\n"
+            for r in ['P', 'D', 'C', 'A']:
+                giocatori_r = [p for p in rosa if p.get('ruolo') == r]
+                if giocatori_r:
+                    text += f"\n<b>{ROLE_ICONS[r]} {r}:</b>\n"
+                    for p in giocatori_r: text += f"• {html.escape(p['nome'])} (<code>{p['prezzo']} cr.</code>)\n"
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+    elif call.data == "menu_rigoristi":
+        testo = "🎯 <b>RADAR RIGORISTI & TIRATORI UFFICIALE</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        for sq, dati in GERARCHIE_RIGORISTI.items():
+            testo += f"<b>{get_team_icon(sq)} {sq}:</b>\n"
+            testo += f"⚽ Rigoristi: {', '.join(dati['rigoristi'])}\n"
+            testo += f"🎯 Punizioni: {', '.join(dati['punizioni'])}\n\n"
+        markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+    elif call.data == "menu_pro":
+        bot.edit_message_text("🛠️ <b>STRUMENTI PRO</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=pro_menu_keyboard())
+
+    elif call.data == "reset_confirm":
+        user_sessions[user_id] = {
+            'budget': 500, 'rosa': [], 'wishlist': session.get('wishlist', []), 'scartati': [], 
+            'compare_p1': None, 'lega_budget_iniziale': 500, 'lega_partecipanti': 8
+        }
+        send_dashboard(chat_id, user_id, call.message.message_id)
+
 if __name__ == '__main__':
-    # Avvio contestuale del mini-server Flask per Render in un thread parallelo
     threading.Thread(target=run_flask, daemon=True).start()
-    
     try: bot.remove_webhook()
     except Exception: pass
-    
-    print("🚀 FANTABOT PRO FULL-SYNC ONLINE E PRONTO!")
+    print("🚀 FANTABOT PRO ONLINE E CONNESSO!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
