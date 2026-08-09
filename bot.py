@@ -59,26 +59,26 @@ TEAM_COLORS = {
 }
 
 GERARCHIE_RIGORISTI = {
-    'Atalanta': {'rigoristi': ['Lookman', 'Retegui', 'Pasalic'], 'punizioni': ['Lookman', 'Samardzic', 'Brescianini']},
-    'Bologna': {'rigoristi': ['Orsolini', 'Castro', 'Dallinga'], 'punizioni': ['Orsolini', 'Miranda J.', 'Karlsson']},
-    'Cagliari': {'rigoristi': ['Mina', 'Piccoli', 'Marin'], 'punizioni': ['Marin', 'Viola', 'Prati']},
-    'Como': {'rigoristi': ['Cutrone', 'Belotti', 'Strefezza'], 'punizioni': ['Strefezza', 'Nico Paz', 'Da Cunha']},
-    'Empoli': {'rigoristi': ['Colombo', 'Esposito', 'Pellegri'], 'punizioni': ['Esposito', 'Pezzella', 'Henderson']},
-    'Fiorentina': {'rigoristi': ['Gudmundsson A.', 'Kean', 'Beltran'], 'punizioni': ['Gudmundsson A.', 'Biraghi', 'Cataldi']},
-    'Genoa': {'rigoristi': ['Pinamonti', 'Messias', 'Malinovskyi'], 'punizioni': ['Malinovskyi', 'Messias', 'Martin']},
-    'Inter': {'rigoristi': ['Calhanoglu', 'Martinez L.', 'Taremi'], 'punizioni': ['Calhanoglu', 'Dimarco', 'Zielinski']},
-    'Juventus': {'rigoristi': ['Vlahovic', 'Douglas Luiz', 'Koopmeiners'], 'punizioni': ['Vlahovic', 'Douglas Luiz', 'Koopmeiners']},
-    'Lazio': {'rigoristi': ['Zaccagni', 'Castellanos', 'Dia'], 'punizioni': ['Zaccagni', 'Rovella', 'Castrovilli']},
-    'Lecce': {'rigoristi': ['Krstovic', 'Rebic', 'Oudin'], 'punizioni': ['Oudin', 'Marchwinski', 'Krstovic']},
-    'Milan': {'rigoristi': ['Pulisic', 'Theo Hernandez', 'Morata'], 'punizioni': ['Pulisic', 'Theo Hernandez', 'Reijnders']},
-    'Monza': {'rigoristi': ['Pessina', 'Djuric', 'Caprari'], 'punizioni': ['Caprari', 'Kyriakopoulos', 'Maldini']},
-    'Napoli': {'rigoristi': ['Kvaratskhelia', 'Lukaku', 'Politano'], 'punizioni': ['Kvaratskhelia', 'Politano', 'Raspadori']},
-    'Parma': {'rigoristi': ['Man', 'Bonny', 'Benedyczak'], 'punizioni': ['Bernabé', 'Man', 'Hernani']},
-    'Roma': {'rigoristi': ['Dybala', 'Pellegrini Lo.', 'Soulé'], 'punizioni': ['Dybala', 'Pellegrini Lo.', 'Soulé']},
-    'Torino': {'rigoristi': ['Zapata D.', 'Sanabria', 'Adams'], 'punizioni': ['Ilic', 'Ricci', 'Lazaro']},
-    'Udinese': {'rigoristi': ['Thauvin', 'Lucca', 'Sanchez'], 'punizioni': ['Thauvin', 'Sanchez', 'Payero']},
-    'Venezia': {'rigoristi': ['Pohjanpalo', 'Gytkjaer', 'Nicolussi Caviglia'], 'punizioni': ['Nicolussi Caviglia', 'Andersen', 'Busio']},
-    'Verona': {'rigoristi': ['Tengstedt', 'Mosquera', 'Duda'], 'punizioni': ['Duda', 'Suslov', 'Lazovic']}
+    'Atalanta': {'rigoristi': ['Scamacca', 'Krstovic', 'Samardzic'], 'punizioni': ['De Ketelaere', 'Samardzic', 'Gaetano']},
+    'Bologna': {'rigoristi': ['Orsolini', 'Bernardeschi', 'Dovbyk'], 'punizioni': ['Orsolini', 'Bernardeschi', 'Miranda J.']},
+    'Cagliari': {'rigoristi': ['Mina', 'Fazzini', 'Borrelli'], 'punizioni': ['Fazzini', 'Winks', 'Mina']},
+    'Como': {'rigoristi': ['Da Cunha', 'Douvikas', 'Paz N.'], 'punizioni': ['Paz N.', 'Baturina', 'Da Cunha']},
+    'Fiorentina': {'rigoristi': ['Gudmundsson A.', 'Kean', 'Mandragora'], 'punizioni': ['Gudmundsson A.', 'Mastantuono', 'Atta']},
+    'Frosinone': {'rigoristi': ['Calò', 'Raimondo', 'Ghedjemis'], 'punizioni': ['Calò', 'Ghedjemis', 'Zerbin']},
+    'Genoa': {'rigoristi': ['Colombo', 'Ostigard', 'Vitinha O.'], 'punizioni': ['Baldanzi', 'Martin', 'Vitinha O.']},
+    'Inter': {'rigoristi': ['Calhanoglu', 'Zielinski', 'Martinez L.'], 'punizioni': ['Calhanoglu', 'Dimarco', 'Zielinski']},
+    'Juventus': {'rigoristi': ['Kolo Muani', 'Yildiz', 'Locatelli'], 'punizioni': ['Locatelli', 'Cambiaso']},
+    'Lazio': {'rigoristi': ['Zaccagni', 'Taylor K.', 'Cataldi'], 'punizioni': ['Rovella', 'Zaccagni', 'Cataldi']},
+    'Lecce': {'rigoristi': ['Geubbels', 'Stengs', 'Berisha M.'], 'punizioni': ['Pierotti', 'Berisha M.', 'Gandelman']},
+    'Milan': {'rigoristi': ['Nkunku', 'Ramos G.', 'Pulisic'], 'punizioni': ['Modric', 'Pulisic', 'Saelemaekers']},
+    'Monza': {'rigoristi': ['Pessina', 'Cutrone', 'Petagna'], 'punizioni': ['Pessina', 'Colpani', 'Mota']},
+    'Napoli': {'rigoristi': ['De Bruyne', 'Hojlund', 'Politano'], 'punizioni': ['De Bruyne', 'Politano', 'Neres']},
+    'Parma': {'rigoristi': ['Pellegrino M.', 'Touré E.', 'Valeri'], 'punizioni': ['Bernabé', 'Nicolussi Caviglia', 'Valeri']},
+    'Roma': {'rigoristi': ['Malen', 'Dybala', 'Castro S.'], 'punizioni': ['Dybala', 'Malen', 'Soulé']},
+    'Sassuolo': {'rigoristi': ['Berardi', 'Pinamonti', 'Laurienté'], 'punizioni': ['Berardi', 'Laurienté', 'Adzic']},
+    'Torino': {'rigoristi': ['Vlasic', 'Kulenovic', 'Simeone'], 'punizioni': ['Vlasic', 'Oristanio', 'Gineitis']},
+    'Udinese': {'rigoristi': ['Davis K.', 'Solet', 'Zaniolo'], 'punizioni': ['Zaniolo', 'Ekkelenkamp', 'Unai Gomez']},
+    'Venezia': {'rigoristi': ['Adams A.', 'Rrahmani Al.', 'Adorante'], 'punizioni': ['Busio', 'Yeboah J.', 'Perez K.']}
 }
 
 DATABASE_SCOMMESSE_PURE = [
