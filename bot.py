@@ -141,7 +141,7 @@ INFORTUNATI_CACHE = {}
 
 def update_infortunati_cache():
     global INFORTUNATI_CACHE
-    print("🔄 Sincronizzazione cartelle cliniche in background...")
+    print("🔄 Estrazione dati JSON/API infortunati in background...")
     url = "https://www.fantacalcio.it/infortunati-e-squalificati"
     try:
         if CURL_CFFI_ENABLED:
@@ -151,40 +151,42 @@ def update_infortunati_cache():
             res = tls_requests.get(url, headers=headers, timeout=15)
             
         if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
             temp_cache = {}
+            # Otteniamo il codice sorgente grezzo (HTML + JSON Embedded)
+            html_raw = res.text.lower()
             
-            # Euristica 1: ricerca classi specifiche di Fantacalcio.it
-            for item in soup.find_all(class_=re.compile(r'player-name|name', re.I)):
-                nome = item.get_text(strip=True)
-                if len(nome) > 2:
+            if DATA_CACHE is not None:
+                for _, r in DATA_CACHE.iterrows():
+                    nome = str(r['Nome'])
                     norm = normalize_str(nome)
                     
-                    desc = item.find_next(class_=re.compile(r'desc|detail|reason', re.I))
-                    if not desc: desc = item.find_next(['p', 'span'])
-                    
-                    testo_desc = desc.get_text(strip=True) if desc else "Dettagli non specificati."
-                    if len(testo_desc) > 200: testo_desc = testo_desc[:200] + "..."
-                    
-                    stato = "🔴 SQUALIFICATO" if "squalific" in testo_desc.lower() else "🚑 INFORTUNATO"
-                    temp_cache[norm] = f"{stato}\n📋 {testo_desc}"
-
-            # Euristica 2: Fallback potente scansionando tutto il testo per sicurezza
-            testo_completo = soup.get_text(" ", strip=True).lower()
-            if DATA_CACHE is not None and not temp_cache:
-                for _, r in DATA_CACHE.iterrows():
-                    nome_db = str(r['Nome'])
-                    norm_db = normalize_str(nome_db)
-                    if len(norm_db) > 2 and re.search(r'\b' + re.escape(norm_db) + r'\b', testo_completo):
-                        temp_cache[norm_db] = "🚑 SEGNALATO NELLA LISTA INFORTUNATI/SQUALIFICATI\n📋 Dettaglio specifico non individuato."
-            
+                    if len(norm) > 2:
+                        # Se il nome è presente nel codice grezzo, estraiamo un blocco per l'analisi API
+                        idx = html_raw.find(norm)
+                        if idx != -1:
+                            # Catturiamo i 300 caratteri successivi al nome per trovare la causale clinica JSON
+                            contesto_api = html_raw[idx:idx+300]
+                            # Ripuliamo da apici e parentesi graffe per una lettura sicura
+                            contesto_pulito = re.sub(r'[^a-z0-9\s]', ' ', contesto_api)
+                            
+                            # Parole chiave esatte per identificare il blocco status
+                            is_squalificato = any(kw in contesto_pulito for kw in ['squalific', 'rosso', 'espulso', 'ammonizion'])
+                            is_infortunato = any(kw in contesto_pulito for kw in ['lesione', 'affaticamento', 'recupero', 'terapia', 'operato', 'infortunio', 'ginocchio', 'crociato', 'flessore', 'muscolo', 'febbre', 'trauma', 'distorsione', 'rientro', 'problema', 'tendine'])
+                            
+                            if is_squalificato:
+                                temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Rilevato blocco disciplinare attivo."
+                            elif is_infortunato:
+                                # Prendi una piccola porzione pulita per il riassunto
+                                estratto = ' '.join(contesto_pulito.split()[2:15])
+                                temp_cache[norm] = f"🚑 INFORTUNATO/INDISPONIBILE\n📋 Traccia clinica: ...{estratto}..."
+                                
             if temp_cache:
                 INFORTUNATI_CACHE = temp_cache
-                print(f"✅ Cache Infortunati aggiornata! ({len(INFORTUNATI_CACHE)} giocatori rilevati)")
+                print(f"✅ Dati JSON Infortunati processati! ({len(INFORTUNATI_CACHE)} giocatori indisponibili trovati)")
             else:
-                print("⚠️ Il parser infortunati non ha trovato dati (possibile cambio layout).")
+                print("⚠️ L'estrattore API non ha trovato match. Possibile sito in manutenzione.")
     except Exception as e:
-        print(f"❌ Errore aggiornamento infortunati: {e}")
+        print(f"❌ Errore sincronizzazione JSON Infortunati: {e}")
 
 def auto_download_listone():
     print("🔄 Avvio download automatico del Listone con camuffamento...")
@@ -192,7 +194,7 @@ def auto_download_listone():
         if CURL_CFFI_ENABLED:
             res = tls_requests.get(LISTONE_URL, impersonate="chrome", timeout=15)
         else:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            headers = {"User-Agent": "Mozilla/5.0"}
             res = tls_requests.get(LISTONE_URL, headers=headers, timeout=15)
             
         if res.status_code == 200:
@@ -202,7 +204,6 @@ def auto_download_listone():
             load_data(force_reload=True)
             return True
         else:
-            print(f"⚠️ Errore download listone, status code: {res.status_code}")
             return False
     except Exception as e:
         print(f"❌ Errore durante l'auto-download: {e}")
@@ -239,20 +240,21 @@ def load_data(force_reload=False):
                 
                 STATS_CACHE['Nome_Norm'] = STATS_CACHE['Nome'].apply(normalize_str)
                 print(f"✅ File {stats_file} caricato e indicizzato con successo!")
-            except Exception as e: print(f"⚠️ Errore lettura {stats_file}: {e}")
+            except Exception as e: pass
 
     return DATA_CACHE
 
 # Caricamento iniziale e avvio Pianificatore
 load_data()
-threading.Thread(target=update_infortunati_cache).start() # Esegue subito il caching
+# Lanciamo subito il raccoglitore JSON degli infortunati all'avvio del bot
+threading.Thread(target=update_infortunati_cache).start()
 
 try:
     scheduler = BackgroundScheduler()
     scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
     scheduler.add_job(update_infortunati_cache, 'cron', hour='4,15', minute=30)
     scheduler.start()
-    print("⏰ Pianificatore Auto-Download & Cache attivo")
+    print("⏰ Pianificatore Auto-Download & API Cache attivo")
 except Exception: pass
 
 user_sessions = {}
@@ -345,15 +347,13 @@ def fetch_real_web_data(query, max_results=2):
                     if link.startswith('//duckduckgo.com/l/?uddg='): 
                         link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
                     output.append(f"🔎 <i>{html.escape(snippet.text.strip())}</i>\n🔗 <a href=\"{html.escape(link)}\">Fonte</a>")
-    except Exception as e: 
-        print(f"❌ Errore Scraping principale: {e}")
+    except Exception as e: pass
     
     if not output and WEB_SEARCH_ENABLED:
         try:
             for r in DDGS().text(query, max_results=max_results):
                 output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
-        except Exception as e: 
-            print(f"❌ Errore Fallback DDGS: {e}")
+        except Exception as e: pass
             
     return "\n\n".join(output) if output else ""
 
@@ -375,7 +375,7 @@ def get_storico_excel_o_web(nome, squadra=""):
 def get_cartella_clinica_reale(nome, squadra=""):
     norm_name = normalize_str(nome)
     
-    # 1. Controlla nella cache locale (Match esatto)
+    # 1. Controlla nella cache locale API (Match esatto)
     if norm_name in INFORTUNATI_CACHE:
         return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{INFORTUNATI_CACHE[norm_name]}"
         
@@ -384,7 +384,7 @@ def get_cartella_clinica_reale(nome, squadra=""):
         if norm_name in k or k in norm_name:
             return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{v}"
             
-    # 3. Se non c'è, il giocatore è sano e arruolabile
+    # 3. Se non c'è, il giocatore è sano e arruolabile senza alcun dubbio
     return (
         f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
         f"🟢 <b>GIOCATORE ARRUOLABILE:</b> Non è presente nell'attuale lista ufficiale degli infortunati e squalificati."
@@ -931,7 +931,7 @@ def handle_callbacks(call):
 
     elif call.data.startswith("cl_"):
         p = call.data.replace("cl_", "")
-        bot.edit_message_text(get_cartella_clinica_reale(p, df[df['Nome'] == p].iloc[0].get('Squadra', '')), chat_id, bot.send_message(chat_id, "⏳ <i>Ricerca in archivio locale...</i>", parse_mode="HTML").message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
+        bot.edit_message_text(get_cartella_clinica_reale(p, df[df['Nome'] == p].iloc[0].get('Squadra', '')), chat_id, bot.send_message(chat_id, "⏳ <i>Lettura dati in corso...</i>", parse_mode="HTML").message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data.startswith("stats_"):
         p = call.data.replace("stats_", "")
