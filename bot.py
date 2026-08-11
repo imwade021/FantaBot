@@ -8,12 +8,13 @@ import threading
 import pandas as pd
 import numpy as np
 import telebot
+import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Tenta di importare curl_cffi per bypassare i blocchi anti-bot
+# Tenta di importare curl_cffi per bypassare i blocchi anti-bot per il download del listone
 try:
     from curl_cffi import requests as tls_requests
     CURL_CFFI_ENABLED = True
@@ -141,62 +142,63 @@ INFORTUNATI_CACHE = {}
 
 def update_infortunati_cache():
     global INFORTUNATI_CACHE
-    print("🔄 Sincronizzazione Tabellone Infortunati Multi-Fonte...")
+    scraper_key = os.getenv("SCRAPER_API_KEY")
     
-    # Fonti più affidabili e meno soggette a blocchi Cloudflare
-    urls = [
-        "https://www.sosfanta.com/infortunati-squalificati/",
-        "https://sport.sky.it/calcio/serie-a/infortunati-squalificati-diffidati"
-    ]
+    if not scraper_key:
+        print("⚠️ ERRORE: Manca la variabile SCRAPER_API_KEY su Render! Il bot non può aggiornare gli infortunati.")
+        return
+
+    print("🔄 Sincronizzazione Infortunati tramite ScraperAPI (Bypass Anti-Bot)...")
+    
+    # URL bersaglio (usiamo SOS Fanta che è molto preciso)
+    target_url = urllib.parse.quote("https://www.sosfanta.com/infortunati-squalificati/")
+    
+    # Costruiamo la chiamata API (render=true forza il caricamento del JavaScript!)
+    api_url = f"http://api.scraperapi.com?api_key={scraper_key}&url={target_url}&render=true"
     
     temp_cache = {}
     
-    for url in urls:
-        try:
-            if CURL_CFFI_ENABLED:
-                res = tls_requests.get(url, impersonate="chrome", timeout=15)
-            else:
-                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                res = tls_requests.get(url, headers=headers, timeout=15)
-                
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                # Estraiamo tutto il testo visibile e lo convertiamo in minuscolo
-                testo_pulito = soup.get_text(" ", strip=True).lower()
-                
-                if DATA_CACHE is not None:
-                    for _, r in DATA_CACHE.iterrows():
-                        nome = str(r['Nome'])
-                        norm = normalize_str(nome)
-                        # Usiamo solo il cognome principale per matchare il testo (es. "gudmundsson a" -> "gudmundsson")
-                        cognome = norm.split()[0] if norm else ""
-                        
-                        # Escludiamo nomi troppo corti per evitare falsi positivi
-                        if len(cognome) > 3 and norm not in temp_cache:
-                            # Cerchiamo il cognome come parola esatta nel testo
-                            match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_pulito)
-                            if match:
-                                idx = match.start()
-                                # Preleviamo una porzione di testo attorno al nome per capire il contesto
-                                contesto = testo_pulito[max(0, idx-35):idx+160]
-                                
-                                squalificato = any(kw in contesto for kw in ['squalificat', 'espuls', 'rosso'])
-                                infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil'])
-                                
-                                if squalificato:
-                                    temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Trovato nell'elenco ufficiale degli squalificati."
-                                elif infortunato:
-                                    # Ripuliamo il testo da a capo extra per una visualizzazione pulita
-                                    pulizia = contesto.replace('\n', ' ').replace('  ', ' ').strip()
-                                    temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia rilevata: ...{pulizia}..."
-        except Exception as e:
-            print(f"❌ Errore scraping {url}: {e}")
+    try:
+        # Usiamo il requests normale di Python (ScraperAPI fa tutto il lavoro di bypass)
+        # Mettiamo un timeout alto (60s) perché il caricamento JS tramite proxy richiede tempo
+        res = requests.get(api_url, timeout=60)
             
-    if temp_cache:
-        INFORTUNATI_CACHE = temp_cache
-        print(f"✅ Cache Infortunati Aggiornata! Trovati {len(INFORTUNATI_CACHE)} giocatori indisponibili.")
-    else:
-        print("⚠️ Nessun dato infortunati trovato. I server esterni potrebbero aver bloccato le richieste.")
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            testo_pulito = soup.get_text(" ", strip=True).lower()
+            
+            if DATA_CACHE is not None:
+                for _, r in DATA_CACHE.iterrows():
+                    nome = str(r['Nome'])
+                    norm = normalize_str(nome)
+                    cognome = norm.split()[0] if norm else ""
+                    
+                    if len(cognome) > 3 and norm not in temp_cache:
+                        # Cerchiamo il cognome nel testo estratto da ScraperAPI
+                        match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_pulito)
+                        if match:
+                            idx = match.start()
+                            contesto = testo_pulito[max(0, idx-35):idx+160]
+                            
+                            squalificato = any(kw in contesto for kw in ['squalificat', 'espuls', 'rosso'])
+                            infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil'])
+                            
+                            if squalificato:
+                                temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Trovato nell'elenco ufficiale."
+                            elif infortunato:
+                                pulizia = contesto.replace('\n', ' ').replace('  ', ' ').strip()
+                                temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia rilevata: ...{pulizia}..."
+                                
+            if temp_cache:
+                INFORTUNATI_CACHE = temp_cache
+                print(f"✅ Cache Aggiornata con ScraperAPI! {len(INFORTUNATI_CACHE)} giocatori bloccati.")
+            else:
+                print("⚠️ ScraperAPI ha caricato la pagina, ma non ha trovato nomi (strano).")
+        else:
+            print(f"❌ Errore ScraperAPI: HTTP {res.status_code}")
+            
+    except Exception as e:
+        print(f"❌ Errore di connessione a ScraperAPI: {e}")
 
 def auto_download_listone():
     print("🔄 Avvio download automatico del Listone con camuffamento...")
@@ -264,7 +266,7 @@ try:
     scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
     scheduler.add_job(update_infortunati_cache, 'cron', hour='4,15', minute=30)
     scheduler.start()
-    print("⏰ Pianificatore Auto-Download & Cache attivo")
+    print("⏰ Pianificatore Auto-Download & API Cache attivo")
 except Exception: pass
 
 user_sessions = {}
