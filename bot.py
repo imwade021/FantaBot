@@ -137,11 +137,58 @@ def get_team_icon(squadra):
 # ==========================================
 DATA_CACHE = None
 STATS_CACHE = None
+INFORTUNATI_CACHE = {}
+
+def update_infortunati_cache():
+    global INFORTUNATI_CACHE
+    print("🔄 Sincronizzazione cartelle cliniche in background...")
+    url = "https://www.fantacalcio.it/infortunati-e-squalificati"
+    try:
+        if CURL_CFFI_ENABLED:
+            res = tls_requests.get(url, impersonate="chrome", timeout=15)
+        else:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            res = tls_requests.get(url, headers=headers, timeout=15)
+            
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            temp_cache = {}
+            
+            # Euristica 1: ricerca classi specifiche di Fantacalcio.it
+            for item in soup.find_all(class_=re.compile(r'player-name|name', re.I)):
+                nome = item.get_text(strip=True)
+                if len(nome) > 2:
+                    norm = normalize_str(nome)
+                    
+                    desc = item.find_next(class_=re.compile(r'desc|detail|reason', re.I))
+                    if not desc: desc = item.find_next(['p', 'span'])
+                    
+                    testo_desc = desc.get_text(strip=True) if desc else "Dettagli non specificati."
+                    if len(testo_desc) > 200: testo_desc = testo_desc[:200] + "..."
+                    
+                    stato = "🔴 SQUALIFICATO" if "squalific" in testo_desc.lower() else "🚑 INFORTUNATO"
+                    temp_cache[norm] = f"{stato}\n📋 {testo_desc}"
+
+            # Euristica 2: Fallback potente scansionando tutto il testo per sicurezza
+            testo_completo = soup.get_text(" ", strip=True).lower()
+            if DATA_CACHE is not None and not temp_cache:
+                for _, r in DATA_CACHE.iterrows():
+                    nome_db = str(r['Nome'])
+                    norm_db = normalize_str(nome_db)
+                    if len(norm_db) > 2 and re.search(r'\b' + re.escape(norm_db) + r'\b', testo_completo):
+                        temp_cache[norm_db] = "🚑 SEGNALATO NELLA LISTA INFORTUNATI/SQUALIFICATI\n📋 Dettaglio specifico non individuato."
+            
+            if temp_cache:
+                INFORTUNATI_CACHE = temp_cache
+                print(f"✅ Cache Infortunati aggiornata! ({len(INFORTUNATI_CACHE)} giocatori rilevati)")
+            else:
+                print("⚠️ Il parser infortunati non ha trovato dati (possibile cambio layout).")
+    except Exception as e:
+        print(f"❌ Errore aggiornamento infortunati: {e}")
 
 def auto_download_listone():
     print("🔄 Avvio download automatico del Listone con camuffamento...")
     try:
-        # Utilizziamo curl_cffi per scaricare il listone fingendoci un browser
         if CURL_CFFI_ENABLED:
             res = tls_requests.get(LISTONE_URL, impersonate="chrome", timeout=15)
         else:
@@ -198,11 +245,14 @@ def load_data(force_reload=False):
 
 # Caricamento iniziale e avvio Pianificatore
 load_data()
+threading.Thread(target=update_infortunati_cache).start() # Esegue subito il caching
+
 try:
     scheduler = BackgroundScheduler()
     scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
+    scheduler.add_job(update_infortunati_cache, 'cron', hour='4,15', minute=30)
     scheduler.start()
-    print("⏰ Pianificatore Auto-Download attivo")
+    print("⏰ Pianificatore Auto-Download & Cache attivo")
 except Exception: pass
 
 user_sessions = {}
@@ -274,11 +324,9 @@ def get_macellaio_info(nome):
         except Exception: pass
     return ""
 
-def fetch_real_web_data(query, max_results=2, fresh_only=False):
+def fetch_real_web_data(query, max_results=2):
     output = []
-    # Se fresh_only è True, aggiungiamo il parametro &df=m per l'ultimo mese
-    time_filter = "&df=m" if fresh_only else ""
-    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}{time_filter}"
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
     
     try:
         if CURL_CFFI_ENABLED:
@@ -297,18 +345,12 @@ def fetch_real_web_data(query, max_results=2, fresh_only=False):
                     if link.startswith('//duckduckgo.com/l/?uddg='): 
                         link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
                     output.append(f"🔎 <i>{html.escape(snippet.text.strip())}</i>\n🔗 <a href=\"{html.escape(link)}\">Fonte</a>")
-        else:
-            print(f"⚠️ Rilevato blocco HTTP {res.status_code} durante la ricerca di: {query}")
-            
     except Exception as e: 
         print(f"❌ Errore Scraping principale: {e}")
     
     if not output and WEB_SEARCH_ENABLED:
         try:
-            kwargs = {'max_results': max_results}
-            if fresh_only:
-                kwargs['timelimit'] = 'm'
-            for r in DDGS().text(query, **kwargs):
+            for r in DDGS().text(query, max_results=max_results):
                 output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
         except Exception as e: 
             print(f"❌ Errore Fallback DDGS: {e}")
@@ -326,48 +368,27 @@ def get_storico_excel_o_web(nome, squadra=""):
             f"⚽ Gol: <code>{gf}</code> │ 🎯 Ass: <code>{ass}</code> │ 🟨 Gialli: <code>{amm}</code>\n"
         )
     query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni transfermarkt fantacalcio'
-    risultato = fetch_real_web_data(query, max_results=2, fresh_only=False)
+    risultato = fetch_real_web_data(query, max_results=2)
     testo_web = risultato if risultato else "⚠️ Nessun dettaglio rilevante trovato sul web."
     return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{testo_web}"
 
 def get_cartella_clinica_reale(nome, squadra=""):
-    # Usiamo keyword cliniche mirate per costringere l'algoritmo a pescare i dettagli medici
-    query = f'"{nome}" {squadra} infortunio OR lesione OR recupero'
-    output = []
+    norm_name = normalize_str(nome)
     
-    if WEB_SEARCH_ENABLED:
-        try:
-            # Passiamo da DDGS().text a DDGS().news per avere data certa e riassunto
-            # timelimit='m' assicura che cerchi SOLO negli ultimi 30 giorni
-            for r in DDGS().news(query, timelimit='m', max_results=2):
-                raw_date = r.get('date', '')
-                
-                # Convertiamo la data del server in un formato italiano leggibile (GG/MM/AAAA)
-                try:
-                    dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
-                    formatted_date = dt.strftime("%d/%m/%Y")
-                except:
-                    formatted_date = raw_date[:10]
-                
-                # Estrapoliamo solo il succo del discorso (lo snippet della notizia)
-                snippet = r.get('body', '').strip()
-                
-                # Creiamo il blocco di testo compatto senza link lunghissimi
-                output.append(
-                    f"🩺 <i>\"{html.escape(snippet)}\"</i>\n"
-                    f"🗓 <b>Data Notizia:</b> <code>{formatted_date}</code>"
-                )
-        except Exception as e:
-            print(f"❌ Errore ricerca News: {e}")
-
-    # Assembliamo il messaggio finale
-    if output:
-        return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n" + "\n\n".join(output)
-    else:
-        return (
-            f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
-            f"🟢 <b>GIOCATORE ARRUOLABILE:</b> Nessun allarme fisico o infortunio rilevato negli ultimi 30 giorni."
-        )
+    # 1. Controlla nella cache locale (Match esatto)
+    if norm_name in INFORTUNATI_CACHE:
+        return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{INFORTUNATI_CACHE[norm_name]}"
+        
+    # 2. Controllo stringhe parziali (es. "zaccagni m." vs "zaccagni")
+    for k, v in INFORTUNATI_CACHE.items():
+        if norm_name in k or k in norm_name:
+            return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{v}"
+            
+    # 3. Se non c'è, il giocatore è sano e arruolabile
+    return (
+        f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
+        f"🟢 <b>GIOCATORE ARRUOLABILE:</b> Non è presente nell'attuale lista ufficiale degli infortunati e squalificati."
+    )
 
 def draw_pitch_image(titolari_by_role, schema="3-4-3"):
     if not PIL_ENABLED: return None
@@ -910,7 +931,7 @@ def handle_callbacks(call):
 
     elif call.data.startswith("cl_"):
         p = call.data.replace("cl_", "")
-        bot.edit_message_text(get_cartella_clinica_reale(p, df[df['Nome'] == p].iloc[0].get('Squadra', '')), chat_id, bot.send_message(chat_id, "⏳ <i>Ricerca notizie...</i>", parse_mode="HTML").message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
+        bot.edit_message_text(get_cartella_clinica_reale(p, df[df['Nome'] == p].iloc[0].get('Squadra', '')), chat_id, bot.send_message(chat_id, "⏳ <i>Ricerca in archivio locale...</i>", parse_mode="HTML").message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data.startswith("stats_"):
         p = call.data.replace("stats_", "")
