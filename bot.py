@@ -141,52 +141,62 @@ INFORTUNATI_CACHE = {}
 
 def update_infortunati_cache():
     global INFORTUNATI_CACHE
-    print("🔄 Estrazione dati JSON/API infortunati in background...")
-    url = "https://www.fantacalcio.it/infortunati-e-squalificati"
-    try:
-        if CURL_CFFI_ENABLED:
-            res = tls_requests.get(url, impersonate="chrome", timeout=15)
-        else:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            res = tls_requests.get(url, headers=headers, timeout=15)
-            
-        if res.status_code == 200:
-            temp_cache = {}
-            # Otteniamo il codice sorgente grezzo (HTML + JSON Embedded)
-            html_raw = res.text.lower()
-            
-            if DATA_CACHE is not None:
-                for _, r in DATA_CACHE.iterrows():
-                    nome = str(r['Nome'])
-                    norm = normalize_str(nome)
-                    
-                    if len(norm) > 2:
-                        # Se il nome è presente nel codice grezzo, estraiamo un blocco per l'analisi API
-                        idx = html_raw.find(norm)
-                        if idx != -1:
-                            # Catturiamo i 300 caratteri successivi al nome per trovare la causale clinica JSON
-                            contesto_api = html_raw[idx:idx+300]
-                            # Ripuliamo da apici e parentesi graffe per una lettura sicura
-                            contesto_pulito = re.sub(r'[^a-z0-9\s]', ' ', contesto_api)
-                            
-                            # Parole chiave esatte per identificare il blocco status
-                            is_squalificato = any(kw in contesto_pulito for kw in ['squalific', 'rosso', 'espulso', 'ammonizion'])
-                            is_infortunato = any(kw in contesto_pulito for kw in ['lesione', 'affaticamento', 'recupero', 'terapia', 'operato', 'infortunio', 'ginocchio', 'crociato', 'flessore', 'muscolo', 'febbre', 'trauma', 'distorsione', 'rientro', 'problema', 'tendine'])
-                            
-                            if is_squalificato:
-                                temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Rilevato blocco disciplinare attivo."
-                            elif is_infortunato:
-                                # Prendi una piccola porzione pulita per il riassunto
-                                estratto = ' '.join(contesto_pulito.split()[2:15])
-                                temp_cache[norm] = f"🚑 INFORTUNATO/INDISPONIBILE\n📋 Traccia clinica: ...{estratto}..."
-                                
-            if temp_cache:
-                INFORTUNATI_CACHE = temp_cache
-                print(f"✅ Dati JSON Infortunati processati! ({len(INFORTUNATI_CACHE)} giocatori indisponibili trovati)")
+    print("🔄 Sincronizzazione Tabellone Infortunati Multi-Fonte...")
+    
+    # Fonti più affidabili e meno soggette a blocchi Cloudflare
+    urls = [
+        "https://www.sosfanta.com/infortunati-squalificati/",
+        "https://sport.sky.it/calcio/serie-a/infortunati-squalificati-diffidati"
+    ]
+    
+    temp_cache = {}
+    
+    for url in urls:
+        try:
+            if CURL_CFFI_ENABLED:
+                res = tls_requests.get(url, impersonate="chrome", timeout=15)
             else:
-                print("⚠️ L'estrattore API non ha trovato match. Possibile sito in manutenzione.")
-    except Exception as e:
-        print(f"❌ Errore sincronizzazione JSON Infortunati: {e}")
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                res = tls_requests.get(url, headers=headers, timeout=15)
+                
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                # Estraiamo tutto il testo visibile e lo convertiamo in minuscolo
+                testo_pulito = soup.get_text(" ", strip=True).lower()
+                
+                if DATA_CACHE is not None:
+                    for _, r in DATA_CACHE.iterrows():
+                        nome = str(r['Nome'])
+                        norm = normalize_str(nome)
+                        # Usiamo solo il cognome principale per matchare il testo (es. "gudmundsson a" -> "gudmundsson")
+                        cognome = norm.split()[0] if norm else ""
+                        
+                        # Escludiamo nomi troppo corti per evitare falsi positivi
+                        if len(cognome) > 3 and norm not in temp_cache:
+                            # Cerchiamo il cognome come parola esatta nel testo
+                            match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_pulito)
+                            if match:
+                                idx = match.start()
+                                # Preleviamo una porzione di testo attorno al nome per capire il contesto
+                                contesto = testo_pulito[max(0, idx-35):idx+160]
+                                
+                                squalificato = any(kw in contesto for kw in ['squalificat', 'espuls', 'rosso'])
+                                infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil'])
+                                
+                                if squalificato:
+                                    temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Trovato nell'elenco ufficiale degli squalificati."
+                                elif infortunato:
+                                    # Ripuliamo il testo da a capo extra per una visualizzazione pulita
+                                    pulizia = contesto.replace('\n', ' ').replace('  ', ' ').strip()
+                                    temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia rilevata: ...{pulizia}..."
+        except Exception as e:
+            print(f"❌ Errore scraping {url}: {e}")
+            
+    if temp_cache:
+        INFORTUNATI_CACHE = temp_cache
+        print(f"✅ Cache Infortunati Aggiornata! Trovati {len(INFORTUNATI_CACHE)} giocatori indisponibili.")
+    else:
+        print("⚠️ Nessun dato infortunati trovato. I server esterni potrebbero aver bloccato le richieste.")
 
 def auto_download_listone():
     print("🔄 Avvio download automatico del Listone con camuffamento...")
@@ -246,7 +256,7 @@ def load_data(force_reload=False):
 
 # Caricamento iniziale e avvio Pianificatore
 load_data()
-# Lanciamo subito il raccoglitore JSON degli infortunati all'avvio del bot
+# Lanciamo subito il raccoglitore degli infortunati all'avvio del bot
 threading.Thread(target=update_infortunati_cache).start()
 
 try:
@@ -254,7 +264,7 @@ try:
     scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
     scheduler.add_job(update_infortunati_cache, 'cron', hour='4,15', minute=30)
     scheduler.start()
-    print("⏰ Pianificatore Auto-Download & API Cache attivo")
+    print("⏰ Pianificatore Auto-Download & Cache attivo")
 except Exception: pass
 
 user_sessions = {}
