@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import telebot
 from bs4 import BeautifulSoup
+from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -330,15 +331,42 @@ def get_storico_excel_o_web(nome, squadra=""):
     return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{testo_web}"
 
 def get_cartella_clinica_reale(nome, squadra=""):
-    query = f'"{nome}" {squadra} infortunio tempi recupero'
-    risultato = fetch_real_web_data(query, max_results=2, fresh_only=True)
+    # Usiamo keyword cliniche mirate per costringere l'algoritmo a pescare i dettagli medici
+    query = f'"{nome}" {squadra} infortunio OR lesione OR recupero'
+    output = []
     
-    if risultato:
-        return f"🏥 <b>CARTELLA CLINICA REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{risultato}"
+    if WEB_SEARCH_ENABLED:
+        try:
+            # Passiamo da DDGS().text a DDGS().news per avere data certa e riassunto
+            # timelimit='m' assicura che cerchi SOLO negli ultimi 30 giorni
+            for r in DDGS().news(query, timelimit='m', max_results=2):
+                raw_date = r.get('date', '')
+                
+                # Convertiamo la data del server in un formato italiano leggibile (GG/MM/AAAA)
+                try:
+                    dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                    formatted_date = dt.strftime("%d/%m/%Y")
+                except:
+                    formatted_date = raw_date[:10]
+                
+                # Estrapoliamo solo il succo del discorso (lo snippet della notizia)
+                snippet = r.get('body', '').strip()
+                
+                # Creiamo il blocco di testo compatto senza link lunghissimi
+                output.append(
+                    f"🩺 <i>\"{html.escape(snippet)}\"</i>\n"
+                    f"🗓 <b>Data Notizia:</b> <code>{formatted_date}</code>"
+                )
+        except Exception as e:
+            print(f"❌ Errore ricerca News: {e}")
+
+    # Assembliamo il messaggio finale
+    if output:
+        return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n" + "\n\n".join(output)
     else:
         return (
-            f"🏥 <b>CARTELLA CLINICA REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
-            f"🟢 <b>NESSUN ALLARME RECENTE:</b> Non risultano notizie di infortuni o stop clinici segnalati nelle ultime 4 settimane."
+            f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
+            f"🟢 <b>GIOCATORE ARRUOLABILE:</b> Nessun allarme fisico o infortunio rilevato negli ultimi 30 giorni."
         )
 
 def draw_pitch_image(titolari_by_role, schema="3-4-3"):
