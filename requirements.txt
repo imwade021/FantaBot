@@ -3,10 +3,10 @@ pandas
 numpy
 requests
 beautifulsoup4
-apscheduler
-flask
+APScheduler
 Pillow
-pydub
 SpeechRecognition
+pydub
 duckduckgo-search
+curl_cffi
 openpyxl
