@@ -8,7 +8,6 @@ import threading
 import pandas as pd
 import numpy as np
 import telebot
-import requests
 from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -145,7 +144,7 @@ def auto_download_listone():
         if CURL_CFFI_ENABLED:
             res = tls_requests.get(LISTONE_URL, impersonate="chrome", timeout=15)
         else:
-            headers = {"User-Agent": "Mozilla/5.0"}
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             res = tls_requests.get(LISTONE_URL, headers=headers, timeout=15)
             
         if res.status_code == 200:
@@ -274,6 +273,47 @@ def get_macellaio_info(nome):
         except Exception: pass
     return ""
 
+def fetch_real_web_data(query, max_results=2, fresh_only=False):
+    output = []
+    # Se fresh_only è True, aggiungiamo il parametro &df=m per l'ultimo mese
+    time_filter = "&df=m" if fresh_only else ""
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}{time_filter}"
+    
+    try:
+        if CURL_CFFI_ENABLED:
+            res = tls_requests.get(url, impersonate="chrome", timeout=10)
+        else:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            res = tls_requests.get(url, headers=headers, timeout=8)
+            
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for r in soup.find_all('div', class_='result__body')[:max_results]:
+                snippet = r.find('a', class_='result__snippet')
+                title_tag = r.find('h2', class_='result__title')
+                if snippet and title_tag and title_tag.find('a'):
+                    link = title_tag.find('a')['href']
+                    if link.startswith('//duckduckgo.com/l/?uddg='): 
+                        link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
+                    output.append(f"🔎 <i>{html.escape(snippet.text.strip())}</i>\n🔗 <a href=\"{html.escape(link)}\">Fonte</a>")
+        else:
+            print(f"⚠️ Rilevato blocco HTTP {res.status_code} durante la ricerca di: {query}")
+            
+    except Exception as e: 
+        print(f"❌ Errore Scraping principale: {e}")
+    
+    if not output and WEB_SEARCH_ENABLED:
+        try:
+            kwargs = {'max_results': max_results}
+            if fresh_only:
+                kwargs['timelimit'] = 'm'
+            for r in DDGS().text(query, **kwargs):
+                output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
+        except Exception as e: 
+            print(f"❌ Errore Fallback DDGS: {e}")
+            
+    return "\n\n".join(output) if output else ""
+
 def get_storico_excel_o_web(nome, squadra=""):
     row = find_player_in_stats(nome)
     if row is not None:
@@ -285,51 +325,21 @@ def get_storico_excel_o_web(nome, squadra=""):
             f"⚽ Gol: <code>{gf}</code> │ 🎯 Ass: <code>{ass}</code> │ 🟨 Gialli: <code>{amm}</code>\n"
         )
     query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni transfermarkt fantacalcio'
-    return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{fetch_real_web_data(query, max_results=2)}"
-
-def fetch_real_web_data(query, max_results=2):
-    output = []
-    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
-    
-    try:
-        # Se curl_cffi è installato, fingiamo di essere Chrome
-        if CURL_CFFI_ENABLED:
-            res = tls_requests.get(url, impersonate="chrome", timeout=10)
-        else:
-            # Altrimenti usiamo il metodo classico (più a rischio blocco)
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-            res = tls_requests.get(url, headers=headers, timeout=8)
-            
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for r in soup.find_all('div', class_='result__body')[:max_results]:
-                snippet = r.find('a', class_='result__snippet')
-                title_tag = r.find('h2', class_='result__title')
-                if snippet and title_tag and title_tag.find('a'):
-                    link = title_tag.find('a')['href']
-                    # Pulizia dei link di reindirizzamento di DuckDuckGo
-                    if link.startswith('//duckduckgo.com/l/?uddg='): 
-                        link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
-                    output.append(f"🔎 <i>{html.escape(snippet.text.strip())}</i>\n🔗 <a href=\"{html.escape(link)}\">Fonte</a>")
-        else:
-            print(f"⚠️ Rilevato blocco HTTP {res.status_code} durante la ricerca di: {query}")
-            
-    except Exception as e: 
-        print(f"❌ Errore Scraping principale: {e}")
-    
-    # Fallback su DuckDuckGo Search (DDGS) se l'HTML diretto fallisce
-    if not output and WEB_SEARCH_ENABLED:
-        try:
-            for r in DDGS().text(query, max_results=max_results):
-                output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
-        except Exception as e: 
-            print(f"❌ Errore Fallback DDGS: {e}")
-            
-    return "\n\n".join(output) if output else "⚠️ Impossibile recuperare i dati dal web in questo momento. I firewall esterni sono attivi."
+    risultato = fetch_real_web_data(query, max_results=2, fresh_only=False)
+    testo_web = risultato if risultato else "⚠️ Nessun dettaglio rilevante trovato sul web."
+    return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{testo_web}"
 
 def get_cartella_clinica_reale(nome, squadra=""):
-    query = f'"{nome}" {squadra} infortunio tempi recupero rientro partite saltate SOS Fanta'
-    return f"🏥 <b>CARTELLA CLINICA REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{fetch_real_web_data(query, max_results=2)}"
+    query = f'"{nome}" {squadra} infortunio tempi recupero'
+    risultato = fetch_real_web_data(query, max_results=2, fresh_only=True)
+    
+    if risultato:
+        return f"🏥 <b>CARTELLA CLINICA REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{risultato}"
+    else:
+        return (
+            f"🏥 <b>CARTELLA CLINICA REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
+            f"🟢 <b>NESSUN ALLARME RECENTE:</b> Non risultano notizie di infortuni o stop clinici segnalati nelle ultime 4 settimane."
+        )
 
 def draw_pitch_image(titolari_by_role, schema="3-4-3"):
     if not PIL_ENABLED: return None
