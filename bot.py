@@ -13,6 +13,14 @@ from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.background import BackgroundScheduler
 
+# Tenta di importare curl_cffi per bypassare i blocchi anti-bot
+try:
+    from curl_cffi import requests as tls_requests
+    CURL_CFFI_ENABLED = True
+except ImportError:
+    CURL_CFFI_ENABLED = False
+    import requests as tls_requests # Fallback sul modulo standard
+
 # Tenta di importare la libreria per la grafica del campo
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -131,10 +139,15 @@ DATA_CACHE = None
 STATS_CACHE = None
 
 def auto_download_listone():
-    print("🔄 Avvio download automatico del Listone...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    print("🔄 Avvio download automatico del Listone con camuffamento...")
     try:
-        res = requests.get(LISTONE_URL, headers=headers, timeout=15)
+        # Utilizziamo curl_cffi per scaricare il listone fingendoci un browser
+        if CURL_CFFI_ENABLED:
+            res = tls_requests.get(LISTONE_URL, impersonate="chrome", timeout=15)
+        else:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            res = tls_requests.get(LISTONE_URL, headers=headers, timeout=15)
+            
         if res.status_code == 200:
             with open("Lista-FantaAsta-Fantacalcio.csv", "wb") as f:
                 f.write(res.content)
@@ -276,24 +289,43 @@ def get_storico_excel_o_web(nome, squadra=""):
 
 def fetch_real_web_data(query, max_results=2):
     output = []
-    headers = {"User-Agent": "Mozilla/5.0"}
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+    
     try:
-        res = requests.get(f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}", headers=headers, timeout=8)
+        # Se curl_cffi è installato, fingiamo di essere Chrome
+        if CURL_CFFI_ENABLED:
+            res = tls_requests.get(url, impersonate="chrome", timeout=10)
+        else:
+            # Altrimenti usiamo il metodo classico (più a rischio blocco)
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+            res = tls_requests.get(url, headers=headers, timeout=8)
+            
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             for r in soup.find_all('div', class_='result__body')[:max_results]:
-                snippet, title_tag = r.find('a', class_='result__snippet'), r.find('h2', class_='result__title')
+                snippet = r.find('a', class_='result__snippet')
+                title_tag = r.find('h2', class_='result__title')
                 if snippet and title_tag and title_tag.find('a'):
                     link = title_tag.find('a')['href']
-                    if link.startswith('//duckduckgo.com/l/?uddg='): link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
+                    # Pulizia dei link di reindirizzamento di DuckDuckGo
+                    if link.startswith('//duckduckgo.com/l/?uddg='): 
+                        link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
                     output.append(f"🔎 <i>{html.escape(snippet.text.strip())}</i>\n🔗 <a href=\"{html.escape(link)}\">Fonte</a>")
-    except Exception: pass
+        else:
+            print(f"⚠️ Rilevato blocco HTTP {res.status_code} durante la ricerca di: {query}")
+            
+    except Exception as e: 
+        print(f"❌ Errore Scraping principale: {e}")
+    
+    # Fallback su DuckDuckGo Search (DDGS) se l'HTML diretto fallisce
     if not output and WEB_SEARCH_ENABLED:
         try:
             for r in DDGS().text(query, max_results=max_results):
                 output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
-        except Exception: pass
-    return "\n\n".join(output) if output else "⚠️ Nessun dettaglio rilevante trovato sul web."
+        except Exception as e: 
+            print(f"❌ Errore Fallback DDGS: {e}")
+            
+    return "\n\n".join(output) if output else "⚠️ Impossibile recuperare i dati dal web in questo momento. I firewall esterni sono attivi."
 
 def get_cartella_clinica_reale(nome, squadra=""):
     query = f'"{nome}" {squadra} infortunio tempi recupero rientro partite saltate SOS Fanta'
