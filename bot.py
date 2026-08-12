@@ -90,14 +90,6 @@ GERARCHIE_RIGORISTI = {
     'Venezia': {'rigoristi': ['Adams A.', 'Rrahmani Al.', 'Adorante'], 'punizioni': ['Busio', 'Yeboah J.', 'Perez K.']}
 }
 
-DATABASE_SCOMMESSE_PURE = [
-    'bernabe', 'fazzini', 'bonny', 'oristanio', 'paz', 'marchwinski', 'castro', 
-    'belahyane', 'tengstedt', 'da cunha', 'moro', 'traore', 'pisilli', 'ekhator', 
-    'solet', 'idzes', 'mangas', 'milla', 'ndour', 'viti', 'goglichidze', 
-    'alajbegovic', 'suslov', 'mosquera', 'tchaouna', 'camarda', 'vitinha', 
-    'savona', 'mbangula', 'conceicao', 'dallinga', 'fabbian', 'braine'
-]
-
 COPPIE_NOTE = {
     'sommer': 'martinez jo.', 'martinez jo.': 'sommer',
     'di gregorio': 'perin', 'perin': 'di gregorio',
@@ -120,11 +112,9 @@ INCROCI_PORTIERI = {
 }
 
 def normalize_str(s):
-    if not isinstance(s, str):
-        return ""
+    if not isinstance(s, str): return ""
     s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8')
-    s = re.sub(r"[^\w\s]", "", s)
-    return " ".join(s.lower().split())
+    return " ".join(re.sub(r"[^\w\s]", "", s).lower().split())
 
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try: bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
@@ -146,39 +136,40 @@ def update_infortunati_cache(notify=False):
     scraper_key = os.getenv("SCRAPER_API_KEY")
     
     if not scraper_key:
-        msg = "⚠️ ERRORE: Manca la variabile SCRAPER_API_KEY su Render! Aggiungila per sbloccare la funzione clinica."
+        msg = "⚠️ ERRORE: Manca la variabile SCRAPER_API_KEY su Render!"
         print(msg)
         CACHE_MEDICA_PRONTA = True 
         return msg
 
-    print("🔄 Avvio Motore PREMIUM tramite ScraperAPI...")
+    print("🔄 Avvio Motore Definitivo (Premium + Render JS)...")
     
+    # Usiamo target blindati e affidabili. 
     urls_to_try = [
-        "https://www.fantacalcio.it/infortunati-e-squalificati",
-        "https://www.fantamaster.it/infortunati-squalificati-serie-a/"
+        {"url": "https://www.fantacalcio.it/infortunati-e-squalificati", "render": "true"},
+        {"url": "https://sport.sky.it/calcio/serie-a/infortunati-squalificati-diffidati", "render": "false"}
     ]
     
     temp_cache = {}
     last_error = ""
     
-    for base_url in urls_to_try:
+    for item in urls_to_try:
+        base_url = item["url"]
         try:
-            # L'ARMA DEFINITIVA: premium='true' sblocca gli IP residenziali e distrugge Cloudflare!
             payload = {
                 'api_key': scraper_key,
                 'url': base_url,
-                'premium': 'true'
+                'premium': 'true',          # Aggira Cloudflare
+                'render': item["render"]    # Necessario per Fantacalcio.it
             }
-            res = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
+            res = requests.get('http://api.scraperapi.com', params=payload, timeout=120)
                 
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 testo_visibile = soup.get_text(" ", strip=True).lower()
-                testo_sorgente = res.text.lower()
                 
-                # Sicurezza: se la pagina scaricata è troppo corta, è una finta
-                if len(testo_sorgente) < 500:
-                    last_error = f"Pagina bloccata o vuota su {base_url}"
+                # Se il sito non carica i giocatori, il testo visibile è minuscolo
+                if len(testo_visibile) < 1000:
+                    last_error = f"Pagina vuota o JS non caricato su {base_url}"
                     continue
                 
                 if DATA_CACHE is not None:
@@ -189,23 +180,13 @@ def update_infortunati_cache(notify=False):
                         
                         if len(cognome) > 3 and norm not in temp_cache:
                             match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_visibile)
-                            is_sorgente = False
-                            
-                            if not match:
-                                match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_sorgente)
-                                is_sorgente = True
-                                
                             if match:
                                 idx = match.start()
-                                if is_sorgente:
-                                    contesto = testo_sorgente[max(0, idx-40):idx+200]
-                                else:
-                                    contesto = testo_visibile[max(0, idx-40):idx+200]
-                                
+                                contesto = testo_visibile[max(0, idx-40):idx+200]
                                 contesto = re.sub(r'[^a-z0-9\s]', ' ', contesto)
                                 
                                 squalificato = any(kw in contesto for kw in ['squalificat', 'espuls', 'rosso'])
-                                infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil'])
+                                infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil', 'fuori'])
                                 
                                 if squalificato:
                                     temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Trovato nell'elenco ufficiale."
@@ -213,7 +194,6 @@ def update_infortunati_cache(notify=False):
                                     pulizia = ' '.join(contesto.split()[:20])
                                     temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia: ...{pulizia}..."
                                     
-                # Verifica anti-falso: se ha trovato abbastanza giocatori, la missione è compiuta
                 if len(temp_cache) > 10:
                     INFORTUNATI_CACHE = temp_cache
                     CACHE_MEDICA_PRONTA = True
@@ -229,7 +209,6 @@ def update_infortunati_cache(notify=False):
         except Exception as e:
             last_error = f"Timeout o errore di connessione su {base_url}: {e}"
             
-    # Se il ciclo finisce e siamo qui, tutte le fonti sono bloccate
     CACHE_MEDICA_PRONTA = True
     esito = f"❌ Impossibile aggiornare la cartella clinica in automatico.\nUltimo errore: {last_error}"
     print(esito)
@@ -253,7 +232,7 @@ def auto_download_listone():
         else:
             return False
     except Exception as e:
-        print(f"❌ Errore durante l'auto-download: {e}")
+        print(f"❌ Errore auto-download: {e}")
         return False
 
 def load_data(force_reload=False):
@@ -262,38 +241,20 @@ def load_data(force_reload=False):
         if os.path.exists("Lista-FantaAsta-Fantacalcio.csv"):
             try:
                 DATA_CACHE = pd.read_csv("Lista-FantaAsta-Fantacalcio.csv", header=None)
-                DATA_CACHE.columns = [
-                    'Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 
-                    'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 
-                    'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
-                ]
+                DATA_CACHE.columns = ['Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3']
                 DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE['FVM'], errors='coerce').fillna(0)
-                print("✅ File CSV Listone caricato in memoria!")
-            except Exception as e: print(f"⚠️ Errore lettura CSV Listone: {e}")
+            except Exception: pass
 
     if STATS_CACHE is None or force_reload:
-        stats_file = None
-        for f in os.listdir('.'):
-            if 'statistiche' in f.lower() and (f.endswith('.xlsx') or f.endswith('.xls') or f.endswith('.csv')):
-                stats_file = f
-                break
-                
+        stats_file = next((f for f in os.listdir('.') if 'statistiche' in f.lower() and (f.endswith('.xlsx') or f.endswith('.xls') or f.endswith('.csv'))), None)
         if stats_file:
             try:
-                if stats_file.endswith('.csv'):
-                    STATS_CACHE = pd.read_csv(stats_file)
-                else:
-                    STATS_CACHE = pd.read_excel(stats_file, header=1)
-                
+                STATS_CACHE = pd.read_csv(stats_file) if stats_file.endswith('.csv') else pd.read_excel(stats_file, header=1)
                 STATS_CACHE['Nome_Norm'] = STATS_CACHE['Nome'].apply(normalize_str)
-                print(f"✅ File {stats_file} caricato e indicizzato con successo!")
-            except Exception as e: pass
-
+            except Exception: pass
     return DATA_CACHE
 
-# Caricamento iniziale e avvio Pianificatore
 load_data()
-# Lanciamo subito il raccoglitore degli infortunati all'avvio del bot
 threading.Thread(target=update_infortunati_cache).start()
 
 try:
@@ -301,64 +262,33 @@ try:
     scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
     scheduler.add_job(update_infortunati_cache, 'cron', hour='4,15', minute=30)
     scheduler.start()
-    print("⏰ Pianificatore Auto-Download & API Cache attivo")
 except Exception: pass
 
 user_sessions = {}
 def get_session(user_id):
     if user_id not in user_sessions: 
-        user_sessions[user_id] = {
-            'budget': 500, 
-            'rosa': [], 
-            'wishlist': [], 
-            'scartati': [], 
-            'compare_p1': None,
-            'lega_budget_iniziale': 500,  
-            'lega_partecipanti': 8,
-            'modificatore_attivo': False,
-            'fase_asta': None
-        }
+        user_sessions[user_id] = {'budget': 500, 'rosa': [], 'wishlist': [], 'scartati': [], 'compare_p1': None, 'lega_budget_iniziale': 500, 'lega_partecipanti': 8, 'modificatore_attivo': False, 'fase_asta': None}
     return user_sessions[user_id]
 
 def get_roster_stats(session):
-    rosa = session['rosa']
-    budget = session['budget']
-    counts = {'P': 0, 'D': 0, 'C': 0, 'A': 0}
-    for p in rosa:
-        r = p.get('ruolo', 'C')
-        if r in counts: counts[r] += 1
+    rosa, budget = session['rosa'], session['budget']
+    counts = {'P': sum(1 for p in rosa if p.get('ruolo') == 'P'), 'D': sum(1 for p in rosa if p.get('ruolo') == 'D'), 'C': sum(1 for p in rosa if p.get('ruolo') == 'C'), 'A': sum(1 for p in rosa if p.get('ruolo') == 'A')}
     slot_liberi = max(0, 25 - len(rosa))
-    max_bid = max(0, budget - (slot_liberi - 1)) if slot_liberi > 0 else budget
-    return {'counts': counts, 'slot_liberi': slot_liberi, 'max_bid': max_bid}
+    return {'counts': counts, 'slot_liberi': slot_liberi, 'max_bid': max(0, budget - (slot_liberi - 1)) if slot_liberi > 0 else budget}
 
 def get_available_players(df, session):
-    presi_nomi = [p['nome'] for p in session.get('rosa', [])]
-    scartati_nomi = session.get('scartati', [])
-    esclusi = set(presi_nomi + scartati_nomi)
+    esclusi = set([p['nome'] for p in session.get('rosa', [])] + session.get('scartati', []))
     return df[~df['Nome'].isin(esclusi)]
 
 def find_player_in_stats(nome):
     global STATS_CACHE
-    if STATS_CACHE is None or STATS_CACHE.empty:
-        load_data()
-        if STATS_CACHE is None or STATS_CACHE.empty:
-            return None
-    
+    if STATS_CACHE is None or STATS_CACHE.empty: return None
     norm_name = normalize_str(nome)
+    
     match = STATS_CACHE[STATS_CACHE['Nome_Norm'] == norm_name]
     if not match.empty: return match.iloc[0]
-        
     match = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(norm_name, regex=False, na=False)]
     if not match.empty: return match.iloc[0]
-        
-    match = STATS_CACHE[STATS_CACHE['Nome_Norm'].apply(lambda x: norm_name in x or x in norm_name if isinstance(x, str) else False)]
-    if not match.empty: return match.iloc[0]
-        
-    fw = norm_name.split()[0] if norm_name else ""
-    if len(fw) > 2:
-        match = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(fw, regex=False, na=False)]
-        if not match.empty: return match.iloc[0]
-            
     return None
 
 def get_macellaio_info(nome):
@@ -366,69 +296,46 @@ def get_macellaio_info(nome):
     if row is not None:
         try:
             amm, esp, pv = int(row.get('Amm', 0)), int(row.get('Esp', 0)), int(row.get('Pv', 1))
-            if (amm >= 6 or esp >= 1) and pv > 5:
-                return f"\n🪓 <b>ALLARME MACELLAIO:</b> <code>{amm} Gialli</code>, <code>{esp} Rossi</code> in <code>{pv} pres.</code>"
-            else:
-                return f"\n🛡 <b>Disciplinato:</b> <code>{amm} Gialli</code>, <code>{esp} Rossi</code> in <code>{pv} pres.</code>"
+            if (amm >= 6 or esp >= 1) and pv > 5: return f"\n🪓 <b>ALLARME MACELLAIO:</b> <code>{amm} Gialli</code>, <code>{esp} Rossi</code> in <code>{pv} pres.</code>"
+            else: return f"\n🛡 <b>Disciplinato:</b> <code>{amm} Gialli</code>, <code>{esp} Rossi</code> in <code>{pv} pres.</code>"
         except Exception: pass
     return ""
 
 def fetch_real_web_data(query, max_results=2):
     output = []
     url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
-    
     try:
-        if CURL_CFFI_ENABLED:
-            res = tls_requests.get(url, impersonate="chrome", timeout=10)
-        else:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
-            res = tls_requests.get(url, headers=headers, timeout=8)
-            
+        res = tls_requests.get(url, impersonate="chrome", timeout=10) if CURL_CFFI_ENABLED else tls_requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             for r in soup.find_all('div', class_='result__body')[:max_results]:
-                snippet = r.find('a', class_='result__snippet')
-                title_tag = r.find('h2', class_='result__title')
+                snippet, title_tag = r.find('a', class_='result__snippet'), r.find('h2', class_='result__title')
                 if snippet and title_tag and title_tag.find('a'):
                     link = title_tag.find('a')['href']
-                    if link.startswith('//duckduckgo.com/l/?uddg='): 
-                        link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
+                    if link.startswith('//duckduckgo.com/l/?uddg='): link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
                     output.append(f"🔎 <i>{html.escape(snippet.text.strip())}</i>\n🔗 <a href=\"{html.escape(link)}\">Fonte</a>")
-    except Exception as e: pass
+    except Exception: pass
     
     if not output and WEB_SEARCH_ENABLED:
         try:
-            for r in DDGS().text(query, max_results=max_results):
-                output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
-        except Exception as e: pass
-            
+            for r in DDGS().text(query, max_results=max_results): output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
+        except Exception: pass
     return "\n\n".join(output) if output else ""
 
 def get_storico_excel_o_web(nome, squadra=""):
     row = find_player_in_stats(nome)
     if row is not None:
-        pv, mv, fm = row.get('Pv', 0), row.get('Mv', 0.0), row.get('Fm', 0.0)
-        gf, ass, amm, esp = row.get('Gf', 0), row.get('Ass', 0), row.get('Amm', 0), row.get('Esp', 0)
-        return (
-            f"📊 <b>STORICO REALE: {html.escape(nome.upper())}</b>\n───────────────────────────\n"
-            f"🏟 Pres: <code>{pv}</code> │ 📈 MV: <code>{mv}</code> │ FM: <code>{fm}</code>\n"
-            f"⚽ Gol: <code>{gf}</code> │ 🎯 Ass: <code>{ass}</code> │ 🟨 Gialli: <code>{amm}</code>\n"
-        )
+        return f"📊 <b>STORICO REALE: {html.escape(nome.upper())}</b>\n───────────────────────────\n🏟 Pres: <code>{row.get('Pv', 0)}</code> │ 📈 MV: <code>{row.get('Mv', 0.0)}</code> │ FM: <code>{row.get('Fm', 0.0)}</code>\n⚽ Gol: <code>{row.get('Gf', 0)}</code> │ 🎯 Ass: <code>{row.get('Ass', 0)}</code> │ 🟨 Gialli: <code>{row.get('Amm', 0)}</code>\n"
     query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni transfermarkt fantacalcio'
     risultato = fetch_real_web_data(query, max_results=2)
-    testo_web = risultato if risultato else "⚠️ Nessun dettaglio rilevante trovato sul web."
-    return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{testo_web}"
+    return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{risultato if risultato else '⚠️ Nessun dettaglio rilevante trovato sul web.'}"
 
 def get_cartella_clinica_reale(nome, squadra=""):
     global INFORTUNATI_CACHE, CACHE_MEDICA_PRONTA
     norm_name = normalize_str(nome)
     
     if not CACHE_MEDICA_PRONTA:
-        return (
-            f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
-            f"⏳ <b>DATI IN ELABORAZIONE:</b> Il bot sta scaricando i bollettini medici sicuri tramite proxy residenziale.\n\n"
-            f"<i>Usa il comando /medico in chat per forzare l'aggiornamento e vedere i dettagli.</i>"
-        )
+        return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n⏳ <b>DATI IN ELABORAZIONE:</b> Il bot sta scaricando i bollettini medici sicuri tramite proxy residenziale.\n\n<i>Usa il comando /medico in chat per forzare l'aggiornamento.</i>"
 
     if norm_name in INFORTUNATI_CACHE:
         return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{INFORTUNATI_CACHE[norm_name]}"
@@ -437,10 +344,7 @@ def get_cartella_clinica_reale(nome, squadra=""):
         if norm_name in k or k in norm_name:
             return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{v}"
             
-    return (
-        f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
-        f"🟢 <b>GIOCATORE ARRUOLABILE:</b> Non è presente nell'attuale lista ufficiale degli infortunati e squalificati."
-    )
+    return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n🟢 <b>GIOCATORE ARRUOLABILE:</b> Non è presente nell'attuale lista ufficiale degli infortunati e squalificati."
 
 def draw_pitch_image(titolari_by_role, schema="3-4-3"):
     if not PIL_ENABLED: return None
@@ -520,10 +424,8 @@ def calcola_formazione_ideale(session, df):
 def main_menu_keyboard(session):
     markup = InlineKeyboardMarkup(row_width=2)
     if session.get('fase_asta'):
-        markup.add(InlineKeyboardButton("🔴 RIPRENDI ASTA LIVE", callback_data="asta_resume"))
-        markup.add(InlineKeyboardButton("🛑 Termina Asta", callback_data="asta_end"))
-    else:
-        markup.add(InlineKeyboardButton("🔨 AVVIA ASTA LIVE", callback_data="asta_setup_start"))
+        markup.add(InlineKeyboardButton("🔴 RIPRENDI ASTA LIVE", callback_data="asta_resume"), InlineKeyboardButton("🛑 Termina Asta", callback_data="asta_end"))
+    else: markup.add(InlineKeyboardButton("🔨 AVVIA ASTA LIVE", callback_data="asta_setup_start"))
         
     markup.add(InlineKeyboardButton("👕 Esplora", callback_data="sq_start"), InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"))
     markup.add(InlineKeyboardButton("⚽ Formazione", callback_data="menu_formazione"), InlineKeyboardButton("🎯 Rigoristi", callback_data="menu_rigoristi"))
@@ -539,13 +441,7 @@ def send_dashboard(chat_id, user_id, message_id=None):
     stats = get_roster_stats(session)
     c, budget, slot, max_bid = stats['counts'], session['budget'], stats['slot_liberi'], stats['max_bid']
     media_str = f"(Media: {budget/slot:.1f} cr)" if slot > 0 else "✅ ROSA COMPLETA!"
-    text = (
-        "🏆 <b>FANTABOT PRO DASHBOARD</b> 📊\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Cassa:</b> <code> {budget} cr. </code>\n🛍️ <b>Slot Liberi:</b> <code> {slot} </code> <i>{media_str}</i>\n"
-        f"🛑 <b>MAX BID CONSENTITO:</b> <code> {max_bid} cr. </code>\n\n"
-        f"🧤 P: {c['P']}/3  │ 🛡️ D: {c['D']}/8 \n⚙️ C: {c['C']}/8  │ 🎯 A: {c['A']}/6 \n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n💡 <i>Cerca nome o scrivi 'ho preso [nome] a [prezzo]'</i>"
-    )
+    text = f"🏆 <b>FANTABOT PRO DASHBOARD</b> 📊\n━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>Cassa:</b> <code> {budget} cr. </code>\n🛍️ <b>Slot Liberi:</b> <code> {slot} </code> <i>{media_str}</i>\n🛑 <b>MAX BID CONSENTITO:</b> <code> {max_bid} cr. </code>\n\n🧤 P: {c['P']}/3  │ 🛡️ D: {c['D']}/8 \n⚙️ C: {c['C']}/8  │ 🎯 A: {c['A']}/6 \n━━━━━━━━━━━━━━━━━━━━━━\n💡 <i>Cerca nome o scrivi 'ho preso [nome] a [prezzo]'</i>"
     if message_id:
         try: bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
         except Exception: bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
@@ -573,9 +469,7 @@ def send_asta_dashboard(chat_id, user_id, message_id=None):
         max_bid = max(1, int((pd.to_numeric(str(r.get('FVM', 0)).replace(',','.'), errors='coerce') * (b_iniziale / 1000.0) * (1 + ((lega_part - 8) * 0.025))) * 1.15))
         top_str += f"{i}. <b>{r['Nome']}</b> ({r['Squadra']}) ─ Max: <code>{max_bid} cr.</code>\n"
     
-    testo = (f"🔨 <b>ASTA LIVE - FASE: {ROLE_ICONS.get(fase, '')} {fase}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
-             f"⭐ <b>TOP 5 RIMASTI:</b>\n{top_str}\n🧠 <b>STRATEGIA:</b>\n<i>{get_strategia_asta(fase, budget, b_iniziale, modif)}</i>\n"
-             f"━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>Cassa:</b> <code>{budget} cr.</code> (Slot liberi: {get_roster_stats(session)['slot_liberi']})\n")
+    testo = f"🔨 <b>ASTA LIVE - FASE: {ROLE_ICONS.get(fase, '')} {fase}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n⭐ <b>TOP 5 RIMASTI:</b>\n{top_str}\n🧠 <b>STRATEGIA:</b>\n<i>{get_strategia_asta(fase, budget, b_iniziale, modif)}</i>\n━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>Cassa:</b> <code>{budget} cr.</code> (Slot liberi: {get_roster_stats(session)['slot_liberi']})\n"
     
     if fase == 'D' and modif:
         mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 5) & (avail['FVM'] <= 35)].sort_values(by='FVM', ascending=False).head(3)
@@ -610,15 +504,9 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     lega_bud, lega_part = session.get('lega_budget_iniziale', 500), session.get('lega_partecipanti', 8)
     fair_price = max(1, int((fvm_val * (lega_bud / 1000.0)) * (1 + ((lega_part - 8) * 0.025))))
     max_rilancio, asta_stop = int(fair_price * 1.15) if int(fair_price * 1.15) > 1 else 1, int(fair_price * 1.25) if int(fair_price * 1.25) > 2 else 2
-    
     stats = get_roster_stats(session)
-    info_text = (
-        f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n⚠️ <b>Rischio/Macellaio:</b> {get_macellaio_info(player_name)}\n\n"
-        f"🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price} cr.</code>\n"
-        f"🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n"
-        f"💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
-    )
+    
+    info_text = f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n⚠️ <b>Rischio/Macellaio:</b> {get_macellaio_info(player_name)}\n\n🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price} cr.</code>\n🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
     
     is_asta = session.get('fase_asta') is not None
     markup = InlineKeyboardMarkup(row_width=2)
@@ -632,11 +520,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
     in_wl = player_name in session.get('wishlist', [])
-    if is_scommessa:
-        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
-    else:
-        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"))
-        
+    markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start") if is_scommessa else None)
     if not is_asta: markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
     
     try: bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
@@ -700,7 +584,6 @@ def process_buy_price(message, player_name, user_id):
         
     bot.send_message(chat_id, f"{titolo_acquisto}\n\n📊 <b>Valutazione Acquisto:</b>\n{giudizio}", parse_mode="HTML")
     
-    # Consigli speciali per i PORTIERI
     if ruolo == 'P':
         riserve = df[(df['R'] == 'P') & (df['Squadra'] == squadra) & (df['Nome'] != player_name)].sort_values(by='FVM', ascending=False).head(2)
         r_nomi = [r['Nome'] for _, r in riserve.iterrows()]
