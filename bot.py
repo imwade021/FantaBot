@@ -153,16 +153,16 @@ def update_infortunati_cache(notify=False):
 
     print("🔄 Sincronizzazione Infortunati tramite ScraperAPI...")
     
-    # CAMBIO BERSAGLIO: Puntiamo a SOS Fanta (stessi dati, niente scudi militari)
     target_url = urllib.parse.quote("https://www.sosfanta.com/infortunati-squalificati/")
     
-    # Inseriamo render=true per fargli leggere bene la pagina
-    api_url = f"http://api.scraperapi.com?api_key={scraper_key}&url={target_url}&render=true"
+    # RIMOSSO: &render=true. SOS Fanta è statico, senza JS la richiesta sarà 10 volte più veloce!
+    api_url = f"http://api.scraperapi.com?api_key={scraper_key}&url={target_url}"
     
     temp_cache = {}
     
     try:
-        res = requests.get(api_url, timeout=60)
+        # ALZATO: Timeout a 120 secondi per evitare "Read timed out" in caso di coda sui proxy
+        res = requests.get(api_url, timeout=120)
             
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -268,9 +268,9 @@ def load_data(force_reload=False):
 
     return DATA_CACHE
 
-# Caricamento iniziale
+# Caricamento iniziale e avvio Pianificatore
 load_data()
-# Lancia il raccoglitore in background all'avvio
+# Lanciamo subito il raccoglitore JSON degli infortunati all'avvio del bot
 threading.Thread(target=update_infortunati_cache).start()
 
 try:
