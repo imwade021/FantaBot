@@ -148,24 +148,30 @@ def update_infortunati_cache(notify=False):
     if not scraper_key:
         msg = "⚠️ ERRORE: Manca la variabile SCRAPER_API_KEY su Render! Aggiungila per sbloccare la funzione clinica."
         print(msg)
-        CACHE_MEDICA_PRONTA = True # Sblocca l'attesa per evitare l'errore in chat
+        CACHE_MEDICA_PRONTA = True 
         return msg
 
     print("🔄 Sincronizzazione Infortunati tramite ScraperAPI...")
     
-    # Puntiamo al sito ufficiale Fantacalcio.it per la massima affidabilità
-    target_url = urllib.parse.quote("https://www.fantacalcio.it/infortunati-e-squalificati")
+    # CAMBIO BERSAGLIO: Puntiamo a SOS Fanta (stessi dati, niente scudi militari)
+    target_url = urllib.parse.quote("https://www.sosfanta.com/infortunati-squalificati/")
+    
+    # Inseriamo render=true per fargli leggere bene la pagina
     api_url = f"http://api.scraperapi.com?api_key={scraper_key}&url={target_url}&render=true"
     
     temp_cache = {}
     
     try:
-        # Il timeout è 60s per consentire a ScraperAPI di fare il rendering JS
         res = requests.get(api_url, timeout=60)
             
         if res.status_code == 200:
             soup = BeautifulSoup(res.text, 'html.parser')
             testo_pulito = soup.get_text(" ", strip=True).lower()
+            
+            # Controllo di sicurezza: se la pagina è stranamente corta, c'è un blocco
+            if len(testo_pulito) < 500:
+                CACHE_MEDICA_PRONTA = True
+                return "❌ Errore: La pagina scaricata è vuota o bloccata dal Captcha."
             
             if DATA_CACHE is not None:
                 for _, r in DATA_CACHE.iterrows():
@@ -174,7 +180,6 @@ def update_infortunati_cache(notify=False):
                     cognome = norm.split()[0] if norm else ""
                     
                     if len(cognome) > 3 and norm not in temp_cache:
-                        # Ricerca del cognome nel testo processato
                         match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_pulito)
                         if match:
                             idx = match.start()
@@ -189,7 +194,6 @@ def update_infortunati_cache(notify=False):
                                 pulizia = contesto.replace('\n', ' ').replace('  ', ' ').strip()
                                 temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia: ...{pulizia}..."
                                 
-            # Aggiorna SEMPRE la cache globale, anche se vuota, per fermare "Dati in elaborazione"
             INFORTUNATI_CACHE = temp_cache
             CACHE_MEDICA_PRONTA = True
             
@@ -198,7 +202,7 @@ def update_infortunati_cache(notify=False):
             return esito
         else:
             CACHE_MEDICA_PRONTA = True
-            esito = f"❌ Errore ScraperAPI: Codice HTTP {res.status_code}. Controlla la tua dashboard API."
+            esito = f"❌ Errore ScraperAPI: Codice HTTP {res.status_code}."
             print(esito)
             return esito
             
