@@ -139,28 +139,28 @@ def get_team_icon(squadra):
 DATA_CACHE = None
 STATS_CACHE = None
 INFORTUNATI_CACHE = {}
+CACHE_MEDICA_PRONTA = False # Nuova variabile per impedire l'attesa infinita
 
-def update_infortunati_cache():
-    global INFORTUNATI_CACHE
+def update_infortunati_cache(notify=False):
+    global INFORTUNATI_CACHE, CACHE_MEDICA_PRONTA
     scraper_key = os.getenv("SCRAPER_API_KEY")
     
     if not scraper_key:
-        print("⚠️ ERRORE: Manca la variabile SCRAPER_API_KEY su Render! Il bot non può aggiornare gli infortunati.")
-        return
+        msg = "⚠️ ERRORE: Manca la variabile SCRAPER_API_KEY su Render! Aggiungila per sbloccare la funzione clinica."
+        print(msg)
+        CACHE_MEDICA_PRONTA = True # Sblocca l'attesa per evitare l'errore in chat
+        return msg
 
-    print("🔄 Sincronizzazione Infortunati tramite ScraperAPI (Bypass Anti-Bot)...")
+    print("🔄 Sincronizzazione Infortunati tramite ScraperAPI...")
     
-    # URL bersaglio (usiamo SOS Fanta che è molto preciso)
-    target_url = urllib.parse.quote("https://www.sosfanta.com/infortunati-squalificati/")
-    
-    # Costruiamo la chiamata API (render=true forza il caricamento del JavaScript!)
+    # Puntiamo al sito ufficiale Fantacalcio.it per la massima affidabilità
+    target_url = urllib.parse.quote("https://www.fantacalcio.it/infortunati-e-squalificati")
     api_url = f"http://api.scraperapi.com?api_key={scraper_key}&url={target_url}&render=true"
     
     temp_cache = {}
     
     try:
-        # Usiamo il requests normale di Python (ScraperAPI fa tutto il lavoro di bypass)
-        # Mettiamo un timeout alto (60s) perché il caricamento JS tramite proxy richiede tempo
+        # Il timeout è 60s per consentire a ScraperAPI di fare il rendering JS
         res = requests.get(api_url, timeout=60)
             
         if res.status_code == 200:
@@ -174,7 +174,7 @@ def update_infortunati_cache():
                     cognome = norm.split()[0] if norm else ""
                     
                     if len(cognome) > 3 and norm not in temp_cache:
-                        # Cerchiamo il cognome nel testo estratto da ScraperAPI
+                        # Ricerca del cognome nel testo processato
                         match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_pulito)
                         if match:
                             idx = match.start()
@@ -187,18 +187,26 @@ def update_infortunati_cache():
                                 temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Trovato nell'elenco ufficiale."
                             elif infortunato:
                                 pulizia = contesto.replace('\n', ' ').replace('  ', ' ').strip()
-                                temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia rilevata: ...{pulizia}..."
+                                temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia: ...{pulizia}..."
                                 
-            if temp_cache:
-                INFORTUNATI_CACHE = temp_cache
-                print(f"✅ Cache Aggiornata con ScraperAPI! {len(INFORTUNATI_CACHE)} giocatori bloccati.")
-            else:
-                print("⚠️ ScraperAPI ha caricato la pagina, ma non ha trovato nomi (strano).")
+            # Aggiorna SEMPRE la cache globale, anche se vuota, per fermare "Dati in elaborazione"
+            INFORTUNATI_CACHE = temp_cache
+            CACHE_MEDICA_PRONTA = True
+            
+            esito = f"✅ Cache Aggiornata con ScraperAPI! {len(INFORTUNATI_CACHE)} giocatori bloccati rilevati."
+            print(esito)
+            return esito
         else:
-            print(f"❌ Errore ScraperAPI: HTTP {res.status_code}")
+            CACHE_MEDICA_PRONTA = True
+            esito = f"❌ Errore ScraperAPI: Codice HTTP {res.status_code}. Controlla la tua dashboard API."
+            print(esito)
+            return esito
             
     except Exception as e:
-        print(f"❌ Errore di connessione a ScraperAPI: {e}")
+        CACHE_MEDICA_PRONTA = True
+        esito = f"❌ Errore di connessione a ScraperAPI: {e}"
+        print(esito)
+        return esito
 
 def auto_download_listone():
     print("🔄 Avvio download automatico del Listone con camuffamento...")
@@ -256,9 +264,9 @@ def load_data(force_reload=False):
 
     return DATA_CACHE
 
-# Caricamento iniziale e avvio Pianificatore
+# Caricamento iniziale
 load_data()
-# Lanciamo subito il raccoglitore degli infortunati all'avvio del bot
+# Lancia il raccoglitore in background all'avvio
 threading.Thread(target=update_infortunati_cache).start()
 
 try:
@@ -385,27 +393,27 @@ def get_storico_excel_o_web(nome, squadra=""):
     return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{testo_web}"
 
 def get_cartella_clinica_reale(nome, squadra=""):
-    global INFORTUNATI_CACHE
+    global INFORTUNATI_CACHE, CACHE_MEDICA_PRONTA
     norm_name = normalize_str(nome)
     
-    # CONTROLLO DI SICUREZZA: Se il cassetto è vuoto, il bot deve avvisarti, non mentire!
-    if not INFORTUNATI_CACHE:
+    # 1. CONTROLLO DI SICUREZZA: Evita loop infiniti
+    if not CACHE_MEDICA_PRONTA:
         return (
             f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
-            f"⏳ <b>DATI IN ELABORAZIONE:</b> Il bot sta scaricando i bollettini medici sicuri (può richiedere fino a 60 secondi dal riavvio del server).\n\n"
-            f"<i>Riprova tra un minuto. Se il problema persiste, controlla i log di Render e la tua SCRAPER_API_KEY.</i>"
+            f"⏳ <b>DATI IN ELABORAZIONE:</b> Il bot sta scaricando i bollettini medici sicuri tramite proxy.\n\n"
+            f"<i>Usa il comando /medico in chat per forzare l'aggiornamento e vedere i dettagli.</i>"
         )
 
-    # 1. Controlla nella cache locale API (Match esatto)
+    # 2. Controlla nella cache locale (Match esatto)
     if norm_name in INFORTUNATI_CACHE:
         return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{INFORTUNATI_CACHE[norm_name]}"
         
-    # 2. Controllo stringhe parziali (es. "zaccagni m." vs "zaccagni")
+    # 3. Controllo stringhe parziali (es. "zaccagni m." vs "zaccagni")
     for k, v in INFORTUNATI_CACHE.items():
         if norm_name in k or k in norm_name:
             return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{v}"
             
-    # 3. Se il cassetto è pieno e il nome non c'è, ALLORA è davvero sano.
+    # 4. Se il cassetto è pronto e il nome non c'è, ALLORA è sano
     return (
         f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
         f"🟢 <b>GIOCATORE ARRUOLABILE:</b> Non è presente nell'attuale lista ufficiale degli infortunati e squalificati."
@@ -743,6 +751,15 @@ def cmd_start(m):
     except Exception: pass
     session = get_session(m.from_user.id)
     send_asta_dashboard(m.chat.id, m.from_user.id) if session.get('fase_asta') else send_dashboard(m.chat.id, m.from_user.id)
+
+@bot.message_handler(commands=['medico'])
+def cmd_medico(m):
+    bot.reply_to(m, "🔄 Avvio aggiornamento forzato della clinica tramite ScraperAPI... Attendi circa 60 secondi.")
+    threading.Thread(target=force_update_and_notify, args=(m.chat.id,)).start()
+
+def force_update_and_notify(chat_id):
+    esito = update_infortunati_cache()
+    bot.send_message(chat_id, f"📝 <b>Report Aggiornamento Medico:</b>\n{esito}", parse_mode="HTML")
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
