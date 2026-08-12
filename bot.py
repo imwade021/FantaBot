@@ -7,7 +7,7 @@ import urllib.parse
 import threading
 import pandas as pd
 import numpy as np
-import 
+import telebot
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
