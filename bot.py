@@ -153,11 +153,11 @@ def update_infortunati_cache(notify=False):
 
     print("🔄 Avvio Motore Multi-Bersaglio tramite ScraperAPI...")
     
-    # Lista di bersagli. Il bot proverà il primo, se fallisce passa al secondo, ecc.
+    # URL di target testati, stabili e robusti
     urls_to_try = [
-        "https://sport.sky.it/calcio/serie-a/infortunati-squalificati-diffidati",
         "https://www.fantacalcio.it/infortunati-e-squalificati",
-        "https://www.tuttomercatoweb.com/infortunati-e-squalificati-serie-a/"
+        "https://www.fantamaster.it/infortunati-squalificati-serie-a/",
+        "https://www.pazzidifanta.com/infortunati-squalificati-serie-a/"
     ]
     
     temp_cache = {}
@@ -165,18 +165,19 @@ def update_infortunati_cache(notify=False):
     
     for base_url in urls_to_try:
         try:
-            target_url = urllib.parse.quote(base_url)
-            # Chiamata velocissima senza rendering JS
-            api_url = f"http://api.scraperapi.com?api_key={scraper_key}&url={target_url}"
-            
-            res = requests.get(api_url, timeout=45)
+            # Usiamo i parametri di richieste nativi invece di convertire a mano il link per evitare HTTP 404
+            payload = {
+                'api_key': scraper_key,
+                'url': base_url
+            }
+            res = requests.get('http://api.scraperapi.com', params=payload, timeout=45)
                 
             if res.status_code == 200:
-                # Estraiamo sia il testo visibile sia il codice HTML grezzo per trovare i JSON nascosti
                 soup = BeautifulSoup(res.text, 'html.parser')
                 testo_visibile = soup.get_text(" ", strip=True).lower()
                 testo_sorgente = res.text.lower()
                 
+                # Controllo anti-captcha (se l'API viene forzata o il testo è vuoto)
                 if len(testo_sorgente) < 500:
                     last_error = f"Pagina troppo corta o bloccata su {base_url}"
                     continue
@@ -188,7 +189,7 @@ def update_infortunati_cache(notify=False):
                         cognome = norm.split()[0] if norm else ""
                         
                         if len(cognome) > 3 and norm not in temp_cache:
-                            # Cerchiamo prima nel testo leggibile, poi nel codice sorgente
+                            # Cerchiamo il nome nel testo visibile e nel sorgente
                             match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_visibile)
                             is_sorgente = False
                             
@@ -198,26 +199,24 @@ def update_infortunati_cache(notify=False):
                                 
                             if match:
                                 idx = match.start()
-                                # Analizziamo un blocco di testo attorno al nome
                                 if is_sorgente:
                                     contesto = testo_sorgente[max(0, idx-40):idx+200]
                                 else:
                                     contesto = testo_visibile[max(0, idx-40):idx+200]
                                 
-                                # Eliminiamo parentesi graffe e codici HTML per rendere la lettura pulita
+                                # Puliamo HTML incasinato e tag script per leggere il referto pulito
                                 contesto = re.sub(r'[^a-z0-9\s]', ' ', contesto)
                                 
                                 squalificato = any(kw in contesto for kw in ['squalificat', 'espuls', 'rosso'])
-                                infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil'])
+                                infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil', 'fuori'])
                                 
                                 if squalificato:
                                     temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Trovato nell'elenco ufficiale."
                                 elif infortunato:
-                                    # Estraiamo le prime 20 parole del contesto clinico
                                     pulizia = ' '.join(contesto.split()[:20])
                                     temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia: ...{pulizia}..."
                                     
-                # Controllo anti-fallimento: Se ha trovato meno di 10 giocatori in tutta la Serie A, il sito ci sta ingannando
+                # Misura di sicurezza: Se troviamo pochissimi infortunati c'è un blocco invisibile, passiamo ad altro sito
                 if len(temp_cache) > 10:
                     INFORTUNATI_CACHE = temp_cache
                     CACHE_MEDICA_PRONTA = True
@@ -226,14 +225,14 @@ def update_infortunati_cache(notify=False):
                     return esito
                 else:
                     last_error = f"Estratti solo {len(temp_cache)} giocatori da {base_url}. Passo al sito di riserva..."
-                    temp_cache = {} # Svuotiamo la cache per il prossimo tentativo
+                    temp_cache = {} 
             else:
                 last_error = f"Errore HTTP {res.status_code} su {base_url}"
                 
         except Exception as e:
             last_error = f"Timeout o errore di connessione su {base_url}: {e}"
             
-    # Se il ciclo finisce e siamo qui, nessun sito ha funzionato
+    # Se il ciclo finisce e siamo qui, le API esterne sono totalmente down
     CACHE_MEDICA_PRONTA = True
     esito = f"❌ Impossibile aggiornare la cartella clinica. Tutte le fonti sono bloccate o irraggiungibili.\nUltimo errore: {last_error}"
     print(esito)
