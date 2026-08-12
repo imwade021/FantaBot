@@ -151,13 +151,11 @@ def update_infortunati_cache(notify=False):
         CACHE_MEDICA_PRONTA = True 
         return msg
 
-    print("🔄 Avvio Motore Multi-Bersaglio tramite ScraperAPI...")
+    print("🔄 Avvio Motore PREMIUM tramite ScraperAPI...")
     
-    # URL di target testati, stabili e robusti
     urls_to_try = [
         "https://www.fantacalcio.it/infortunati-e-squalificati",
-        "https://www.fantamaster.it/infortunati-squalificati-serie-a/",
-        "https://www.pazzidifanta.com/infortunati-squalificati-serie-a/"
+        "https://www.fantamaster.it/infortunati-squalificati-serie-a/"
     ]
     
     temp_cache = {}
@@ -165,21 +163,22 @@ def update_infortunati_cache(notify=False):
     
     for base_url in urls_to_try:
         try:
-            # Usiamo i parametri di richieste nativi invece di convertire a mano il link per evitare HTTP 404
+            # L'ARMA DEFINITIVA: premium='true' sblocca gli IP residenziali e distrugge Cloudflare!
             payload = {
                 'api_key': scraper_key,
-                'url': base_url
+                'url': base_url,
+                'premium': 'true'
             }
-            res = requests.get('http://api.scraperapi.com', params=payload, timeout=45)
+            res = requests.get('http://api.scraperapi.com', params=payload, timeout=60)
                 
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 testo_visibile = soup.get_text(" ", strip=True).lower()
                 testo_sorgente = res.text.lower()
                 
-                # Controllo anti-captcha (se l'API viene forzata o il testo è vuoto)
+                # Sicurezza: se la pagina scaricata è troppo corta, è una finta
                 if len(testo_sorgente) < 500:
-                    last_error = f"Pagina troppo corta o bloccata su {base_url}"
+                    last_error = f"Pagina bloccata o vuota su {base_url}"
                     continue
                 
                 if DATA_CACHE is not None:
@@ -189,7 +188,6 @@ def update_infortunati_cache(notify=False):
                         cognome = norm.split()[0] if norm else ""
                         
                         if len(cognome) > 3 and norm not in temp_cache:
-                            # Cerchiamo il nome nel testo visibile e nel sorgente
                             match = re.search(r'\b' + re.escape(cognome) + r'\b', testo_visibile)
                             is_sorgente = False
                             
@@ -204,11 +202,10 @@ def update_infortunati_cache(notify=False):
                                 else:
                                     contesto = testo_visibile[max(0, idx-40):idx+200]
                                 
-                                # Puliamo HTML incasinato e tag script per leggere il referto pulito
                                 contesto = re.sub(r'[^a-z0-9\s]', ' ', contesto)
                                 
                                 squalificato = any(kw in contesto for kw in ['squalificat', 'espuls', 'rosso'])
-                                infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil', 'fuori'])
+                                infortunato = any(kw in contesto for kw in ['infortun', 'lesion', 'recuper', 'terapi', 'operat', 'ginocchi', 'crociat', 'flessor', 'muscol', 'trauma', 'distorsion', 'rientr', 'problem', 'tendin', 'affaticament', 'stop', 'indisponibil'])
                                 
                                 if squalificato:
                                     temp_cache[norm] = "🔴 SQUALIFICATO\n📋 Trovato nell'elenco ufficiale."
@@ -216,15 +213,15 @@ def update_infortunati_cache(notify=False):
                                     pulizia = ' '.join(contesto.split()[:20])
                                     temp_cache[norm] = f"🚑 INFORTUNATO / INDISPONIBILE\n📋 Traccia: ...{pulizia}..."
                                     
-                # Misura di sicurezza: Se troviamo pochissimi infortunati c'è un blocco invisibile, passiamo ad altro sito
+                # Verifica anti-falso: se ha trovato abbastanza giocatori, la missione è compiuta
                 if len(temp_cache) > 10:
                     INFORTUNATI_CACHE = temp_cache
                     CACHE_MEDICA_PRONTA = True
-                    esito = f"✅ Cache Aggiornata con successo! (Sito: {base_url.split('/')[2]})\n🎯 {len(INFORTUNATI_CACHE)} giocatori indisponibili rilevati."
+                    esito = f"✅ Cache Aggiornata in modalità PREMIUM! (Sito: {base_url.split('/')[2]})\n🎯 {len(INFORTUNATI_CACHE)} giocatori indisponibili rilevati."
                     print(esito)
                     return esito
                 else:
-                    last_error = f"Estratti solo {len(temp_cache)} giocatori da {base_url}. Passo al sito di riserva..."
+                    last_error = f"Estratti solo {len(temp_cache)} giocatori da {base_url}. Passo alla riserva..."
                     temp_cache = {} 
             else:
                 last_error = f"Errore HTTP {res.status_code} su {base_url}"
@@ -232,9 +229,9 @@ def update_infortunati_cache(notify=False):
         except Exception as e:
             last_error = f"Timeout o errore di connessione su {base_url}: {e}"
             
-    # Se il ciclo finisce e siamo qui, le API esterne sono totalmente down
+    # Se il ciclo finisce e siamo qui, tutte le fonti sono bloccate
     CACHE_MEDICA_PRONTA = True
-    esito = f"❌ Impossibile aggiornare la cartella clinica. Tutte le fonti sono bloccate o irraggiungibili.\nUltimo errore: {last_error}"
+    esito = f"❌ Impossibile aggiornare la cartella clinica in automatico.\nUltimo errore: {last_error}"
     print(esito)
     return esito
 
@@ -296,7 +293,7 @@ def load_data(force_reload=False):
 
 # Caricamento iniziale e avvio Pianificatore
 load_data()
-# Lanciamo subito il raccoglitore JSON degli infortunati all'avvio del bot
+# Lanciamo subito il raccoglitore degli infortunati all'avvio del bot
 threading.Thread(target=update_infortunati_cache).start()
 
 try:
@@ -429,7 +426,7 @@ def get_cartella_clinica_reale(nome, squadra=""):
     if not CACHE_MEDICA_PRONTA:
         return (
             f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
-            f"⏳ <b>DATI IN ELABORAZIONE:</b> Il bot sta scaricando i bollettini medici sicuri tramite proxy.\n\n"
+            f"⏳ <b>DATI IN ELABORAZIONE:</b> Il bot sta scaricando i bollettini medici sicuri tramite proxy residenziale.\n\n"
             f"<i>Usa il comando /medico in chat per forzare l'aggiornamento e vedere i dettagli.</i>"
         )
 
