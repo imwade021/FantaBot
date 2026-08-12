@@ -385,8 +385,17 @@ def get_storico_excel_o_web(nome, squadra=""):
     return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{testo_web}"
 
 def get_cartella_clinica_reale(nome, squadra=""):
+    global INFORTUNATI_CACHE
     norm_name = normalize_str(nome)
     
+    # CONTROLLO DI SICUREZZA: Se il cassetto è vuoto, il bot deve avvisarti, non mentire!
+    if not INFORTUNATI_CACHE:
+        return (
+            f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
+            f"⏳ <b>DATI IN ELABORAZIONE:</b> Il bot sta scaricando i bollettini medici sicuri (può richiedere fino a 60 secondi dal riavvio del server).\n\n"
+            f"<i>Riprova tra un minuto. Se il problema persiste, controlla i log di Render e la tua SCRAPER_API_KEY.</i>"
+        )
+
     # 1. Controlla nella cache locale API (Match esatto)
     if norm_name in INFORTUNATI_CACHE:
         return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{INFORTUNATI_CACHE[norm_name]}"
@@ -396,7 +405,7 @@ def get_cartella_clinica_reale(nome, squadra=""):
         if norm_name in k or k in norm_name:
             return f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{v}"
             
-    # 3. Se non c'è, il giocatore è sano e arruolabile senza alcun dubbio
+    # 3. Se il cassetto è pieno e il nome non c'è, ALLORA è davvero sano.
     return (
         f"🏥 <b>BOLLETTINO MEDICO: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
         f"🟢 <b>GIOCATORE ARRUOLABILE:</b> Non è presente nell'attuale lista ufficiale degli infortunati e squalificati."
