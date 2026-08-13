@@ -10,17 +10,8 @@ import numpy as np
 import telebot
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.background import BackgroundScheduler
-
-# Tenta di importare curl_cffi per bypassare i blocchi anti-bot per il download del listone
-try:
-    from curl_cffi import requests as tls_requests
-    CURL_CFFI_ENABLED = True
-except ImportError:
-    CURL_CFFI_ENABLED = False
-    import requests as tls_requests # Fallback sul modulo standard
 
 # Tenta di importare la libreria per la grafica del campo
 try:
@@ -55,7 +46,9 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 
 # URL UFFICIALE DOWNLOAD LISTONE FANTACALCIO (Excel/CSV)
-LISTONE_URL = "https://www.fantacalcio.it/servizi/download/listone" 
+LISTONE_URL = "https://raw.githubusercontent.com/imwade021/fanta-data-bridge/main/Lista-FantaAsta-Fantacalcio.csv"
+
+
 
 ROLE_ICONS = {'P': '🧤', 'D': '🛡️', 'C': '⚙️', 'A': '🎯'}
 TEAM_COLORS = {
@@ -90,6 +83,14 @@ GERARCHIE_RIGORISTI = {
     'Venezia': {'rigoristi': ['Adams A.', 'Rrahmani Al.', 'Adorante'], 'punizioni': ['Busio', 'Yeboah J.', 'Perez K.']}
 }
 
+DATABASE_SCOMMESSE_PURE = [
+    'bernabe', 'fazzini', 'bonny', 'oristanio', 'paz', 'marchwinski', 'castro', 
+    'belahyane', 'tengstedt', 'da cunha', 'moro', 'traore', 'pisilli', 'ekhator', 
+    'solet', 'idzes', 'mangas', 'milla', 'ndour', 'viti', 'goglichidze', 
+    'alajbegovic', 'suslov', 'mosquera', 'tchaouna', 'camarda', 'vitinha', 
+    'savona', 'mbangula', 'conceicao', 'dallinga', 'fabbian', 'braine'
+]
+
 COPPIE_NOTE = {
     'sommer': 'martinez jo.', 'martinez jo.': 'sommer',
     'di gregorio': 'perin', 'perin': 'di gregorio',
@@ -112,9 +113,11 @@ INCROCI_PORTIERI = {
 }
 
 def normalize_str(s):
-    if not isinstance(s, str): return ""
+    if not isinstance(s, str):
+        return ""
     s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8')
-    return " ".join(re.sub(r"[^\w\s]", "", s).lower().split())
+    s = re.sub(r"[^\w\s]", "", s)
+    return " ".join(s.lower().split())
 
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try: bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
@@ -130,14 +133,10 @@ DATA_CACHE = None
 STATS_CACHE = None
 
 def auto_download_listone():
-    print("🔄 Avvio download automatico del Listone con camuffamento...")
+    print("🔄 Avvio download automatico del Listone...")
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        if CURL_CFFI_ENABLED:
-            res = tls_requests.get(LISTONE_URL, impersonate="chrome", timeout=15)
-        else:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            res = tls_requests.get(LISTONE_URL, headers=headers, timeout=15)
-            
+        res = requests.get(LISTONE_URL, headers=headers, timeout=15)
         if res.status_code == 200:
             with open("Lista-FantaAsta-Fantacalcio.csv", "wb") as f:
                 f.write(res.content)
@@ -145,6 +144,7 @@ def auto_download_listone():
             load_data(force_reload=True)
             return True
         else:
+            print(f"⚠️ Errore download listone, status code: {res.status_code}")
             return False
     except Exception as e:
         print(f"❌ Errore durante l'auto-download: {e}")
@@ -181,18 +181,17 @@ def load_data(force_reload=False):
                 
                 STATS_CACHE['Nome_Norm'] = STATS_CACHE['Nome'].apply(normalize_str)
                 print(f"✅ File {stats_file} caricato e indicizzato con successo!")
-            except Exception as e: pass
+            except Exception as e: print(f"⚠️ Errore lettura {stats_file}: {e}")
 
     return DATA_CACHE
 
-# Caricamento iniziale
+# Caricamento iniziale e avvio Pianificatore
 load_data()
-
 try:
     scheduler = BackgroundScheduler()
     scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
     scheduler.start()
-    print("⏰ Pianificatore Auto-Download attivo (Radar Live indipendente dal Background)")
+    print("⏰ Pianificatore Auto-Download attivo")
 except Exception: pass
 
 user_sessions = {}
@@ -264,16 +263,6 @@ def get_macellaio_info(nome):
         except Exception: pass
     return ""
 
-def fetch_real_web_data(query, max_results=2):
-    output = []
-    if not WEB_SEARCH_ENABLED: return ""
-    try:
-        for r in DDGS().text(query, max_results=max_results):
-            clean_body = re.sub('<[^<]+>', '', r['body'])
-            output.append(f"🔎 <i>{html.escape(clean_body)}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
-    except Exception as e: pass
-    return "\n\n".join(output) if output else ""
-
 def get_storico_excel_o_web(nome, squadra=""):
     row = find_player_in_stats(nome)
     if row is not None:
@@ -285,61 +274,32 @@ def get_storico_excel_o_web(nome, squadra=""):
             f"⚽ Gol: <code>{gf}</code> │ 🎯 Ass: <code>{ass}</code> │ 🟨 Gialli: <code>{amm}</code>\n"
         )
     query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni transfermarkt fantacalcio'
-    risultato = fetch_real_web_data(query, max_results=2)
-    testo_web = risultato if risultato else "⚠️ Nessun dettaglio rilevante trovato sul web."
-    return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{testo_web}"
+    return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{fetch_real_web_data(query, max_results=2)}"
 
-# ==========================================
-# NUOVA CLINICA WEB LIVE "RADAR" (SOSTITUISCE SCRAPER API)
-# ==========================================
-def get_cartella_clinica_reale(nome, squadra=""):
-    if not WEB_SEARCH_ENABLED:
-        return "⚠️ <b>Errore di sistema:</b> Libreria di ricerca web (duckduckgo_search) non trovata."
-
-    # Definiamo le parole chiave per catturare la diagnosi dal web
-    kw_infortunio = ['lesione', 'terapie', 'operato', 'crociato', 'flessore', 'distorsione', 'stop', 'indisponibile', 'salta', 'infortunio', 'problema', 'affaticamento', 'rottura', 'frattura', 'fuori']
-    kw_squalifica = ['squalificato', 'espulso', 'rosso', 'giornate di squalifica', 'squalifica']
-    kw_recupero = ['recuperato', 'in gruppo', 'torna', 'titolare', 'rientra', 'smaltito', 'convocato']
-
-    # Costruiamo la query per trovare notizie recenti sul giocatore
-    query = f'"{nome}" {squadra} infortunio squalifica fantacalcio ultime notizie'
-    
+def fetch_real_web_data(query, max_results=2):
+    output = []
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        results = list(DDGS().text(query, max_results=3))
-        
-        if not results:
-            return (
-                f"🏥 <b>CLINICA WEB LIVE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
-                f"🟢 <b>NESSUN DATO TROVATO:</b> Nessuna traccia di infortuni o squalifiche recenti sul web."
-            )
-            
-        testo_totale = " ".join([r['body'].lower() for r in results])
-        
-        is_injured = any(kw in testo_totale for kw in kw_infortunio)
-        is_suspended = any(kw in testo_totale for kw in kw_squalifica)
-        is_recovered = any(kw in testo_totale for kw in kw_recupero)
+        res = requests.get(f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}", headers=headers, timeout=8)
+        if res.status_code == 200:
+            soup = BeautifulSoup(res.text, 'html.parser')
+            for r in soup.find_all('div', class_='result__body')[:max_results]:
+                snippet, title_tag = r.find('a', class_='result__snippet'), r.find('h2', class_='result__title')
+                if snippet and title_tag and title_tag.find('a'):
+                    link = title_tag.find('a')['href']
+                    if link.startswith('//duckduckgo.com/l/?uddg='): link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
+                    output.append(f"🔎 <i>{html.escape(snippet.text.strip())}</i>\n🔗 <a href=\"{html.escape(link)}\">Fonte</a>")
+    except Exception: pass
+    if not output and WEB_SEARCH_ENABLED:
+        try:
+            for r in DDGS().text(query, max_results=max_results):
+                output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
+        except Exception: pass
+    return "\n\n".join(output) if output else "⚠️ Nessun dettaglio rilevante trovato sul web."
 
-        report = f"🏥 <b>CLINICA WEB LIVE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n"
-        
-        # Analisi AI testuale
-        if is_suspended:
-            report += "🔴 <b>ALLARME SQUALIFICA!</b>\nIl web riporta notizie di squalifiche recenti legate a questo giocatore.\n"
-        elif is_injured and not is_recovered:
-            report += "🚑 <b>ALLARME INFORTUNIO!</b>\nI giornali riportano notizie di infortuni, terapie o stop.\n"
-        elif is_injured and is_recovered:
-            report += "🟡 <b>IN DUBBIO / IN RECUPERO:</b>\nCi sono tracce di un infortunio passato, ma anche parole chiave rassicuranti (es. 'in gruppo', 'rientra'). Leggi le news.\n"
-        else:
-            report += "🟢 <b>NESSUN ALLARME GRAVE RILEVATO:</b>\nIl giocatore sembra essere sano o non ci sono notizie negative di rilievo.\n"
-            
-        report += "\n📰 <b>Cosa dice il Web oggi:</b>\n"
-        for r in results:
-            clean_body = re.sub('<[^<]+>', '', r['body'])
-            report += f"• <i>...{html.escape(clean_body[:150])}...</i>\n"
-            
-        return report
-        
-    except Exception as e:
-        return f"⚠️ <b>Errore Clinica Live:</b> Impossibile connettersi al motore di ricerca in questo momento. Riprova tra poco."
+def get_cartella_clinica_reale(nome, squadra=""):
+    query = f'"{nome}" {squadra} infortunio tempi recupero rientro partite saltate SOS Fanta'
+    return f"🏥 <b>CARTELLA CLINICA REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{fetch_real_web_data(query, max_results=2)}"
 
 def draw_pitch_image(titolari_by_role, schema="3-4-3"):
     if not PIL_ENABLED: return None
@@ -419,8 +379,10 @@ def calcola_formazione_ideale(session, df):
 def main_menu_keyboard(session):
     markup = InlineKeyboardMarkup(row_width=2)
     if session.get('fase_asta'):
-        markup.add(InlineKeyboardButton("🔴 RIPRENDI ASTA LIVE", callback_data="asta_resume"), InlineKeyboardButton("🛑 Termina Asta", callback_data="asta_end"))
-    else: markup.add(InlineKeyboardButton("🔨 AVVIA ASTA LIVE", callback_data="asta_setup_start"))
+        markup.add(InlineKeyboardButton("🔴 RIPRENDI ASTA LIVE", callback_data="asta_resume"))
+        markup.add(InlineKeyboardButton("🛑 Termina Asta", callback_data="asta_end"))
+    else:
+        markup.add(InlineKeyboardButton("🔨 AVVIA ASTA LIVE", callback_data="asta_setup_start"))
         
     markup.add(InlineKeyboardButton("👕 Esplora", callback_data="sq_start"), InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"))
     markup.add(InlineKeyboardButton("⚽ Formazione", callback_data="menu_formazione"), InlineKeyboardButton("🎯 Rigoristi", callback_data="menu_rigoristi"))
@@ -436,7 +398,13 @@ def send_dashboard(chat_id, user_id, message_id=None):
     stats = get_roster_stats(session)
     c, budget, slot, max_bid = stats['counts'], session['budget'], stats['slot_liberi'], stats['max_bid']
     media_str = f"(Media: {budget/slot:.1f} cr)" if slot > 0 else "✅ ROSA COMPLETA!"
-    text = f"🏆 <b>FANTABOT PRO DASHBOARD</b> 📊\n━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>Cassa:</b> <code> {budget} cr. </code>\n🛍️ <b>Slot Liberi:</b> <code> {slot} </code> <i>{media_str}</i>\n🛑 <b>MAX BID CONSENTITO:</b> <code> {max_bid} cr. </code>\n\n🧤 P: {c['P']}/3  │ 🛡️ D: {c['D']}/8 \n⚙️ C: {c['C']}/8  │ 🎯 A: {c['A']}/6 \n━━━━━━━━━━━━━━━━━━━━━━\n💡 <i>Cerca nome o scrivi 'ho preso [nome] a [prezzo]'</i>"
+    text = (
+        "🏆 <b>FANTABOT PRO DASHBOARD</b> 📊\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Cassa:</b> <code> {budget} cr. </code>\n🛍️ <b>Slot Liberi:</b> <code> {slot} </code> <i>{media_str}</i>\n"
+        f"🛑 <b>MAX BID CONSENTITO:</b> <code> {max_bid} cr. </code>\n\n"
+        f"🧤 P: {c['P']}/3  │ 🛡️ D: {c['D']}/8 \n⚙️ C: {c['C']}/8  │ 🎯 A: {c['A']}/6 \n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n💡 <i>Cerca nome o scrivi 'ho preso [nome] a [prezzo]'</i>"
+    )
     if message_id:
         try: bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
         except Exception: bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
@@ -464,7 +432,9 @@ def send_asta_dashboard(chat_id, user_id, message_id=None):
         max_bid = max(1, int((pd.to_numeric(str(r.get('FVM', 0)).replace(',','.'), errors='coerce') * (b_iniziale / 1000.0) * (1 + ((lega_part - 8) * 0.025))) * 1.15))
         top_str += f"{i}. <b>{r['Nome']}</b> ({r['Squadra']}) ─ Max: <code>{max_bid} cr.</code>\n"
     
-    testo = f"🔨 <b>ASTA LIVE - FASE: {ROLE_ICONS.get(fase, '')} {fase}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n⭐ <b>TOP 5 RIMASTI:</b>\n{top_str}\n🧠 <b>STRATEGIA:</b>\n<i>{get_strategia_asta(fase, budget, b_iniziale, modif)}</i>\n━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>Cassa:</b> <code>{budget} cr.</code> (Slot liberi: {get_roster_stats(session)['slot_liberi']})\n"
+    testo = (f"🔨 <b>ASTA LIVE - FASE: {ROLE_ICONS.get(fase, '')} {fase}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
+             f"⭐ <b>TOP 5 RIMASTI:</b>\n{top_str}\n🧠 <b>STRATEGIA:</b>\n<i>{get_strategia_asta(fase, budget, b_iniziale, modif)}</i>\n"
+             f"━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>Cassa:</b> <code>{budget} cr.</code> (Slot liberi: {get_roster_stats(session)['slot_liberi']})\n")
     
     if fase == 'D' and modif:
         mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 5) & (avail['FVM'] <= 35)].sort_values(by='FVM', ascending=False).head(3)
@@ -499,9 +469,15 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     lega_bud, lega_part = session.get('lega_budget_iniziale', 500), session.get('lega_partecipanti', 8)
     fair_price = max(1, int((fvm_val * (lega_bud / 1000.0)) * (1 + ((lega_part - 8) * 0.025))))
     max_rilancio, asta_stop = int(fair_price * 1.15) if int(fair_price * 1.15) > 1 else 1, int(fair_price * 1.25) if int(fair_price * 1.25) > 2 else 2
-    stats = get_roster_stats(session)
     
-    info_text = f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n⚠️ <b>Rischio/Macellaio:</b> {get_macellaio_info(player_name)}\n\n🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price} cr.</code>\n🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    stats = get_roster_stats(session)
+    info_text = (
+        f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n⚠️ <b>Rischio/Macellaio:</b> {get_macellaio_info(player_name)}\n\n"
+        f"🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price} cr.</code>\n"
+        f"🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n"
+        f"💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
+    )
     
     is_asta = session.get('fase_asta') is not None
     markup = InlineKeyboardMarkup(row_width=2)
@@ -515,7 +491,11 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
     in_wl = player_name in session.get('wishlist', [])
-    markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start") if is_scommessa else None)
+    if is_scommessa:
+        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
+    else:
+        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"))
+        
     if not is_asta: markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
     
     try: bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
@@ -579,6 +559,7 @@ def process_buy_price(message, player_name, user_id):
         
     bot.send_message(chat_id, f"{titolo_acquisto}\n\n📊 <b>Valutazione Acquisto:</b>\n{giudizio}", parse_mode="HTML")
     
+    # Consigli speciali per i PORTIERI
     if ruolo == 'P':
         riserve = df[(df['R'] == 'P') & (df['Squadra'] == squadra) & (df['Nome'] != player_name)].sort_values(by='FVM', ascending=False).head(2)
         r_nomi = [r['Nome'] for _, r in riserve.iterrows()]
@@ -652,10 +633,6 @@ def cmd_start(m):
     except Exception: pass
     session = get_session(m.from_user.id)
     send_asta_dashboard(m.chat.id, m.from_user.id) if session.get('fase_asta') else send_dashboard(m.chat.id, m.from_user.id)
-
-@bot.message_handler(commands=['medico'])
-def cmd_medico(m):
-    bot.reply_to(m, "ℹ️ <b>La Clinica Web ora è 100% Live!</b>\nNon serve più aggiornare il database manualmente. Clicca sul pulsante 'Clinica Web' sotto la scheda di qualsiasi giocatore per far leggere al bot le ultime notizie mediche in tempo reale.", parse_mode="HTML")
 
 @bot.message_handler(content_types=['voice'])
 def handle_voice(message):
@@ -865,7 +842,7 @@ def handle_callbacks(call):
 
     elif call.data.startswith("cl_"):
         p = call.data.replace("cl_", "")
-        bot.edit_message_text(get_cartella_clinica_reale(p, df[df['Nome'] == p].iloc[0].get('Squadra', '')), chat_id, bot.send_message(chat_id, "⏳ <i>Lettura dati in corso...</i>", parse_mode="HTML").message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
+        bot.edit_message_text(get_cartella_clinica_reale(p, df[df['Nome'] == p].iloc[0].get('Squadra', '')), chat_id, bot.send_message(chat_id, "⏳ <i>Ricerca notizie...</i>", parse_mode="HTML").message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data.startswith("stats_"):
         p = call.data.replace("stats_", "")
