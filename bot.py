@@ -13,14 +13,12 @@ from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# Tenta di importare la libreria per la grafica del campo
 try:
     from PIL import Image, ImageDraw, ImageFont
     PIL_ENABLED = True
 except ImportError:
     PIL_ENABLED = False
 
-# Tenta di importare le librerie per i comandi vocali
 try:
     import speech_recognition as sr
     from pydub import AudioSegment
@@ -28,7 +26,6 @@ try:
 except ImportError:
     VOICE_ENABLED = False
 
-# Tenta di importare la libreria per la ricerca web
 try:
     from duckduckgo_search import DDGS
     WEB_SEARCH_ENABLED = True
@@ -153,38 +150,35 @@ def load_data(force_reload=False):
     if DATA_CACHE is None or force_reload:
         if os.path.exists("Lista-FantaAsta-Fantacalcio.csv"):
             try:
-                # Gestione automatica del separatore e dell'encoding
+                # Lettura ultra-robusta del CSV Fantacalcio
                 with open("Lista-FantaAsta-Fantacalcio.csv", 'r', encoding='utf-8-sig', errors='ignore') as f:
                     first_line = f.readline()
                 sep = ';' if ';' in first_line else ','
                 
-                df_temp = pd.read_csv("Lista-FantaAsta-Fantacalcio.csv", sep=sep, encoding='utf-8-sig', on_bad_lines='skip')
-                df_temp.columns = df_temp.columns.str.strip().str.replace('"', '')
+                df_raw = pd.read_csv("Lista-FantaAsta-Fantacalcio.csv", sep=sep, encoding='utf-8-sig', on_bad_lines='skip', dtype=str)
                 
-                # Mappatura rigorosa delle colonne ufficiali Fantacalcio
-                rename_map = {}
-                for col in df_temp.columns:
-                    c_low = col.lower()
-                    if c_low in ['nome', 'calciatore']: rename_map[col] = 'Nome'
-                    elif c_low in ['r', 'ruolo']: rename_map[col] = 'R'
-                    elif c_low in ['squadra', 'club']: rename_map[col] = 'Squadra'
-                    elif c_low in ['fvm', 'fvm_classic', 'fvm.m']: rename_map[col] = 'FVM'
+                # Se la prima riga contiene intestazioni note
+                cols_lower = [str(c).lower().strip().replace('"', '') for c in df_raw.columns]
                 
-                df_temp.rename(columns=rename_map, inplace=True)
+                nome_col = next((c for c, l in zip(df_raw.columns, cols_lower) if l in ['nome', 'calciatore']), None)
+                squadra_col = next((c for c, l in zip(df_raw.columns, cols_lower) if l in ['squadra', 'club']), None)
+                r_col = next((c for c, l in zip(df_raw.columns, cols_lower) if l in ['r', 'ruolo'] and l != 'ruolo_esteso'), None)
+                fvm_col = next((c for c, l in zip(df_raw.columns, cols_lower) if 'fvm' in l), None)
                 
-                # Se non ha trovato gli header con i nomi, assegna la struttura posizionale standard
-                if 'Nome' not in df_temp.columns or 'Squadra' not in df_temp.columns:
-                    df_temp = pd.read_csv("Lista-FantaAsta-Fantacalcio.csv", sep=sep, header=None, skiprows=1, encoding='utf-8-sig')
-                    cols = ['Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 'Qt.M', 'Diff.M', 'Squadra', 'FVM']
-                    df_temp.columns = cols + list(range(len(cols), df_temp.shape[1]))
-
-                DATA_CACHE = df_temp
+                # Se il file non ha header leggibile, usa gli indici standard del CSV scaricato da Fantacalcio.it
+                if not nome_col or not squadra_col:
+                    df_raw = pd.read_csv("Lista-FantaAsta-Fantacalcio.csv", sep=sep, header=None, skiprows=1, encoding='utf-8-sig', dtype=str)
+                    df_raw.rename(columns={1: 'Nome_Breve', 2: 'Nome', 3: 'R', 9: 'Squadra', 10: 'FVM'}, inplace=True)
+                else:
+                    df_raw.rename(columns={nome_col: 'Nome', squadra_col: 'Squadra', r_col: 'R', fvm_col: 'FVM'}, inplace=True)
+                
+                DATA_CACHE = df_raw[['Nome', 'R', 'Squadra', 'FVM']].copy()
                 DATA_CACHE['Nome'] = DATA_CACHE['Nome'].astype(str).str.strip().str.replace('"', '')
                 DATA_CACHE['Squadra'] = DATA_CACHE['Squadra'].astype(str).str.strip().str.replace('"', '')
-                DATA_CACHE['R'] = DATA_CACHE['R'].astype(str).str.strip().str.replace('"', '')
+                DATA_CACHE['R'] = DATA_CACHE['R'].astype(str).str.strip().str.replace('"', '').str.upper()
                 DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE['FVM'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
                 
-                print(f"✅ DATA_CACHE caricato con successo! {len(DATA_CACHE)} giocatori.")
+                print(f"✅ DATA_CACHE Caricato con successo! {len(DATA_CACHE)} giocatori registrati.")
             except Exception as e: 
                 print(f"⚠️ Errore parsing CSV: {e}")
 
@@ -396,7 +390,7 @@ def main_menu_keyboard(session):
     else:
         markup.add(InlineKeyboardButton("🔨 AVVIA ASTA LIVE", callback_data="asta_setup_start"))
         
-    markup.add(InlineKeyboardButton("👕 Esplora", callback_data="sq_start"), InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"))
+    markup.add(InlineKeyboardButton("👕 Esplora Squadre", callback_data="sq_start"), InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"))
     markup.add(InlineKeyboardButton("⚽ Formazione", callback_data="menu_formazione"), InlineKeyboardButton("🎯 Rigoristi", callback_data="menu_rigoristi"))
     markup.add(InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist"), InlineKeyboardButton("📊 Trade 3D", callback_data="menu_studio_start"))
     markup.add(InlineKeyboardButton("🔥 Power Index", callback_data="menu_power"), InlineKeyboardButton("🛡️ Modificatore 6.5", callback_data="menu_modificatore"))
@@ -827,7 +821,6 @@ def handle_callbacks(call):
         sq = parts[2].strip()
         ru = parts[3].strip()
         
-        # Filtro case-insensitive che pulisce gli spazi sia sul dataframe che sul parametro
         giocatori = df[(df['Squadra'].astype(str).str.strip().str.lower() == sq.lower()) & 
                        (df['R'].astype(str).str.strip().str.upper() == ru.upper())].sort_values(by='FVM', ascending=False)
         
