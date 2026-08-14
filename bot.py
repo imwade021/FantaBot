@@ -192,6 +192,7 @@ def get_session(user_id):
             'budget': 500, 
             'rosa': [], 
             'wishlist': [], 
+            'wishlist_priority': [], # Aggiunto per le priorità
             'scartati': [], 
             'compare_p1': None,
             'lega_budget_iniziale': 500,  
@@ -539,16 +540,24 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     )
     
     in_wl = player_name in session.get('wishlist', [])
+    in_prio = player_name in session.get('wishlist_priority', [])
+    
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("⚡ Compra", callback_data=f"buy_{player_name}"), InlineKeyboardButton("🚫 Già Preso", callback_data=f"taken_{player_name}"))
     markup.add(InlineKeyboardButton("📊 Storico Reale", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica Web", callback_data=f"cl_{player_name}"))
     markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
-    if is_scommessa:
-        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
+    # GESTIONE PULSANTI WISHLIST E PRIORITA'
+    if in_wl:
+        btn_wl = InlineKeyboardButton("❌ Rimuovi WL", callback_data=f"wl_toggle_{player_name}")
+        btn_prio = InlineKeyboardButton("❌ Togli Priorità" if in_prio else "🌟 Segna Priorità", callback_data=f"wl_prio_{player_name}")
+        markup.add(btn_wl, btn_prio)
     else:
-        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"))
+        markup.add(InlineKeyboardButton("⭐ Aggiungi a WL", callback_data=f"wl_toggle_{player_name}"))
         
+    if is_scommessa:
+        markup.add(InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
+
     markup.add(
         InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_ru_{sq_name}_{ruolo}"),
         InlineKeyboardButton("🏠 Home", callback_data="go_home")
@@ -999,7 +1008,7 @@ def handle_callbacks(call):
         lega_bud = session.get('lega_budget_iniziale', 500)
         lega_part = session.get('lega_partecipanti', 8)
         user_sessions[user_id] = {
-            'budget': lega_bud, 'rosa': [], 'wishlist': session.get('wishlist', []), 'scartati': [], 
+            'budget': lega_bud, 'rosa': [], 'wishlist': session.get('wishlist', []), 'wishlist_priority': session.get('wishlist_priority', []), 'scartati': [], 
             'compare_p1': None, 'lega_budget_iniziale': lega_bud, 'lega_partecipanti': lega_part
         }
         send_dashboard(chat_id, user_id, call.message.message_id)
@@ -1368,22 +1377,73 @@ def handle_callbacks(call):
         safe_answer_callback(call.id, text=f"🚫 {p_name} segnato come già preso!", show_alert=False)
         send_dashboard(chat_id, user_id, call.message.message_id)
 
+    # NUOVA GESTIONE WISHLIST E PRIORITA' ==========================
     elif call.data.startswith("wl_toggle_"):
         player_name = call.data.replace("wl_toggle_", "")
         if 'wishlist' not in session: session['wishlist'] = []
-        if player_name in session['wishlist']: session['wishlist'].remove(player_name)
-        else: session['wishlist'].append(player_name)
+        if 'wishlist_priority' not in session: session['wishlist_priority'] = []
+        
+        if player_name in session['wishlist']: 
+            session['wishlist'].remove(player_name)
+            if player_name in session['wishlist_priority']:
+                session['wishlist_priority'].remove(player_name)
+        else: 
+            session['wishlist'].append(player_name)
+        send_player_card_view(chat_id, player_name, call.message.message_id, df, session)
+
+    elif call.data.startswith("wl_prio_"):
+        player_name = call.data.replace("wl_prio_", "")
+        if 'wishlist_priority' not in session: session['wishlist_priority'] = []
+        
+        if player_name in session['wishlist_priority']: 
+            session['wishlist_priority'].remove(player_name)
+        else: 
+            session['wishlist_priority'].append(player_name)
         send_player_card_view(chat_id, player_name, call.message.message_id, df, session)
 
     elif call.data == "menu_wishlist":
         wishlist = session.get('wishlist', [])
-        markup = InlineKeyboardMarkup(row_width=1)
-        if not wishlist: testo = "⭐ <b>WISHLIST VUOTA</b>"
+        if not wishlist:
+            markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+            bot.edit_message_text("⭐ <b>WISHLIST VUOTA</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
         else:
-            testo = "⭐ <b>LA TUA WISHLIST:</b>\n"
-            for nome in wishlist: markup.add(InlineKeyboardButton(f"🔍 {nome}", callback_data=f"sq_pl_{nome}"))
-        markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(testo, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+            grouped = {'P': 0, 'D': 0, 'C': 0, 'A': 0}
+            for nome in wishlist:
+                row = df[df['Nome'] == nome]
+                if not row.empty:
+                    grouped[row.iloc[0]['R']] += 1
+            
+            markup = InlineKeyboardMarkup(row_width=2)
+            btns = []
+            for r in ['P', 'D', 'C', 'A']:
+                if grouped[r] > 0:
+                    btns.append(InlineKeyboardButton(f"{ROLE_ICONS[r]} {r} ({grouped[r]})", callback_data=f"wl_ruolo_{r}"))
+            
+            if btns: markup.add(*btns)
+            markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+            bot.edit_message_text("⭐ <b>LA TUA WISHLIST:</b>\nScegli il reparto per visualizzare i giocatori salvati.", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+    elif call.data.startswith("wl_ruolo_"):
+        r = call.data.replace("wl_ruolo_", "")
+        wishlist = session.get('wishlist', [])
+        priority_wl = session.get('wishlist_priority', [])
+        
+        players_in_role = []
+        for nome in wishlist:
+            row = df[df['Nome'] == nome]
+            if not row.empty and row.iloc[0]['R'] == r:
+                players_in_role.append((nome, row.iloc[0].get('FVM', 0)))
+        
+        players_in_role.sort(key=lambda x: (1 if x[0] in priority_wl else 0, pd.to_numeric(x[1], errors='coerce')), reverse=True)
+        
+        markup = InlineKeyboardMarkup(row_width=1)
+        for nome, fvm in players_in_role:
+            icon = "🌟" if nome in priority_wl else "🔍"
+            markup.add(InlineKeyboardButton(f"{icon} {nome} (FVM: {fvm})", callback_data=f"sq_pl_{nome}"))
+            
+        markup.add(InlineKeyboardButton("🔙 Indietro (Reparti)", callback_data="menu_wishlist"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        bot.edit_message_text(f"⭐ <b>WISHLIST - {ROLE_ICONS[r]} {r}</b>\n<i>Le 🌟 indicano i tuoi obiettivi prioritari.</i>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+    # =============================================================
 
 if __name__ == '__main__':
     try: bot.remove_webhook()
