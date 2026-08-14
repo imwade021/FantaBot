@@ -376,24 +376,96 @@ def draw_pitch_image(titolari_by_role, schema="3-4-3"):
     return buf
 
 # ==========================================
-# TRADE ANALYZER 3D & FORMAZIONE
+# TRADE ANALYZER 3D (AVANZATO) & FORMAZIONE
 # ==========================================
+def check_se_tiratore(nome, squadra):
+    """Funzione di supporto per capire se il giocatore batte i piazzati"""
+    for sq, dati in GERARCHIE_RIGORISTI.items():
+        if str(sq).strip().lower() == str(squadra).strip().lower():
+            if nome in dati.get('rigoristi', []): return "⚽ RIGORISTA"
+            if nome in dati.get('punizioni', []): return "🎯 PIAZZATI"
+    return "❌ No"
+
 def advanced_trade_analyzer_3d(p1, p2, session):
-    base_report = f"📊 <b>TRADE ANALYZER:</b>\n{p1['Nome']} ↔️ {p2['Nome']}"
+    n1, n2 = p1['Nome'], p2['Nome']
+    sq1, sq2 = p1.get('Squadra', '-'), p2.get('Squadra', '-')
+    
+    base_report = (
+        f"📊 <b>TRADE ANALYZER 3D (AVANZATO)</b>\n"
+        f"🔴 Cedi: <code>{n1}</code> ({sq1})\n"
+        f"🟢 Ricevi: <code>{n2}</code> ({sq2})"
+    )
+
+    # 1. Recupero FVM (Valore di mercato)
+    fvm1 = float(str(p1.get('FVM', 0)).replace(',', '.'))
+    fvm2 = float(str(p2.get('FVM', 0)).replace(',', '.'))
+    delta_fvm = fvm2 - fvm1
+
+    # 2. Recupero Statistiche Storiche e Status
+    stats1 = find_player_in_stats(n1)
+    stats2 = find_player_in_stats(n2)
+
+    status_p1 = check_se_tiratore(n1, sq1)
+    status_p2 = check_se_tiratore(n2, sq2)
+
+    fm1, mv1, pv1, gf1, ass1, amm1, esp1 = 0.0, 0.0, 0, 0, 0, 0, 0
+    if stats1 is not None:
+        fm1 = float(str(stats1.get('Fm', 0)).replace(',', '.'))
+        pv1, gf1, ass1 = int(stats1.get('Pv', 0)), int(stats1.get('Gf', 0)), int(stats1.get('Ass', 0))
+        amm1, esp1 = int(stats1.get('Amm', 0)), int(stats1.get('Esp', 0))
+
+    fm2, mv2, pv2, gf2, ass2, amm2, esp2 = 0.0, 0.0, 0, 0, 0, 0, 0
+    if stats2 is not None:
+        fm2 = float(str(stats2.get('Fm', 0)).replace(',', '.'))
+        pv2, gf2, ass2 = int(stats2.get('Pv', 0)), int(stats2.get('Gf', 0)), int(stats2.get('Ass', 0))
+        amm2, esp2 = int(stats2.get('Amm', 0)), int(stats2.get('Esp', 0))
+
+    delta_fm = fm2 - fm1
+    delta_bonus = (gf2 + ass2) - (gf1 + ass1)
+    delta_malus = (amm2 + (esp2*3)) - (amm1 + (esp1*3)) # diamo "peso 3" ai rossi
+
+    # 3. Creazione Testo Confronto Dettagliato
+    confronto_txt = "📈 <b>CONFRONTO STATISTICO:</b>\n"
+    confronto_txt += f"💰 <b>Valore (FVM):</b> {fvm1} 🆚 {fvm2} " + (f"(✅ +{delta_fvm:.1f})\n" if delta_fvm > 0 else f"(❌ {delta_fvm:.1f})\n" if delta_fvm < 0 else "(=)\n")
+    
+    if fm1 > 0 or fm2 > 0:
+        confronto_txt += f"⭐ <b>Fantamedia:</b> {fm1:.2f} 🆚 {fm2:.2f} " + (f"(✅ +{delta_fm:.2f})\n" if delta_fm > 0 else f"(❌ {delta_fm:.2f})\n" if delta_fm < 0 else "(=)\n")
+        confronto_txt += f"👟 <b>Status:</b> {status_p1} 🆚 {status_p2}\n"
+        confronto_txt += f"⚽ <b>Gol / Assist:</b> {gf1}/{ass1} 🆚 {gf2}/{ass2} " + (f"(✅ +{delta_bonus})\n" if delta_bonus > 0 else f"(❌ {delta_bonus})\n" if delta_bonus < 0 else "(=)\n")
+        confronto_txt += f"🟨 <b>Cartellini:</b> {amm1}G {esp1}R 🆚 {amm2}G {esp2}R " + (f"(✅ Meglio disciplinato)\n" if delta_malus < 0 else f"(❌ Prende più malus)\n" if delta_malus > 0 else "(=)\n")
+        confronto_txt += f"🏟️ <b>Presenze (Affidabilità):</b> {pv1} 🆚 {pv2}\n"
+    else:
+        confronto_txt += "<i>Dati statistici storici non completi. Si valuta solo il Valore di Mercato.</i>\n"
+
+    # 4. Verdetto dell'Algoritmo Ponderato
+    verdetto = "⚖️ <b>VERDETTO PRO:</b>\n"
+    if "RIGORISTA" in status_p1 and "RIGORISTA" not in status_p2 and delta_fvm < 10:
+        verdetto += "🚨 <b>ATTENZIONE:</b> Stai per cedere un rigorista per uno che non lo è. Fallo solo se ci guadagni tantissimo in altri reparti!"
+    elif delta_fvm > 0 and delta_fm > 0.1 and delta_bonus >= 0:
+        verdetto += "🔥 <b>SCAMBIO DA ACCETTARE SUBITO!</b>\nCi guadagni in Valore, Fantamedia e Bonus. Difficile chiedere di meglio."
+    elif delta_fvm < 0 and delta_fm < 0:
+        verdetto += "🛑 <b>SCAMBIO BOCCIATO!</b>\nPerdi valore, perdi rendimento e regali vantaggi all'avversario. Rifiuta."
+    elif delta_fm > 0.3 and delta_malus < 2:
+        verdetto += "✅ <b>PROMOSSO!</b>\nAnche se perdi qualcosina di valore nominale, ricevi un giocatore molto più incisivo e utile al Fantacalcio."
+    elif delta_bonus < -2:
+        verdetto += "⚠️ <b>PERDITA DI BONUS:</b>\nIl giocatore che prendi porta statisticamente meno gol/assist di quello che cedi. Valuta bene."
+    else:
+        verdetto += "🤔 <b>SCAMBIO EQUILIBRATO.</b>\nSiete sulla stessa linea statistica. Accetta se il giocatore proposto migliora il tuo bilanciamento tra i ruoli o incrocia meglio nel calendario."
+
+    # 5. Impatto Rosa Esistente (Ruoli)
     rosa = session.get('rosa', [])
     r1, r2 = p1.get('R', 'C'), p2.get('R', 'C')
     count_r1 = sum(1 for p in rosa if p.get('ruolo') == r1)
     count_r2 = sum(1 for p in rosa if p.get('ruolo') == r2)
-    
-    impatti_rosa = []
+
+    impatti_txt = f"🔄 Ruoli: Cedi {r1} ➔ Ricevi {r2}\n"
     if r1 != r2:
-        if count_r1 <= 3 and r1 in ['D', 'C']:
-            impatti_rosa.append(f"🚨 <b>RISCHIO VOTI IN {r1}!</b> Rimarresti scoperto.")
+        if count_r1 <= 3 and r1 in ['D', 'C'] and len(rosa) > 0:
+            impatti_txt += f"🚨 <b>ALLARME SCOPERTURA!</b> Rimarresti " + ("senza" if count_r1 <=1 else "con pochissimi") + f" {r1}.\n"
         if count_r2 >= 8 and r2 in ['D', 'C']:
-            impatti_rosa.append(f"⚠️ <b>SOVRACCOPPIAMENTO IN {r2}!</b>")
-            
-    impatti_txt = "\n".join(impatti_rosa) if impatti_rosa else "✅ <b>EQUILIBRIO ROSA OK.</b>"
-    return f"{base_report}\n\n📊 <b>IMPATTO SULLA ROSA (3D):</b>\n{impatti_txt}"
+            impatti_txt += f"⚠️ <b>SOVRAFFOLLAMENTO in {r2}!</b>\n"
+
+    return f"{base_report}\n\n{confronto_txt}\n{verdetto}\n\n💼 <b>IMPATTO SULLA ROSA:</b>\n{impatti_txt}"
 
 def calcola_formazione_ideale(session, df):
     rosa = session.get('rosa', [])
@@ -1162,12 +1234,6 @@ def handle_callbacks(call):
             markup.add(InlineKeyboardButton(f"🔄 {cl_row['Nome']} ({cl_row['Squadra']}) FVM:{cl_row['FVM']}", callback_data=f"sq_pl_{cl_row['Nome']}"))
         markup.add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p_name}"))
         bot.send_message(chat_id, f"🔄 <b>SLIDING DOORS per {html.escape(p_name)}:</b>", parse_mode="HTML", reply_markup=markup)
-
-    elif call.data.startswith("wl_add_"):
-        p_name = call.data.replace("wl_add_", "")
-        if p_name not in session['wishlist']: session['wishlist'].append(p_name)
-        safe_answer_callback(call.id, text=f"✅ {p_name} aggiunto alla Wishlist!", show_alert=True)
-        send_dashboard(chat_id, user_id, call.message.message_id)
 
     elif call.data.startswith("menu_modificatore"):
         parts = call.data.split("_page_")
