@@ -195,6 +195,7 @@ def get_session(user_id):
             'wishlist_priority': [], # Aggiunto per le priorità
             'scartati': [], 
             'compare_p1': None,
+            'compare_p2': None, # Aggiunto per ricordare chi stiamo scambiando
             'lega_budget_iniziale': 500,  
             'lega_partecipanti': 8        
         }
@@ -1081,7 +1082,7 @@ def handle_callbacks(call):
         lega_part = session.get('lega_partecipanti', 8)
         user_sessions[user_id] = {
             'budget': lega_bud, 'rosa': [], 'wishlist': session.get('wishlist', []), 'wishlist_priority': session.get('wishlist_priority', []), 'scartati': [], 
-            'compare_p1': None, 'lega_budget_iniziale': lega_bud, 'lega_partecipanti': lega_part
+            'compare_p1': None, 'compare_p2': None, 'lega_budget_iniziale': lega_bud, 'lega_partecipanti': lega_part
         }
         send_dashboard(chat_id, user_id, call.message.message_id)
 
@@ -1421,11 +1422,52 @@ def handle_callbacks(call):
     elif call.data.startswith("std2_pl_"):
         p2_nome = call.data.replace("std2_pl_", "")
         p1, p2 = session.get('compare_p1'), df[df['Nome'] == p2_nome].iloc[0].to_dict()
+        session['compare_p2'] = p2  # Salviamo il p2 in memoria per aggiornare i bottoni della WL
+        
         text = advanced_trade_analyzer_3d(p1, p2, session)
+        
+        in_wl_1 = p1['Nome'] in session.get('wishlist', [])
+        in_wl_2 = p2['Nome'] in session.get('wishlist', [])
+        
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(InlineKeyboardButton(f"⚡ Compra {p1['Nome']}", callback_data=f"buy_{p1['Nome']}"), InlineKeyboardButton(f"⚡ Compra {p2['Nome']}", callback_data=f"buy_{p2['Nome']}"))
+        markup.add(
+            InlineKeyboardButton("❌ WL " + p1['Nome'] if in_wl_1 else f"⭐ WL {p1['Nome']}", callback_data=f"wl_trade_{p1['Nome']}"),
+            InlineKeyboardButton("❌ WL " + p2['Nome'] if in_wl_2 else f"⭐ WL {p2['Nome']}", callback_data=f"wl_trade_{p2['Nome']}")
+        )
         markup.add(InlineKeyboardButton("🔄 Nuovo Confronto", callback_data="menu_studio_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(text, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+
+    elif call.data.startswith("wl_trade_"):
+        player_name = call.data.replace("wl_trade_", "")
+        
+        if 'wishlist' not in session: session['wishlist'] = []
+        if player_name in session['wishlist']: 
+            session['wishlist'].remove(player_name)
+            if 'wishlist_priority' in session and player_name in session['wishlist_priority']:
+                session['wishlist_priority'].remove(player_name)
+            safe_answer_callback(call.id, text=f"❌ {player_name} rimosso dalla Wishlist!", show_alert=False)
+        else: 
+            session['wishlist'].append(player_name)
+            safe_answer_callback(call.id, text=f"✅ {player_name} aggiunto alla Wishlist!", show_alert=False)
+            
+        p1 = session.get('compare_p1')
+        p2 = session.get('compare_p2')
+        
+        if p1 and p2:
+            in_wl_1 = p1['Nome'] in session.get('wishlist', [])
+            in_wl_2 = p2['Nome'] in session.get('wishlist', [])
+            
+            markup = InlineKeyboardMarkup(row_width=2)
+            markup.add(InlineKeyboardButton(f"⚡ Compra {p1['Nome']}", callback_data=f"buy_{p1['Nome']}"), InlineKeyboardButton(f"⚡ Compra {p2['Nome']}", callback_data=f"buy_{p2['Nome']}"))
+            markup.add(
+                InlineKeyboardButton("❌ WL " + p1['Nome'] if in_wl_1 else f"⭐ WL {p1['Nome']}", callback_data=f"wl_trade_{p1['Nome']}"),
+                InlineKeyboardButton("❌ WL " + p2['Nome'] if in_wl_2 else f"⭐ WL {p2['Nome']}", callback_data=f"wl_trade_{p2['Nome']}")
+            )
+            markup.add(InlineKeyboardButton("🔄 Nuovo Confronto", callback_data="menu_studio_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+            
+            try: bot.edit_message_reply_markup(chat_id, call.message.message_id, reply_markup=markup)
+            except Exception: pass
 
     elif call.data.startswith("sq_pl_"):
         player_name = call.data.replace("sq_pl_", "")
