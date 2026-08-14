@@ -549,7 +549,10 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     else:
         markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"))
         
-    markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+    markup.add(
+        InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_ru_{sq_name}_{ruolo}"),
+        InlineKeyboardButton("🏠 Home", callback_data="go_home")
+    )
     
     try:
         bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
