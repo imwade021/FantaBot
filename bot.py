@@ -5,6 +5,7 @@ import html
 import unicodedata
 import urllib.parse
 import threading
+import difflib
 import pandas as pd
 import numpy as np
 import telebot
@@ -99,12 +100,29 @@ COPPIE_NOTE = {
     'kvaratskhelia': 'neres', 'neres': 'kvaratskhelia'
 }
 
+# ==========================================
+# FUNZIONI DI UTILITÀ (PULIZIA DATI)
+# ==========================================
 def normalize_str(s):
     if not isinstance(s, str):
         return ""
     s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8')
     s = re.sub(r"[^\w\s]", "", s)
     return " ".join(s.lower().split())
+
+def safe_float(val, default=0.0):
+    try:
+        if pd.isna(val): return default
+        return float(str(val).replace(',', '.').strip())
+    except (ValueError, TypeError):
+        return default
+
+def safe_int(val, default=0):
+    try:
+        if pd.isna(val): return default
+        return int(float(str(val).replace(',', '.').strip()))
+    except (ValueError, TypeError):
+        return default
 
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try: bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
@@ -120,7 +138,6 @@ DATA_CACHE = None
 STATS_CACHE = None
 
 def auto_download_listone():
-    """Scarica in automatico il listone aggiornato da internet."""
     print("🔄 Avvio download automatico del Listone...")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
@@ -149,26 +166,44 @@ def load_data(force_reload=False):
                     'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 
                     'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
                 ]
-                DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE['FVM'], errors='coerce').fillna(0)
+                DATA_CACHE['FVM'] = DATA_CACHE['FVM'].apply(safe_float)
                 print("✅ File CSV Listone caricato in memoria!")
             except Exception as e: print(f"⚠️ Errore lettura CSV Listone: {e}")
 
     if STATS_CACHE is None or force_reload:
-        stats_file = None
-        for f in os.listdir('.'):
-            if 'statistiche' in f.lower() and (f.endswith('.xlsx') or f.endswith('.xls') or f.endswith('.csv')):
-                stats_file = f
-                break
-                
-        if stats_file:
+        stats_files = [f for f in os.listdir('.') if 'statistiche' in f.lower() and f.endswith(('.xlsx', '.xls', '.csv'))]
+        if stats_files:
+            stats_file = max(stats_files, key=os.path.getmtime)  # Prende sempre il file più recente
             try:
                 if stats_file.endswith('.csv'):
-                    STATS_CACHE = pd.read_csv(stats_file)
+                    tmp_stats = pd.read_csv(stats_file)
                 else:
-                    STATS_CACHE = pd.read_excel(stats_file, header=1)
+                    tmp_stats = pd.read_excel(stats_file)
+                    # Se la prima colonna è innominata, probabilmente c'è un doppio header
+                    if 'Nome' not in tmp_stats.columns and 'Id' not in tmp_stats.columns:
+                        tmp_stats = pd.read_excel(stats_file, header=1)
                 
-                STATS_CACHE['Nome_Norm'] = STATS_CACHE['Nome'].apply(normalize_str)
-                print(f"✅ File {stats_file} caricato e indicizzato con successo!")
+                # Normalizzazione Colonne
+                tmp_stats.columns = tmp_stats.columns.astype(str).str.strip().str.lower()
+                rename_dict = {
+                    'id': 'Id', 'nome': 'Nome', 'squadra': 'Squadra', 
+                    'pg': 'Pv', 'pv': 'Pv', 'presenze': 'Pv',
+                    'mv': 'Mv', 'media voto': 'Mv',
+                    'fm': 'Fm', 'fantamedia': 'Fm',
+                    'gf': 'Gf', 'gol fatti': 'Gf',
+                    'ass': 'Ass', 'assist': 'Ass',
+                    'amm': 'Amm', 'ammonizioni': 'Amm',
+                    'esp': 'Esp', 'espulsioni': 'Esp'
+                }
+                tmp_stats.rename(columns=rename_dict, inplace=True)
+                
+                if 'Nome' in tmp_stats.columns:
+                    tmp_stats['Nome_Norm'] = tmp_stats['Nome'].apply(normalize_str)
+                    STATS_CACHE = tmp_stats
+                    print(f"✅ File {stats_file} caricato, normalizzato e indicizzato con successo!")
+                else:
+                    print(f"⚠️ Errore: Colonna 'Nome' non trovata in {stats_file}")
+
             except Exception as e: print(f"⚠️ Errore lettura {stats_file}: {e}")
 
     return DATA_CACHE
@@ -176,7 +211,6 @@ def load_data(force_reload=False):
 # Caricamento iniziale e avvio Pianificatore
 load_data()
 
-# Pianificazione Auto-Download (Ogni notte alle 04:00 AM)
 try:
     scheduler = BackgroundScheduler()
     scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
@@ -192,10 +226,10 @@ def get_session(user_id):
             'budget': 500, 
             'rosa': [], 
             'wishlist': [], 
-            'wishlist_priority': [], # Aggiunto per le priorità
+            'wishlist_priority': [],
             'scartati': [], 
             'compare_p1': None,
-            'compare_p2': None, # Aggiunto per ricordare chi stiamo scambiando
+            'compare_p2': None,
             'lega_budget_iniziale': 500,  
             'lega_partecipanti': 8        
         }
@@ -220,24 +254,27 @@ def get_available_players(df, session):
 
 def find_player_in_stats(nome):
     global STATS_CACHE
-    if STATS_CACHE is None or STATS_CACHE.empty:
+    if STATS_CACHE is None or STATS_CACHE.empty or 'Nome_Norm' not in STATS_CACHE.columns:
         load_data()
-        if STATS_CACHE is None or STATS_CACHE.empty:
+        if STATS_CACHE is None or STATS_CACHE.empty or 'Nome_Norm' not in STATS_CACHE.columns:
             return None
     
     norm_name = normalize_str(nome)
+    
+    # 1. Match Esatto
     match = STATS_CACHE[STATS_CACHE['Nome_Norm'] == norm_name]
     if not match.empty: return match.iloc[0]
         
-    match = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(norm_name, regex=False, na=False)]
-    if not match.empty: return match.iloc[0]
-        
-    match = STATS_CACHE[STATS_CACHE['Nome_Norm'].apply(lambda x: norm_name in x or x in norm_name if isinstance(x, str) else False)]
-    if not match.empty: return match.iloc[0]
-        
-    fw = norm_name.split()[0] if norm_name else ""
-    if len(fw) > 2:
-        match = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(fw, regex=False, na=False)]
+    # 2. Match di prossimità (Difflib) - Previene falsi positivi da string.contains
+    nomi_possibili = STATS_CACHE['Nome_Norm'].tolist()
+    best_matches = difflib.get_close_matches(norm_name, nomi_possibili, n=1, cutoff=0.85)
+    if best_matches:
+        match = STATS_CACHE[STATS_CACHE['Nome_Norm'] == best_matches[0]]
+        if not match.empty: return match.iloc[0]
+            
+    # 3. Contenuto stringa (solo se il nome è sufficientemente lungo)
+    if len(norm_name) > 4:
+        match = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(norm_name, regex=False, na=False)]
         if not match.empty: return match.iloc[0]
             
     return None
@@ -245,27 +282,25 @@ def find_player_in_stats(nome):
 def get_macellaio_info(nome):
     row = find_player_in_stats(nome)
     if row is not None:
-        try:
-            amm = int(row.get('Amm', 0))
-            esp = int(row.get('Esp', 0))
-            pv = int(row.get('Pv', 1))
-            if (amm >= 6 or esp >= 1) and pv > 5:
-                return f"\n🪓 <b>ALLARME MACELLAIO REALE:</b> <code>{amm} Gialli</code> e <code>{esp} Rossi</code> in <code>{pv} presenze</code>!"
-            else:
-                return f"\n🛡 <b>Disciplinato:</b> <code>{amm} Gialli</code> e <code>{esp} Rossi</code> in <code>{pv} presenze</code>."
-        except Exception: pass
+        amm = safe_int(row.get('Amm'))
+        esp = safe_int(row.get('Esp'))
+        pv = safe_int(row.get('Pv', 1))
+        if (amm >= 6 or esp >= 1) and pv > 5:
+            return f"\n🪓 <b>ALLARME MACELLAIO REALE:</b> <code>{amm} Gialli</code> e <code>{esp} Rossi</code> in <code>{pv} presenze</code>!"
+        else:
+            return f"\n🛡 <b>Disciplinato:</b> <code>{amm} Gialli</code> e <code>{esp} Rossi</code> in <code>{pv} presenze</code>."
     return ""
 
 def get_storico_excel_o_web(nome, squadra=""):
     row = find_player_in_stats(nome)
     if row is not None:
-        pv = row.get('Pv', 0)
-        mv = row.get('Mv', 0.0)
-        fm = row.get('Fm', 0.0)
-        gf = row.get('Gf', 0)
-        ass = row.get('Ass', 0)
-        amm = row.get('Amm', 0)
-        esp = row.get('Esp', 0)
+        pv = safe_int(row.get('Pv'))
+        mv = safe_float(row.get('Mv'))
+        fm = safe_float(row.get('Fm'))
+        gf = safe_int(row.get('Gf'))
+        ass = safe_int(row.get('Ass'))
+        amm = safe_int(row.get('Amm'))
+        esp = safe_int(row.get('Esp'))
         
         return (
             f"📊 <b>STORICO REALE UFFICIALE: {html.escape(nome.upper())}</b>\n"
@@ -380,7 +415,6 @@ def draw_pitch_image(titolari_by_role, schema="3-4-3"):
 # TRADE ANALYZER 3D (AVANZATO) & FORMAZIONE
 # ==========================================
 def check_se_tiratore(nome, squadra):
-    """Funzione di supporto per capire se il giocatore batte i piazzati"""
     for sq, dati in GERARCHIE_RIGORISTI.items():
         if str(sq).strip().lower() == str(squadra).strip().lower():
             if nome in dati.get('rigoristi', []): return "⚽ RIGORISTA"
@@ -397,12 +431,10 @@ def advanced_trade_analyzer_3d(p1, p2, session):
         f"🟢 Ricevi: <code>{n2}</code> ({sq2})"
     )
 
-    # 1. Recupero FVM (Valore di mercato)
-    fvm1 = float(str(p1.get('FVM', 0)).replace(',', '.'))
-    fvm2 = float(str(p2.get('FVM', 0)).replace(',', '.'))
+    fvm1 = safe_float(p1.get('FVM', 0))
+    fvm2 = safe_float(p2.get('FVM', 0))
     delta_fvm = fvm2 - fvm1
 
-    # 2. Recupero Statistiche Storiche e Status
     stats1 = find_player_in_stats(n1)
     stats2 = find_player_in_stats(n2)
 
@@ -411,21 +443,26 @@ def advanced_trade_analyzer_3d(p1, p2, session):
 
     fm1, mv1, pv1, gf1, ass1, amm1, esp1 = 0.0, 0.0, 0, 0, 0, 0, 0
     if stats1 is not None:
-        fm1 = float(str(stats1.get('Fm', 0)).replace(',', '.'))
-        pv1, gf1, ass1 = int(stats1.get('Pv', 0)), int(stats1.get('Gf', 0)), int(stats1.get('Ass', 0))
-        amm1, esp1 = int(stats1.get('Amm', 0)), int(stats1.get('Esp', 0))
+        fm1 = safe_float(stats1.get('Fm'))
+        pv1 = safe_int(stats1.get('Pv'))
+        gf1 = safe_int(stats1.get('Gf'))
+        ass1 = safe_int(stats1.get('Ass'))
+        amm1 = safe_int(stats1.get('Amm'))
+        esp1 = safe_int(stats1.get('Esp'))
 
     fm2, mv2, pv2, gf2, ass2, amm2, esp2 = 0.0, 0.0, 0, 0, 0, 0, 0
     if stats2 is not None:
-        fm2 = float(str(stats2.get('Fm', 0)).replace(',', '.'))
-        pv2, gf2, ass2 = int(stats2.get('Pv', 0)), int(stats2.get('Gf', 0)), int(stats2.get('Ass', 0))
-        amm2, esp2 = int(stats2.get('Amm', 0)), int(stats2.get('Esp', 0))
+        fm2 = safe_float(stats2.get('Fm'))
+        pv2 = safe_int(stats2.get('Pv'))
+        gf2 = safe_int(stats2.get('Gf'))
+        ass2 = safe_int(stats2.get('Ass'))
+        amm2 = safe_int(stats2.get('Amm'))
+        esp2 = safe_int(stats2.get('Esp'))
 
     delta_fm = fm2 - fm1
     delta_bonus = (gf2 + ass2) - (gf1 + ass1)
-    delta_malus = (amm2 + (esp2*3)) - (amm1 + (esp1*3)) # diamo "peso 3" ai rossi
+    delta_malus = (amm2 + (esp2*3)) - (amm1 + (esp1*3))
 
-    # 3. Creazione Testo Confronto Dettagliato
     confronto_txt = "📈 <b>CONFRONTO STATISTICO:</b>\n"
     confronto_txt += f"💰 <b>Valore (FVM):</b> {fvm1} 🆚 {fvm2} " + (f"(✅ +{delta_fvm:.1f})\n" if delta_fvm > 0 else f"(❌ {delta_fvm:.1f})\n" if delta_fvm < 0 else "(=)\n")
     
@@ -438,7 +475,6 @@ def advanced_trade_analyzer_3d(p1, p2, session):
     else:
         confronto_txt += "<i>Dati statistici storici non completi. Si valuta solo il Valore di Mercato.</i>\n"
 
-    # 4. Verdetto dell'Algoritmo Ponderato
     verdetto = "⚖️ <b>VERDETTO PRO:</b>\n"
     if "RIGORISTA" in status_p1 and "RIGORISTA" not in status_p2 and delta_fvm < 10:
         verdetto += "🚨 <b>ATTENZIONE:</b> Stai per cedere un rigorista per uno che non lo è. Fallo solo se ci guadagni tantissimo in altri reparti!"
@@ -453,7 +489,6 @@ def advanced_trade_analyzer_3d(p1, p2, session):
     else:
         verdetto += "🤔 <b>SCAMBIO EQUILIBRATO.</b>\nSiete sulla stessa linea statistica. Accetta se il giocatore proposto migliora il tuo bilanciamento tra i ruoli o incrocia meglio nel calendario."
 
-    # 5. Impatto Rosa Esistente (Ruoli)
     rosa = session.get('rosa', [])
     r1, r2 = p1.get('R', 'C'), p2.get('R', 'C')
     count_r1 = sum(1 for p in rosa if p.get('ruolo') == r1)
@@ -481,10 +516,10 @@ def calcola_formazione_ideale(session, df):
         r = p.get('ruolo', 'C')
         stats = find_player_in_stats(nome)
         
-        mv = float(str(stats.get('Mv', 6.0)).replace(',', '.')) if stats is not None else 6.0
-        fm = float(str(stats.get('Fm', 6.0)).replace(',', '.')) if stats is not None else 6.0
-        pv = int(stats.get('Pv', 0)) if stats is not None else 0
-        amm = int(stats.get('Amm', 0)) if stats is not None else 0
+        mv = safe_float(stats.get('Mv', 6.0)) if stats is not None else 6.0
+        fm = safe_float(stats.get('Fm', 6.0)) if stats is not None else 6.0
+        pv = safe_int(stats.get('Pv', 0)) if stats is not None else 0
+        amm = safe_int(stats.get('Amm', 0)) if stats is not None else 0
         
         power_index = fm + (mv - 6.0) - (amm * 0.05)
         p_obj = {'nome': nome, 'ruolo': r, 'squadra': p.get('squadra', '-'), 'power': power_index, 'mv': mv, 'fm': fm, 'pv': pv, 'amm': amm}
@@ -546,8 +581,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     photo_embed = f'<a href="{html.escape(photo_url)}">&#8203;</a>' if photo_url.startswith('http') else ''
     macellaio_alert = get_macellaio_info(player_name)
     
-    try: fvm_val = float(str(fvm).replace(',', '.'))
-    except ValueError: fvm_val = 0
+    fvm_val = safe_float(fvm)
 
     if fvm_val >= 90: fascia = "🥇 1° Fascia (Top Assoluto)"
     elif fvm_val >= 50: fascia = "🥈 2° Fascia (Semi-Top)"
@@ -574,10 +608,12 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     rischio = "⚪ NON DISPONIBILE"
     if row_stats is not None:
         try:
-            pv, amm = int(row_stats.get('Pv', 0)), int(row_stats.get('Amm', 0))
-            fm = float(str(row_stats.get('Fm', 0)).replace(',', '.'))
-            mv = float(str(row_stats.get('Mv', 0)).replace(',', '.'))
-            gf, ass = int(row_stats.get('Gf', 0)), int(row_stats.get('Ass', 0))
+            pv = safe_int(row_stats.get('Pv'))
+            amm = safe_int(row_stats.get('Amm'))
+            fm = safe_float(row_stats.get('Fm'))
+            mv = safe_float(row_stats.get('Mv'))
+            gf = safe_int(row_stats.get('Gf'))
+            ass = safe_int(row_stats.get('Ass'))
             
             if pv < 15 or amm > 8: rischio = "🔴 ALTO"
             elif pv < 25 or amm > 4: rischio = "🟡 MEDIO"
@@ -620,7 +656,6 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     markup.add(InlineKeyboardButton("📊 Storico Reale", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica Web", callback_data=f"cl_{player_name}"))
     markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
-    # GESTIONE PULSANTI WISHLIST E PRIORITA'
     if in_wl:
         btn_wl = InlineKeyboardButton("❌ Rimuovi WL", callback_data=f"wl_toggle_{player_name}")
         btn_prio = InlineKeyboardButton("❌ Togli Priorità" if in_prio else "🌟 Segna Priorità", callback_data=f"wl_prio_{player_name}")
@@ -734,7 +769,7 @@ def process_buy_price(message, player_name, user_id):
     df = load_data()
     row = df[df['Nome'] == player_name].iloc[0]
     ruolo, squadra = row.get('R', 'C'), row.get('Squadra', '-')
-    fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+    fvm_raw = safe_float(row.get('FVM'))
     
     session['rosa'].append({
         'nome': player_name, 'prezzo': costo, 'ruolo': ruolo, 'squadra': squadra, 
@@ -787,7 +822,7 @@ def process_whatif_price(message, player_name, user_id):
     
     row = df[df['Nome'] == player_name].iloc[0]
     ruolo = row.get('R', 'A')
-    fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+    fvm_raw = safe_float(row.get('FVM'))
 
     lega_bud = session.get('lega_budget_iniziale', 500)
     lega_part = session.get('lega_partecipanti', 8)
@@ -906,13 +941,13 @@ def modalita_cecchino(message):
         
         session['rosa'].append({
             'nome': player_name, 'prezzo': costo, 'ruolo': row.get('R', 'C'), 'squadra': row.get('Squadra', '-'), 
-            'fvm': pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+            'fvm': safe_float(row.get('FVM'))
         })
         session['budget'] -= costo
         
         lega_bud = session.get('lega_budget_iniziale', 500)
         lega_part = session.get('lega_partecipanti', 8)
-        fvm_raw = pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
+        fvm_raw = safe_float(row.get('FVM'))
         base_price = fvm_raw * (lega_bud / 1000.0)
         f_part = 1 + ((lega_part - 8) * 0.025)
         fair_price = max(1, int(base_price * f_part))
@@ -1063,7 +1098,7 @@ def handle_callbacks(call):
         for p in rosa:
             stats = find_player_in_stats(p['nome'])
             if stats is not None:
-                fm = float(str(stats.get('Fm', 6.0)).replace(',', '.'))
+                fm = safe_float(stats.get('Fm'))
                 if fm >= 6.8: hot_players.append(f"🔥 <b>{p['nome']}</b> (FM: <code>{fm}</code>)")
         
         testo += "\n".join(hot_players) if hot_players else "<i>Nessun giocatore in stato di grazia al momento.</i>"
@@ -1091,7 +1126,7 @@ def handle_callbacks(call):
 
     elif call.data == "pro_stakanov":
         avail = get_available_players(df, session)
-        staka = avail[(avail['R'].isin(['D', 'C'])) & (avail['FVM'] <= 6)].head(20)
+        staka = avail[(avail['R'].isin(['D', 'C'])) & (avail['FVM'].apply(safe_float) <= 6)].head(20)
         markup = InlineKeyboardMarkup(row_width=1)
         count = 0
         for _, row in staka.iterrows():
@@ -1107,7 +1142,7 @@ def handle_callbacks(call):
         squadre_abbordabili = ['Empoli', 'Lecce', 'Parma', 'Verona', 'Cagliari', 'Venezia', 'Como', 'Monza', 'Frosinone', 'Sassuolo']
         squadre_medio_alte = ['Fiorentina', 'Bologna', 'Torino', 'Lazio', 'Atalanta', 'Genoa', 'Udinese']
         
-        d_liberi = avail[(avail['R'] == 'D') & (avail['FVM'] >= 1) & (avail['FVM'] <= 20)].copy()
+        d_liberi = avail[(avail['R'] == 'D') & (avail['FVM'].apply(safe_float) >= 1) & (avail['FVM'].apply(safe_float) <= 20)].copy()
         trio_tattico = []
         
         d_abb1 = d_liberi[d_liberi['Squadra'].isin(squadre_abbordabili)].sort_values(by='FVM', ascending=False)
@@ -1161,21 +1196,19 @@ def handle_callbacks(call):
                 nome = row['Nome']
                 st = find_player_in_stats(nome)
                 if st is not None:
-                    try:
-                        pv = int(pd.to_numeric(st.get('Pv', 0), errors='coerce'))
-                        mv = float(str(st.get('Mv', 0)).replace(',', '.'))
-                        fm = float(str(st.get('Fm', 0)).replace(',', '.'))
-                        
-                        if pv >= 1 or fm > 0:
-                            spiccioli_top.append({
-                                'nome': nome,
-                                'ruolo': row['R'],
-                                'squadra': row['Squadra'],
-                                'fvm': row.get('FVM', 1),
-                                'fm': fm if fm > 0 else mv,
-                                'pv': pv
-                            })
-                    except Exception: pass
+                    pv = safe_int(st.get('Pv'))
+                    mv = safe_float(st.get('Mv'))
+                    fm = safe_float(st.get('Fm'))
+                    
+                    if pv >= 1 or fm > 0:
+                        spiccioli_top.append({
+                            'nome': nome,
+                            'ruolo': row['R'],
+                            'squadra': row['Squadra'],
+                            'fvm': row.get('FVM', 1),
+                            'fm': fm if fm > 0 else mv,
+                            'pv': pv
+                        })
 
         markup = InlineKeyboardMarkup(row_width=1)
         if spiccioli_top:
@@ -1220,14 +1253,14 @@ def handle_callbacks(call):
     elif call.data.startswith("sd_"):
         p_name = call.data.replace("sd_", "")
         row = df[df['Nome'] == p_name].iloc[0]
-        ruolo, fvm = row['R'], float(row.get('FVM', 0))
+        ruolo, fvm = row['R'], safe_float(row.get('FVM'))
         avail = get_available_players(df, session)
         
         try: bot.delete_message(chat_id, call.message.message_id)
         except Exception: pass
 
         same_role = avail[(avail['R'] == ruolo) & (avail['Nome'] != p_name)].copy()
-        same_role['diff_fvm'] = abs(same_role['FVM'] - fvm)
+        same_role['diff_fvm'] = abs(same_role['FVM'].apply(safe_float) - fvm)
         cloni = same_role.sort_values(by=['diff_fvm', 'FVM'], ascending=[True, False]).head(4)
         
         markup = InlineKeyboardMarkup(row_width=1)
@@ -1246,16 +1279,16 @@ def handle_callbacks(call):
         if STATS_CACHE is not None and not STATS_CACHE.empty:
             for _, row in avail[avail['R'] == 'D'].iterrows():
                 nome = row['Nome']
-                fvm = row.get('FVM', 0)
+                fvm = safe_float(row.get('FVM'))
                 stats = find_player_in_stats(nome)
                 if stats is not None:
-                    try:
-                        mv = float(str(stats.get('Mv', 0)).replace(',', '.'))
-                        pv, amm = int(stats.get('Pv', 0)), int(stats.get('Amm', 0))
-                        if pv >= 15 and mv >= 6.00 and fvm <= 35:
-                            indice_pulizia = mv - (amm * 0.02) 
-                            mod_players.append({'nome': nome, 'fvm': fvm, 'mv': mv, 'amm': amm, 'pv': pv, 'indice': indice_pulizia, 'squadra': row.get('Squadra', '-')})
-                    except Exception: pass
+                    mv = safe_float(stats.get('Mv'))
+                    pv = safe_int(stats.get('Pv'))
+                    amm = safe_int(stats.get('Amm'))
+                    
+                    if pv >= 15 and mv >= 6.00 and fvm <= 35:
+                        indice_pulizia = mv - (amm * 0.02) 
+                        mod_players.append({'nome': nome, 'fvm': fvm, 'mv': mv, 'amm': amm, 'pv': pv, 'indice': indice_pulizia, 'squadra': row.get('Squadra', '-')})
         
         markup = InlineKeyboardMarkup(row_width=1)
         if mod_players:
@@ -1270,7 +1303,7 @@ def handle_callbacks(call):
             if nav_buttons: markup.row(*nav_buttons)
             testo = f"🛡️ <b>MODIFICATORE 6.5</b> (Pag. {page})"
         else:
-            mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 5) & (avail['FVM'] <= 35)].sort_values(by='FVM', ascending=False)
+            mods = avail[(avail['R'] == 'D') & (avail['FVM'].apply(safe_float) >= 5) & (avail['FVM'].apply(safe_float) <= 35)].sort_values(by='FVM', ascending=False)
             start_idx, end_idx = (page - 1) * per_page, page * per_page
             for _, row in mods.iloc[start_idx:end_idx].iterrows():
                 markup.add(InlineKeyboardButton(f"🛡️ {row['Nome']} (FVM: {row['FVM']})", callback_data=f"sq_pl_{row['Nome']}"))
@@ -1343,7 +1376,7 @@ def handle_callbacks(call):
         r, page = (raw_data.split("_page_")[0], int(raw_data.split("_page_")[1])) if "_page_" in raw_data else (raw_data, 1)
         per_page = 15
         avail = get_available_players(df, session)
-        gemme = avail[(avail['R'] == r) & (avail['FVM'] <= 20) & (avail['FVM'] >= 6)].sort_values(by='FVM', ascending=False)
+        gemme = avail[(avail['R'] == r) & (avail['FVM'].apply(safe_float) <= 20) & (avail['FVM'].apply(safe_float) >= 6)].sort_values(by='FVM', ascending=False)
         
         start_idx, end_idx = (page - 1) * per_page, page * per_page
         markup = InlineKeyboardMarkup(row_width=1)
@@ -1368,7 +1401,7 @@ def handle_callbacks(call):
         r, page = (raw_data.split("_page_")[0], int(raw_data.split("_page_")[1])) if "_page_" in raw_data else (raw_data, 1)
         per_page = 15
         avail = get_available_players(df, session)
-        panic_list = avail[(avail['R'] == r) & (avail['FVM'] <= 5) & (avail['FVM'] >= 1)].sort_values(by='FVM', ascending=False)
+        panic_list = avail[(avail['R'] == r) & (avail['FVM'].apply(safe_float) <= 5) & (avail['FVM'].apply(safe_float) >= 1)].sort_values(by='FVM', ascending=False)
         
         start_idx, end_idx = (page - 1) * per_page, page * per_page
         markup = InlineKeyboardMarkup(row_width=1)
@@ -1422,7 +1455,7 @@ def handle_callbacks(call):
     elif call.data.startswith("std2_pl_"):
         p2_nome = call.data.replace("std2_pl_", "")
         p1, p2 = session.get('compare_p1'), df[df['Nome'] == p2_nome].iloc[0].to_dict()
-        session['compare_p2'] = p2  # Salviamo il p2 in memoria per aggiornare i bottoni della WL
+        session['compare_p2'] = p2  
         
         text = advanced_trade_analyzer_3d(p1, p2, session)
         
@@ -1485,7 +1518,6 @@ def handle_callbacks(call):
         safe_answer_callback(call.id, text=f"🚫 {p_name} segnato come già preso!", show_alert=False)
         send_dashboard(chat_id, user_id, call.message.message_id)
 
-    # NUOVA GESTIONE WISHLIST E PRIORITA' ==========================
     elif call.data.startswith("wl_toggle_"):
         player_name = call.data.replace("wl_toggle_", "")
         if 'wishlist' not in session: session['wishlist'] = []
@@ -1542,7 +1574,7 @@ def handle_callbacks(call):
             if not row.empty and row.iloc[0]['R'] == r:
                 players_in_role.append((nome, row.iloc[0].get('FVM', 0)))
         
-        players_in_role.sort(key=lambda x: (1 if x[0] in priority_wl else 0, pd.to_numeric(x[1], errors='coerce')), reverse=True)
+        players_in_role.sort(key=lambda x: (1 if x[0] in priority_wl else 0, safe_float(x[1])), reverse=True)
         
         markup = InlineKeyboardMarkup(row_width=1)
         for nome, fvm in players_in_role:
@@ -1551,7 +1583,6 @@ def handle_callbacks(call):
             
         markup.add(InlineKeyboardButton("🔙 Indietro (Reparti)", callback_data="menu_wishlist"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(f"⭐ <b>WISHLIST - {ROLE_ICONS[r]} {r}</b>\n<i>Le 🌟 indicano i tuoi obiettivi prioritari.</i>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
-    # =============================================================
 
 if __name__ == '__main__':
     try: bot.remove_webhook()
