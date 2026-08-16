@@ -45,10 +45,8 @@ if not TOKEN:
 
 bot = telebot.TeleBot(TOKEN)
 
-# URL UFFICIALE DOWNLOAD LISTONE FANTACALCIO (Excel/CSV)
-LISTONE_URL = "https://raw.githubusercontent.com/imwade021/fanta-data-bridge/main/Lista-FantaAsta-Fantacalcio.csv"
-
-
+# URL UFFICIALE DOWNLOAD LISTONE MASTER GENERATO DALL'ENGINE (GitHub)
+LISTONE_URL = "https://raw.githubusercontent.com/imwade021/fanta-master-ai/main/Lista_Finale_Master.csv"
 
 ROLE_ICONS = {'P': '🧤', 'D': '🛡️', 'C': '⚙️', 'A': '🎯'}
 TEAM_COLORS = {
@@ -133,14 +131,14 @@ DATA_CACHE = None
 STATS_CACHE = None
 
 def auto_download_listone():
-    print("🔄 Avvio download automatico del Listone...")
+    print("🔄 Avvio download automatico del Listone Master...")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
         res = requests.get(LISTONE_URL, headers=headers, timeout=15)
         if res.status_code == 200:
-            with open("Lista-FantaAsta-Fantacalcio.csv", "wb") as f:
+            with open("Lista_Finale_Master.csv", "wb") as f:
                 f.write(res.content)
-            print("✅ Listone aggiornato con successo da remoto!")
+            print("✅ Listone Master aggiornato con successo da remoto!")
             load_data(force_reload=True)
             return True
         else:
@@ -153,16 +151,30 @@ def auto_download_listone():
 def load_data(force_reload=False):
     global DATA_CACHE, STATS_CACHE
     if DATA_CACHE is None or force_reload:
-        if os.path.exists("Lista-FantaAsta-Fantacalcio.csv"):
+        file_target = "Lista_Finale_Master.csv" if os.path.exists("Lista_Finale_Master.csv") else ("Lista-FantaAsta-Fantacalcio.csv" if os.path.exists("Lista-FantaAsta-Fantacalcio.csv") else None)
+        if file_target:
             try:
-                DATA_CACHE = pd.read_csv("Lista-FantaAsta-Fantacalcio.csv", header=None)
-                DATA_CACHE.columns = [
-                    'Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 
-                    'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 
-                    'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
-                ]
+                # Lettura adattiva del CSV (sia con separatore virgola che punto e virgola)
+                try:
+                    DATA_CACHE = pd.read_csv(file_target, sep=';')
+                    if len(DATA_CACHE.columns) < 3:
+                        DATA_CACHE = pd.read_csv(file_target, sep=',')
+                except Exception:
+                    DATA_CACHE = pd.read_csv(file_target, header=None)
+                    DATA_CACHE.columns = [
+                        'Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 
+                        'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 
+                        'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
+                    ]
+
+                # Normalizzazione colonne chiave
+                if 'Ruolo' in DATA_CACHE.columns and 'R' not in DATA_CACHE.columns:
+                    DATA_CACHE.rename(columns={'Ruolo': 'R'}, inplace=True)
+                if 'Valore_Base_Perc' in DATA_CACHE.columns and 'FVM' not in DATA_CACHE.columns:
+                    DATA_CACHE['FVM'] = DATA_CACHE['Valore_Base_Perc']
+
                 DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE['FVM'], errors='coerce').fillna(0)
-                print("✅ File CSV Listone caricato in memoria!")
+                print(f"✅ File {file_target} caricato in memoria!")
             except Exception as e: print(f"⚠️ Errore lettura CSV Listone: {e}")
 
     if STATS_CACHE is None or force_reload:
@@ -676,7 +688,7 @@ def modalita_cecchino(message):
             titolo = f"🎯 <b>CECCHINO A BERSAGLIO!</b>\n✅ Acquistato <b>{html.escape(p_name.upper())}</b> a <code>{costo} cr.</code>"
         else: titolo = f"🧪 <b>SIMULAZIONE CECCHINO: {html.escape(p_name.upper())} a {costo} cr.</b>\n<i>(Non salvato)</i>"
         
-        fair_price = max(1, int((pd.to_numeric(str(row.get('FVM', 0)).replace(',','.'), errors='coerce') * (session.get('lega_budget_iniziale', 500) / 1000.0)) * (1 + ((session.get('lega_partecipanti', 8) - 8) * 0.025))))
+        fair_price = max(1, int((pd.to_numeric(str(row.get('FVM', 0)).replace(',',','.'), errors='coerce') * (session.get('lega_budget_iniziale', 500) / 1000.0)) * (1 + ((session.get('lega_partecipanti', 8) - 8) * 0.025))))
         giudizio = f"🔥 <b>AFFARE!</b>" if costo <= fair_price * 0.75 else f"✅ <b>OTTIMO!</b>" if costo <= fair_price * 0.95 else f"⚖️ <b>GIUSTO.</b>" if costo <= fair_price * 1.15 else f"🚨 <b>SALASSO!</b>"
         
         bot.reply_to(message, f"{titolo}\n\n📊 <b>Valutazione:</b>\n{giudizio}", parse_mode="HTML")
@@ -708,7 +720,7 @@ def handle_document(message):
             load_data(force_reload=True)
             bot.reply_to(message, "✅ <b>STATISTICHE SINCRONIZZATE!</b>", parse_mode="HTML")
         else:
-            with open("Lista-FantaAsta-Fantacalcio.csv" if fname.endswith('.csv') else "listone.xlsx", 'wb') as f: f.write(f_data)
+            with open("Lista_Finale_Master.csv" if fname.endswith('.csv') else "listone.xlsx", 'wb') as f: f.write(f_data)
             load_data(force_reload=True)
             bot.reply_to(message, "✅ <b>DATABASE LISTONE AGGIORNATO!</b>", parse_mode="HTML")
     except Exception as e: bot.send_message(message.chat.id, f"❌ Errore caricamento: {str(e)}")
@@ -808,7 +820,9 @@ def handle_callbacks(call):
         bot.edit_message_text(t, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data == "menu_sistema": bot.edit_message_text("⚙️ <b>SISTEMA</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=system_menu_keyboard())
-    elif call.data == "reload_excel": bot.send_message(chat_id, "⚡ <b>Dati sincronizzati!</b>", parse_mode="HTML")
+    elif call.data == "reload_excel": 
+        load_data(force_reload=True)
+        bot.send_message(chat_id, "⚡ <b>Dati sincronizzati!</b>", parse_mode="HTML")
     elif call.data == "reset_confirm":
         user_sessions[user_id] = {'budget': session.get('lega_budget_iniziale', 500), 'rosa': [], 'wishlist': session.get('wishlist', []), 'scartati': [], 'compare_p1': None, 'lega_budget_iniziale': session.get('lega_budget_iniziale', 500), 'lega_partecipanti': session.get('lega_partecipanti', 8), 'modificatore_attivo': session.get('modificatore_attivo', False), 'fase_asta': None}
         send_dashboard(chat_id, user_id, call.message.message_id)
