@@ -187,9 +187,23 @@ def load_data(force_reload=False):
                 if stats_file.endswith('.csv'):
                     STATS_CACHE = pd.read_csv(stats_file)
                 else:
-                    STATS_CACHE = pd.read_excel(stats_file, header=1)
+                    # RILEVAMENTO DINAMICO HEADER EXCEL PER EVITARE COLONNE SFASATE
+                    try:
+                        temp_df = pd.read_excel(stats_file, header=0)
+                        cols = [str(c).upper() for c in temp_df.columns]
+                        if 'NOME' in cols or any('NOME' in str(c) for c in cols):
+                            STATS_CACHE = temp_df
+                        else:
+                            STATS_CACHE = pd.read_excel(stats_file, header=1)
+                    except Exception:
+                        STATS_CACHE = pd.read_excel(stats_file, header=1)
                 
-                STATS_CACHE['Nome_Norm'] = STATS_CACHE['Nome'].apply(normalize_str)
+                # Normalizza i nomi delle colonne
+                STATS_CACHE.columns = [str(c).strip() for c in STATS_CACHE.columns]
+                col_nome = [c for c in STATS_CACHE.columns if 'nome' in c.lower()]
+                if col_nome:
+                    STATS_CACHE['Nome_Norm'] = STATS_CACHE[col_nome[0]].apply(normalize_str)
+                    
                 print(f"✅ File {stats_file} caricato e indicizzato con successo!")
             except Exception as e: print(f"⚠️ Errore lettura {stats_file}: {e}")
 
@@ -261,10 +275,12 @@ def find_player_in_stats(nome):
             
     if not matches.empty:
         df_m = matches.copy()
-        # FIX DEFINITIVO NICO PAZ: Ordina sempre per presenze (Pv) decrescenti!
-        if 'Pv' in df_m.columns:
-            df_m['Pv_Num'] = pd.to_numeric(df_m['Pv'], errors='coerce').fillna(0)
-            df_m = df_m.sort_values(by='Pv_Num', ascending=False)
+        # FIX DEFINITIVO: Ordina sempre per presenze (Pv) decrescenti!
+        for col_p in ['Pv', 'Pres', 'Pg', 'Partite']:
+            if col_p in df_m.columns:
+                df_m['Pv_Num'] = pd.to_numeric(df_m[col_p], errors='coerce').fillna(0)
+                df_m = df_m.sort_values(by='Pv_Num', ascending=False)
+                break
         return df_m.iloc[0]
             
     return None
@@ -284,8 +300,13 @@ def get_macellaio_info(nome):
 def get_storico_excel_o_web(nome, squadra=""):
     row = find_player_in_stats(nome)
     if row is not None:
-        pv, mv, fm = row.get('Pv', 0), row.get('Mv', 0.0), row.get('Fm', 0.0)
-        gf, ass, amm, esp = row.get('Gf', 0), row.get('Ass', 0), row.get('Amm', 0), row.get('Esp', 0)
+        pv = row.get('Pv', row.get('Pres', 0))
+        mv = row.get('Mv', row.get('MV', 0.0))
+        fm = row.get('Fm', row.get('FM', 0.0))
+        gf = row.get('Gf', row.get('Gol', 0))
+        ass = row.get('Ass', row.get('Assist', 0))
+        amm = row.get('Amm', 0)
+        
         return (
             f"📊 <b>STORICO REALE: {html.escape(nome.upper())}</b>\n───────────────────────────\n"
             f"🏟 Pres: <code>{pv}</code> │ 📈 MV: <code>{mv}</code> │ FM: <code>{fm}</code>\n"
@@ -449,7 +470,6 @@ def send_asta_dashboard(chat_id, user_id, message_id=None):
     for i, (_, r) in enumerate(giocatori.head(5).iterrows(), 1):
         fvm_clean = str(r.get('FVM', 0)).replace(',', '.')
         fvm_num = pd.to_numeric(fvm_clean, errors='coerce') or 0
-        # Scalatura realistica Fair Price Asta
         max_bid = max(1, int(fvm_num * 0.45 * (b_iniziale / 500.0)))
         top_str += f"{i}. <b>{r['Nome']}</b> ({r['Squadra']}) ─ Max: <code>{max_bid} cr.</code>\n"
     
