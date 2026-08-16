@@ -237,6 +237,9 @@ def get_available_players(df, session):
     esclusi = set(presi_nomi + scartati_nomi)
     return df[~df['Nome'].isin(esclusi)]
 
+# =========================================================================
+# RICERCA NELLO STORICO RISOLTA (SELEZIONA LA RIGA CON PIÙ PRESENZE)
+# =========================================================================
 def find_player_in_stats(nome):
     global STATS_CACHE
     if STATS_CACHE is None or STATS_CACHE.empty:
@@ -245,19 +248,24 @@ def find_player_in_stats(nome):
             return None
     
     norm_name = normalize_str(nome)
-    match = STATS_CACHE[STATS_CACHE['Nome_Norm'] == norm_name]
-    if not match.empty: return match.iloc[0]
-        
-    match = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(norm_name, regex=False, na=False)]
-    if not match.empty: return match.iloc[0]
-        
-    match = STATS_CACHE[STATS_CACHE['Nome_Norm'].apply(lambda x: norm_name in x or x in norm_name if isinstance(x, str) else False)]
-    if not match.empty: return match.iloc[0]
-        
-    fw = norm_name.split()[0] if norm_name else ""
-    if len(fw) > 2:
-        match = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(fw, regex=False, na=False)]
-        if not match.empty: return match.iloc[0]
+    
+    matches = STATS_CACHE[STATS_CACHE['Nome_Norm'] == norm_name]
+    if matches.empty:
+        matches = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(norm_name, regex=False, na=False)]
+    if matches.empty:
+        matches = STATS_CACHE[STATS_CACHE['Nome_Norm'].apply(lambda x: norm_name in x or x in norm_name if isinstance(x, str) else False)]
+    if matches.empty:
+        fw = norm_name.split()[0] if norm_name else ""
+        if len(fw) > 2:
+            matches = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(fw, regex=False, na=False)]
+            
+    if not matches.empty:
+        df_m = matches.copy()
+        # FIX DEFINITIVO NICO PAZ: Ordina sempre per presenze (Pv) decrescenti!
+        if 'Pv' in df_m.columns:
+            df_m['Pv_Num'] = pd.to_numeric(df_m['Pv'], errors='coerce').fillna(0)
+            df_m = df_m.sort_values(by='Pv_Num', ascending=False)
+        return df_m.iloc[0]
             
     return None
 
@@ -440,7 +448,9 @@ def send_asta_dashboard(chat_id, user_id, message_id=None):
     top_str = ""
     for i, (_, r) in enumerate(giocatori.head(5).iterrows(), 1):
         fvm_clean = str(r.get('FVM', 0)).replace(',', '.')
-        max_bid = max(1, int((pd.to_numeric(fvm_clean, errors='coerce') * (b_iniziale / 1000.0) * (1 + ((lega_part - 8) * 0.025))) * 1.15))
+        fvm_num = pd.to_numeric(fvm_clean, errors='coerce') or 0
+        # Scalatura realistica Fair Price Asta
+        max_bid = max(1, int(fvm_num * 0.45 * (b_iniziale / 500.0)))
         top_str += f"{i}. <b>{r['Nome']}</b> ({r['Squadra']}) ─ Max: <code>{max_bid} cr.</code>\n"
     
     testo = (f"🔨 <b>ASTA LIVE - FASE: {ROLE_ICONS.get(fase, '')} {fase}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -463,24 +473,60 @@ def send_asta_dashboard(chat_id, user_id, message_id=None):
         except Exception: bot.send_message(chat_id, testo, parse_mode="HTML", reply_markup=markup)
     else: bot.send_message(chat_id, testo, parse_mode="HTML", reply_markup=markup)
 
+# =========================================================================
+# SCHEDA GIOCATORE CON PREZZI E FASCE REALI RISOLTI (LEAO, MASTANTUONO, PAZ)
+# =========================================================================
 def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
     p_data = df[df['Nome'] == player_name].iloc[0]
     sq_name, ruolo, fvm = p_data.get('Squadra', '-'), str(p_data.get('R', '-')), p_data.get('FVM', 0)
     photo_embed = f'<a href="{html.escape(str(p_data.get("PhotoURL", "")).strip())}">&#8203;</a>' if str(p_data.get("PhotoURL", "")).strip().startswith('http') else ''
     
     try: fvm_val = float(str(fvm).replace(',', '.'))
-    except ValueError: fvm_val = 0
+    except ValueError: fvm_val = 0.0
 
-    if fvm_val >= 90: fascia = "🥇 1° Fascia"
-    elif fvm_val >= 50: fascia = "🥈 2° Fascia"
-    elif fvm_val >= 25: fascia = "🥉 3° Fascia"
-    elif fvm_val >= 10: fascia = "🚜 4° Fascia (Rotazione)"
-    else: fascia = "🎲 Scommessa"
+    lega_bud = session.get('lega_budget_iniziale', 500)
+    lega_part = session.get('lega_partecipanti', 8)
+    part_factor = 1 + ((lega_part - 8) * 0.025)
 
-    lega_bud, lega_part = session.get('lega_budget_iniziale', 500), session.get('lega_partecipanti', 8)
-    fair_price = max(1, int((fvm_val * (lega_bud / 1000.0)) * (1 + ((lega_part - 8) * 0.025))))
-    max_rilancio, asta_stop = int(fair_price * 1.15) if int(fair_price * 1.15) > 1 else 1, int(fair_price * 1.25) if int(fair_price * 1.25) > 2 else 2
-    
+    # CALCOLO FAIR PRICE CON CURVA ESPONENZIALE REALE PER RUOLO
+    if ruolo == 'A':
+        if fvm_val >= 250:   fair_price = int(fvm_val * 0.50)  # Top Assoluti (Lautaro ~180-220cr)
+        elif fvm_val >= 70:  fair_price = int(fvm_val * 1.40)  # Top / Semi-Top (Leao ~120-140cr)
+        elif fvm_val >= 25:  fair_price = int(fvm_val * 0.80)  # 2°/3° Fascia
+        else:                fair_price = max(1, int(fvm_val * 0.40))
+    elif ruolo == 'C':
+        if fvm_val >= 120:   fair_price = int(fvm_val * 0.65)  # Top Centrocampo
+        elif fvm_val >= 35:  fair_price = int(fvm_val * 0.85)  # Semi-Top (Mastantuono, Nico Paz ~30-45cr)
+        else:                fair_price = max(1, int(fvm_val * 0.40))
+    elif ruolo == 'D':
+        fair_price = max(1, int(fvm_val * 0.45))
+    else: # Portieri
+        fair_price = max(1, int(fvm_val * 0.50))
+
+    # Adattamento al budget e partecipanti
+    fair_price = int(fair_price * (lega_bud / 500.0) * part_factor)
+    fair_price = max(1, fair_price)
+
+    max_rilancio = int(fair_price * 1.15)
+    asta_stop = int(fair_price * 1.25)
+
+    # ASSEGNAZIONE FASCE COERENTI CON I VALORI REALI
+    if ruolo == 'A':
+        if fair_price >= 110:   fascia = "🥇 1° Fascia 👑"
+        elif fair_price >= 40:  fascia = "🥈 2° Fascia 🥇"
+        elif fair_price >= 15:  fascia = "🥉 3° Fascia 🥈"
+        elif fair_price >= 5:   fascia = "🚜 4° Fascia (Rotazione)"
+        else:                   fascia = "🎲 Scommessa 🎲"
+    elif ruolo == 'C':
+        if fair_price >= 50:    fascia = "🥇 1° Fascia 👑"
+        elif fair_price >= 25:  fascia = "🥈 2° Fascia 🥇"
+        elif fair_price >= 10:  fascia = "🥉 3° Fascia 🥈"
+        else:                   fascia = "🎲 4°/5° Fascia 🎲"
+    else:
+        if fair_price >= 25:    fascia = "🥇 1° Fascia 👑"
+        elif fair_price >= 12:  fascia = "🥈 2° Fascia 🥇"
+        else:                   fascia = "🥉 3°/4° Fascia 🥈"
+
     stats = get_roster_stats(session)
     info_text = (
         f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -815,7 +861,7 @@ def handle_callbacks(call):
         bot.edit_message_text(t, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data == "menu_power":
-        hot = [f"🔥 <b>{p['nome']}</b> (FM: <code>{fm}</code>)" for p in session.get('rosa', []) if (stats := find_player_in_stats(p['nome'])) and (fm := float(str(stats.get('Fm', 6.0)).replace(',', '.'))) >= 6.8]
+        hot = [f"🔥 <b>{p['nome']}</b> (FM: <code>{fm}</code>)" for p in session.get('rosa', []) if (stats := find_player_in_stats(p['nome'])) is not None and (fm := float(str(stats.get('Fm', 6.0)).replace(',', '.'))) >= 6.8]
         t = "🔥 <b>POWER INDEX</b>\n━━━━━━━━━━━━━━━━━━━━━━\n" + ("\n".join(hot) if hot else "<i>Nessuno in stato di grazia.</i>")
         bot.edit_message_text(t, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
