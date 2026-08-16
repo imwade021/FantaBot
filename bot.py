@@ -477,6 +477,9 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         elif ruolo == 'D':    fair_price = max(1, int(fvm_val * 0.45))
         else:                 fair_price = max(1, int(fvm_val * 0.50))
 
+    # Il Prezzo del Master e' tarato su 8 squadre / 500 crediti: qui si adatta alla lega
+    fair_price = max(1, int(fair_price * (lega_bud / 500.0) * part_factor))
+
     max_rilancio = int(fair_price * 1.15)
     asta_stop = int(fair_price * 1.25)
 
