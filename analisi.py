@@ -380,3 +380,51 @@ def griglia_difensiva(df, limite_squadre=6, per_squadra=2):
     selezione = (lavoro.sort_values(['_pv', '_fm'], ascending=False)
                  .groupby('Squadra').head(per_squadra))
     return selezione.sort_values(['_fm', '_pv'], ascending=False)
+
+
+def candidati_modificatore(df, limite=15, presenze_minime=20):
+    """
+    Difensori utili al modificatore di difesa: conta il VOTO PURO (Mv), non la
+    fantamedia, perche' il modificatore si calcola sui voti. Pesano anche le
+    presenze e il fatto di giocare in una squadra che subisce pochi gol.
+    """
+    if df is None or df.empty:
+        return df
+    lavoro = df[df['R'].astype(str).str.upper() == 'D'].copy()
+    if lavoro.empty:
+        return lavoro
+
+    lavoro['_pv'] = _colonna(lavoro, 'Pv')
+    lavoro['_mv'] = _colonna(lavoro, 'Mv')
+    lavoro = lavoro[(lavoro['_pv'] >= presenze_minime) & (lavoro['_mv'] > 0)]
+    if lavoro.empty:
+        return lavoro
+
+    difese = {s: d['gol_subiti_partita'] for s, d in statistiche_squadre(df).items()
+              if d['gol_subiti_partita'] is not None}
+    media_gol_subiti = sum(difese.values()) / len(difese) if difese else 1.3
+
+    riferimento = BASELINE_FALLBACK['D'][0]
+
+    def punteggio(riga):
+        mv_pond = _pondera(_num(riga['_mv']), _num(riga['_pv']), riferimento)
+        subiti = difese.get(str(riga['Squadra']), media_gol_subiti)
+        # mezzo punto di bonus per ogni gol subito in meno rispetto alla media
+        return mv_pond + (media_gol_subiti - subiti) * 0.5
+
+    lavoro['_score'] = [round(punteggio(r), 3) for _, r in lavoro.iterrows()]
+    lavoro['_gol_subiti_squadra'] = [round(difese.get(str(r['Squadra']), media_gol_subiti), 2)
+                                     for _, r in lavoro.iterrows()]
+    return lavoro.sort_values('_score', ascending=False).head(limite)
+
+
+def scommesse(df, limite=12):
+    """Poco costosi ma con rendimento sopra la media del ruolo: la fascia 'gemme'."""
+    if df is None or df.empty:
+        return df
+    pezzi = [fascia(df, ruolo, 'gemme') for ruolo in ('P', 'D', 'C', 'A')]
+    pezzi = [p for p in pezzi if p is not None and not p.empty]
+    if not pezzi:
+        return df.iloc[0:0]
+    insieme = pd.concat(pezzi)
+    return migliori_per_resa(insieme, limite=limite)
