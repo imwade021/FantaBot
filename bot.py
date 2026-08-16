@@ -44,52 +44,84 @@ TEAM_COLORS = {
     'Empoli': '🔵⚪', 'Fiorentina': '💜', 'Frosinone': '🟡🔵', 'Genoa': '🔴🔵', 
     'Inter': '🔵⚫', 'Juventus': '⚪⚫', 'Lazio': '🩵⚪', 'Lecce': '🟡🔴', 
     'Milan': '🔴⚫', 'Monza': '🔴⚪', 'Napoli': '🔵⚪', 'Parma': '🟡🔵', 
-    'Roma': '🟡🔴', 'Sassuolo': '🟢⚫', 'Torino': '🟤⚪', 'Udinese': '⚪⚫', 
-    'Venezia': '🟠🟢'
+    'Roma': '🟡🔴', 'Sassuolo': '🟢⚫', 'Torino': '🟤⚪', 'Udinese': '⚪⚫',
+    'Venezia': '🟠🟢', 'Cremonese': '🔴⚪', 'Pisa': '🔵⚫', 'Verona': '🟡🔵',
+    'Bari': '🔴⚪', 'Palermo': '🌸⚫', 'Spezia': '⚪⚫', 'Salernitana': '🟤⚪'
 }
 
-GERARCHIE_RIGORISTI = {
-    'Atalanta': {'rigoristi': ['Scamacca', 'Krstovic', 'Samardzic'], 'punizioni': ['De Ketelaere', 'Samardzic', 'Gaetano']},
-    'Bologna': {'rigoristi': ['Orsolini', 'Bernardeschi', 'Dovbyk'], 'punizioni': ['Orsolini', 'Bernardeschi', 'Miranda J.']},
-    'Cagliari': {'rigoristi': ['Mina', 'Fazzini', 'Borrelli'], 'punizioni': ['Fazzini', 'Winks', 'Mina']},
-    'Como': {'rigoristi': ['Da Cunha', 'Douvikas', 'Paz N.'], 'punizioni': ['Paz N.', 'Baturina', 'Da Cunha']},
-    'Fiorentina': {'rigoristi': ['Gudmundsson A.', 'Kean', 'Mandragora'], 'punizioni': ['Gudmundsson A.', 'Mastantuono', 'Atta']},
-    'Inter': {'rigoristi': ['Calhanoglu', 'Zielinski', 'Martinez L.'], 'punizioni': ['Calhanoglu', 'Dimarco', 'Zielinski']},
-    'Juventus': {'rigoristi': ['Vlahovic', 'Yildiz', 'Locatelli'], 'punizioni': ['Vlahovic', 'Cambiaso']},
-    'Lazio': {'rigoristi': ['Zaccagni', 'Castellanos', 'Dia'], 'punizioni': ['Zaccagni', 'Rovella']},
-    'Milan': {'rigoristi': ['Pulisic', 'Morata', 'Leao'], 'punizioni': ['Pulisic', 'Theo Hernandez']},
-    'Napoli': {'rigoristi': ['Kvaratskhelia', 'Politano', 'Lukaku'], 'punizioni': ['Kvaratskhelia', 'Politano']},
-    'Roma': {'rigoristi': ['Dybala', 'Pellegrini Lo.', 'Dovbyk'], 'punizioni': ['Dybala', 'Pellegrini Lo.']}
-}
+# Rigoristi, coppie di portieri e scommesse NON sono piu' liste scritte a mano:
+# si ricavano dalle colonne del Lista_Finale_Master.csv (Rc = rigori calciati,
+# R+ = segnati, Pv = presenze). Cosi' restano allineate a ogni aggiornamento.
 
-DATABASE_SCOMMESSE_PURE = [
-    'bernabe', 'fazzini', 'bonny', 'oristanio', 'paz', 'marchwinski', 'castro', 
-    'belahyane', 'tengstedt', 'da cunha', 'moro', 'traore', 'pisilli', 'ekhator', 
-    'solet', 'idzes', 'mangas', 'milla', 'ndour', 'viti', 'goglichidze', 
-    'alajbegovic', 'suslov', 'mosquera', 'tchaouna', 'camarda', 'vitinha', 
-    'savona', 'mbangula', 'conceicao', 'dallinga', 'fabbian', 'braine'
-]
+def _num(v, default=0.0):
+    try:
+        n = pd.to_numeric(str(v).replace(',', '.'), errors='coerce')
+        return default if pd.isna(n) else float(n)
+    except Exception:
+        return default
 
-COPPIE_NOTE = {
-    'sommer': 'martinez jo.', 'martinez jo.': 'sommer',
-    'di gregorio': 'perin', 'perin': 'di gregorio',
-    'maignan': 'sportiello', 'sportiello': 'maignan',
-    'svilar': 'ryan', 'ryan': 'svilar',
-    'dumfries': 'darmian', 'darmian': 'dumfries',
-    'dimarco': 'carlos augusto', 'carlos augusto': 'dimarco',
-    'kvaratskhelia': 'neres', 'neres': 'kvaratskhelia'
-}
 
-INCROCI_PORTIERI = {
-    'Inter': ['Venezia', 'Torino', 'Bologna'],
-    'Juventus': ['Lazio', 'Empoli', 'Torino'],
-    'Milan': ['Torino', 'Lecce', 'Genoa'],
-    'Napoli': ['Roma', 'Parma', 'Verona'],
-    'Roma': ['Napoli', 'Fiorentina', 'Lazio'],
-    'Atalanta': ['Como', 'Empoli', 'Monza'],
-    'Lazio': ['Juventus', 'Roma', 'Bologna'],
-    'Fiorentina': ['Roma', 'Venezia', 'Como']
-}
+def gerarchie_rigoristi(df, squadra=None):
+    """Chi ha calciato rigori la scorsa stagione, per squadra, dal piu' usato."""
+    if df is None or df.empty or 'Rc' not in df.columns:
+        return {}
+
+    gerarchie = {}
+    squadre = [squadra] if squadra else sorted(df['Squadra'].dropna().astype(str).unique())
+    for sq in squadre:
+        rosa = df[df['Squadra'].astype(str) == str(sq)].copy()
+        if rosa.empty:
+            continue
+        rosa['_rc'] = rosa['Rc'].apply(_num)
+        tiratori = rosa[rosa['_rc'] > 0].sort_values('_rc', ascending=False)
+        if tiratori.empty:
+            continue
+        gerarchie[sq] = {
+            'rigoristi': [
+                f"{r['Nome']} ({int(r['_rc'])})" for _, r in tiratori.head(3).iterrows()
+            ]
+        }
+    return gerarchie
+
+
+def trova_partner_portiere(nome, df):
+    """Il vice (o titolare) della stessa squadra: il 'paracadute' da abbinare."""
+    if df is None or df.empty:
+        return None
+    riga = get_player_stats(nome, df)
+    if riga is None or str(riga.get('R', '')).upper() != 'P':
+        return None
+
+    compagni = df[(df['R'].astype(str).str.upper() == 'P') &
+                  (df['Squadra'].astype(str) == str(riga.get('Squadra', ''))) &
+                  (df['Nome'].astype(str) != str(riga.get('Nome', '')))]
+    if compagni.empty:
+        return None
+    compagni = compagni.assign(_fvm=compagni['FVM'].apply(_num)).sort_values('_fvm', ascending=False)
+    return str(compagni.iloc[0]['Nome'])
+
+
+def trova_scommesse(df, limite_quotazione=8.0):
+    """Giocatori a poco prezzo con un rendimento sopra la media del loro ruolo."""
+    if df is None or df.empty:
+        return df.iloc[0:0] if df is not None else None
+
+    lavoro = df.copy()
+    lavoro['_qt'] = lavoro['Qt.A'].apply(_num) if 'Qt.A' in lavoro.columns else 0.0
+    lavoro['_fvm'] = lavoro['FVM'].apply(_num)
+    economici = lavoro[(lavoro['_qt'] > 0) & (lavoro['_qt'] <= limite_quotazione)]
+    if economici.empty:
+        return economici
+
+    # Nel proprio ruolo, chi sta nel quarto superiore per FVM fra gli economici
+    selezione = []
+    for ruolo, gruppo in economici.groupby(economici['R'].astype(str).str.upper()):
+        if gruppo.empty:
+            continue
+        soglia = gruppo['_fvm'].quantile(0.75)
+        selezione.append(gruppo[gruppo['_fvm'] >= soglia])
+    return pd.concat(selezione) if selezione else economici.iloc[0:0]
+
 
 def normalize_str(s):
     if not isinstance(s, str): return ""
@@ -175,7 +207,7 @@ def load_data(force_reload=False):
 load_data()
 try:
     scheduler = BackgroundScheduler()
-    scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
+    scheduler.add_job(auto_download_listone, 'cron', hour=5, minute=0)  # dopo l'Action delle 4:00
     scheduler.start()
 except Exception: pass
 
@@ -432,22 +464,18 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     lega_part = session.get('lega_partecipanti', 8)
     part_factor = 1 + ((lega_part - 8) * 0.025)
 
-    if ruolo == 'A':
-        if fvm_val >= 250:   fair_price = int(fvm_val * 0.50)
-        elif fvm_val >= 70:  fair_price = int(fvm_val * 1.40)
-        elif fvm_val >= 25:  fair_price = int(fvm_val * 0.80)
-        else:                fair_price = max(1, int(fvm_val * 0.40))
-    elif ruolo == 'C':
-        if fvm_val >= 120:   fair_price = int(fvm_val * 0.65)
-        elif fvm_val >= 35:  fair_price = int(fvm_val * 0.85)
-        else:                fair_price = max(1, int(fvm_val * 0.40))
-    elif ruolo == 'D':
-        fair_price = max(1, int(fvm_val * 0.45))
-    else:
-        fair_price = max(1, int(fvm_val * 0.50))
+    # Il prezzo lo calcola il Master (colonna Prezzo, tarata su 8 squadre/500 crediti).
+    # Qui si riscala solo su budget e numero di partecipanti della lega.
+    prezzo_master = _num(p_data.get('Prezzo', 0))
 
-    fair_price = int(fair_price * (lega_bud / 500.0) * part_factor)
-    fair_price = max(1, fair_price)
+    if prezzo_master > 0:
+        fair_price = prezzo_master
+    else:
+        # Fallback per file Master vecchi, senza colonna Prezzo
+        if ruolo == 'A':      fair_price = max(1, int(fvm_val * 0.50))
+        elif ruolo == 'C':    fair_price = max(1, int(fvm_val * 0.55))
+        elif ruolo == 'D':    fair_price = max(1, int(fvm_val * 0.45))
+        else:                 fair_price = max(1, int(fvm_val * 0.50))
 
     max_rilancio = int(fair_price * 1.15)
     asta_stop = int(fair_price * 1.25)
@@ -560,23 +588,18 @@ def process_buy_price(message, player_name, user_id):
     if ruolo == 'P':
         riserve = df[(df['R'] == 'P') & (df['Squadra'] == squadra) & (df['Nome'] != player_name)].sort_values(by='FVM', ascending=False).head(2)
         r_nomi = [r['Nome'] for _, r in riserve.iterrows()]
-        s_incrocio = INCROCI_PORTIERI.get(squadra, [])
         
         testo_p = f"🧤 <b>HAI PRESO UN PORTIERE! Completa il reparto:</b>\n\n"
         if r_nomi: testo_p += f"🔒 <b>Riserve {squadra}:</b> (da 1 cr): <code>{', '.join(r_nomi)}</code>\n\n"
-        if s_incrocio: testo_p += f"🔄 <b>Migliori Incroci:</b> Punta sui portieri di: <b>{', '.join(s_incrocio)}</b>"
         
         mk_port = InlineKeyboardMarkup(row_width=1)
         for r_n in r_nomi: mk_port.add(InlineKeyboardButton(f"⭐ Aggiungi {r_n} a Wishlist", callback_data=f"wl_add_{r_n}"))
         bot.send_message(chat_id, testo_p, parse_mode="HTML", reply_markup=mk_port if r_nomi else None)
             
-    p_lower = player_name.lower()
-    if p_lower in COPPIE_NOTE:
-        partner_row = df[df['Nome'].str.lower() == COPPIE_NOTE[p_lower]]
-        if not partner_row.empty:
-            p_n = partner_row.iloc[0]['Nome']
-            mk_c = InlineKeyboardMarkup().add(InlineKeyboardButton(f"⭐ Aggiungi {p_n}", callback_data=f"wl_add_{p_n}"))
-            bot.send_message(chat_id, f"🪂 <b>PARACADUTE ATTIVO</b>\nVuoi aggiungere {html.escape(p_n.upper())} alla WL?", parse_mode="HTML", reply_markup=mk_c)
+    p_n = trova_partner_portiere(player_name, df)
+    if p_n:
+        mk_c = InlineKeyboardMarkup().add(InlineKeyboardButton(f"⭐ Aggiungi {p_n}", callback_data=f"wl_add_{p_n}"))
+        bot.send_message(chat_id, f"🪂 <b>PARACADUTE ATTIVO</b>\nVuoi aggiungere {html.escape(p_n.upper())} alla WL?", parse_mode="HTML", reply_markup=mk_c)
             
     if is_asta: send_asta_dashboard(chat_id, user_id)
     else: send_dashboard(chat_id, user_id)
@@ -793,7 +816,11 @@ def handle_callbacks(call):
         bot.send_photo(chat_id, img, caption=t, parse_mode="HTML", reply_markup=markup) if img else bot.send_message(chat_id, t, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_rigoristi":
-        t = "🎯 <b>RADAR RIGORISTI</b>\n━━━━━━━━━━━━━━━━━━━━━━\n" + "".join([f"<b>{get_team_icon(sq)} {sq}:</b>\n⚽ Rig: {', '.join(d['rigoristi'])}\n🎯 Puniz: {', '.join(d['punizioni'])}\n\n" for sq, d in GERARCHIE_RIGORISTI.items()])
+        gerarchie = gerarchie_rigoristi(df)
+        if gerarchie:
+            t = "🎯 <b>RADAR RIGORISTI</b>\n<i>Rigori calciati nella scorsa stagione</i>\n━━━━━━━━━━━━━━━━━━━━━━\n" + "".join([f"<b>{get_team_icon(sq)} {sq}:</b>\n⚽ {', '.join(d['rigoristi'])}\n\n" for sq, d in gerarchie.items()])
+        else:
+            t = "🎯 <b>RADAR RIGORISTI</b>\n\n⚠️ Il file Master non contiene la colonna <code>Rc</code>: aggiorna il listone."
         bot.edit_message_text(t, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data == "menu_power":
@@ -910,8 +937,8 @@ def handle_callbacks(call):
 
     elif call.data == "menu_scommessa_start":
         avail = get_available_players(df, session)
-        sl = [avail[avail['Nome'].astype(str).str.lower().str.contains(sc)] for sc in DATABASE_SCOMMESSE_PURE if not avail[avail['Nome'].astype(str).str.lower().str.contains(sc)].empty]
-        send_player_card_view(chat_id, pd.concat(sl).drop_duplicates().sample(1).iloc[0]['Nome'], call.message.message_id, df, session, True) if sl else safe_answer_callback(call.id, "Nessuna scommessa!", True)
+        sl = trova_scommesse(avail)
+        send_player_card_view(chat_id, sl.sample(1).iloc[0]['Nome'], call.message.message_id, df, session, True) if sl is not None and not sl.empty else safe_answer_callback(call.id, "Nessuna scommessa!", True)
 
     elif call.data == "menu_studio_start":
         session['compare_p1'] = None
