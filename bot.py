@@ -6,6 +6,8 @@ import unicodedata
 import threading
 import pandas as pd
 import analisi
+import config
+import dati
 import numpy as np
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -29,26 +31,21 @@ except ImportError:
 # ==========================================
 # CONFIGURAZIONE INIZIALE & TOKEN
 # ==========================================
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = config.TOKEN
 
 if not TOKEN:
-    raise ValueError("⚠️ ERRORE: La variabile d'ambiente BOT_TOKEN non è impostata su Render!")
+    raise ValueError("⚠️ ERRORE: La variabile d'ambiente BOT_TOKEN non è impostata!")
 
 bot = telebot.TeleBot(TOKEN)
 
-# URL UFFICIALE DOWNLOAD LISTONE MASTER GENERATO DALL'ENGINE (GitHub)
-LISTONE_URL = "https://raw.githubusercontent.com/imwade021/fanta-master-ai/main/Lista_Finale_Master.csv"
+# Alias verso config.py: le costanti stanno tutte la'
+LISTONE_URL = config.LISTONE_URL
+ROLE_ICONS = config.ROLE_ICONS
+TEAM_COLORS = config.TEAM_COLORS
+SLOT_PER_RUOLO = config.SLOT_PER_RUOLO
 
-ROLE_ICONS = {'P': '🧤', 'D': '🛡️', 'C': '⚙️', 'A': '🎯'}
-TEAM_COLORS = {
-    'Atalanta': '🔵⚫', 'Bologna': '🔴🔵', 'Cagliari': '🔴🔵', 'Como': '🔵⚪',
-    'Empoli': '🔵⚪', 'Fiorentina': '💜', 'Frosinone': '🟡🔵', 'Genoa': '🔴🔵', 
-    'Inter': '🔵⚫', 'Juventus': '⚪⚫', 'Lazio': '🩵⚪', 'Lecce': '🟡🔴', 
-    'Milan': '🔴⚫', 'Monza': '🔴⚪', 'Napoli': '🔵⚪', 'Parma': '🟡🔵', 
-    'Roma': '🟡🔴', 'Sassuolo': '🟢⚫', 'Torino': '🟤⚪', 'Udinese': '⚪⚫',
-    'Venezia': '🟠🟢', 'Cremonese': '🔴⚪', 'Pisa': '🔵⚫', 'Verona': '🟡🔵',
-    'Bari': '🔴⚪', 'Palermo': '🌸⚫', 'Spezia': '⚪⚫', 'Salernitana': '🟤⚪'
-}
+# Sessioni in memoria, una per utente Telegram (si azzerano al riavvio)
+user_sessions = {}
 
 # Rigoristi, coppie di portieri e scommesse NON sono piu' liste scritte a mano:
 # si ricavano dalle colonne del Lista_Finale_Master.csv (Rc = rigori calciati,
@@ -63,26 +60,7 @@ def _num(v, default=0.0):
 
 
 def fair_price(row, session):
-    """
-    UNICO punto in cui si calcola il prezzo consigliato di un giocatore.
-    Parte dalla colonna Prezzo del Master (tarata su 8 squadre / 500 crediti)
-    e la riscala su budget e partecipanti della lega.
-    """
-    if row is None:
-        return 1
-    dati = row if isinstance(row, dict) else row.to_dict()
-
-    prezzo = _num(dati.get('Prezzo'))
-    if prezzo <= 0:
-        # Master vecchio senza colonna Prezzo: stima dalla FVM
-        fvm = _num(dati.get('FVM'))
-        quote = {'A': 0.50, 'C': 0.55, 'D': 0.45, 'P': 0.50}
-        prezzo = fvm * quote.get(str(dati.get('R', '')).upper(), 0.50)
-
-    budget = session.get('lega_budget_iniziale', 500)
-    partecipanti = session.get('lega_partecipanti', 8)
-    fattore = 1 + ((partecipanti - 8) * 0.025)
-    return max(1, int(prezzo * (budget / 500.0) * fattore))
+    return dati.prezzo_consigliato(row, session)
 
 
 def gerarchie_rigoristi(df, squadra=None):
@@ -157,30 +135,13 @@ def safe_answer_callback(call_id, text=None, show_alert=False):
     try: bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
     except Exception: pass
 
-def get_team_icon(squadra): 
-    return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
+def get_team_icon(squadra):
+    return dati.icona_squadra(squadra)
 
-# ==========================================
-# AUTO-DOWNLOADER & GESTIONE DATI CENTRALIZZATA
-# ==========================================
-DATA_CACHE = None
 
-import requests
 def auto_download_listone_raw():
-    """Scarica il Master da GitHub. Non tocca la cache (evita ricorsione con load_data)."""
-    print("🔄 Avvio download del Listone Master...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-    try:
-        res = requests.get(LISTONE_URL, headers=headers, timeout=15)
-        if res.status_code == 200 and res.content:
-            with open("Lista_Finale_Master.csv", "wb") as f:
-                f.write(res.content)
-            print("✅ Listone Master scaricato con successo!")
-            return True
-        print(f"❌ Download fallito (HTTP {res.status_code}).")
-    except Exception as e:
-        print(f"❌ Errore durante l'auto-download: {e}")
-    return False
+    return dati.scarica_master()
+
 
 def auto_download_listone():
     if auto_download_listone_raw():
@@ -189,53 +150,9 @@ def auto_download_listone():
     return False
 
 def load_data(force_reload=False):
-    global DATA_CACHE
-    if DATA_CACHE is None or force_reload:
-        # UNICA FONTE DATI: il Master generato da fanta-master-ai.
-        # Nessun fallback locale: se manca, va scaricato (auto_download_listone).
-        file_target = "Lista_Finale_Master.csv" if os.path.exists("Lista_Finale_Master.csv") else None
-        if not file_target:
-            print("❌ Lista_Finale_Master.csv assente: avvio download remoto...")
-            if not auto_download_listone_raw():
-                print("❌ Download fallito: il bot non ha dati. Usa '📥 Download Remoto' dal menu.")
-                return None
-            file_target = "Lista_Finale_Master.csv"
-        if file_target:
-            try:
-                # Lettura robusta del CSV
-                try: DATA_CACHE = pd.read_csv(file_target, sep=';', on_bad_lines='skip')
-                except Exception: DATA_CACHE = pd.read_csv(file_target, sep=',', on_bad_lines='skip')
-                
-                # Normalizzazione Colonne se mancano intestazioni
-                if len(DATA_CACHE.columns) < 3:
-                    DATA_CACHE = pd.read_csv(file_target, header=None, on_bad_lines='skip')
-                    DATA_CACHE.columns = [
-                        'Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 
-                        'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 
-                        'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
-                    ]
+    return dati.carica(forza=force_reload)
 
-                if 'Ruolo' in DATA_CACHE.columns and 'R' not in DATA_CACHE.columns:
-                    DATA_CACHE.rename(columns={'Ruolo': 'R'}, inplace=True)
-                
-                # Assicura che la FVM sia numerica
-                DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE.get('FVM', 0), errors='coerce').fillna(0)
-                
-                print(f"✅ UNICA FONTE DATI CARICATA: {file_target}")
-            except Exception as e: 
-                print(f"⚠️ Errore lettura CSV Listone: {e}")
 
-    return DATA_CACHE
-
-# Caricamento iniziale e avvio Pianificatore
-load_data()
-try:
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(auto_download_listone, 'cron', hour=5, minute=0)  # dopo l'Action delle 4:00
-    scheduler.start()
-except Exception: pass
-
-user_sessions = {}
 def get_session(user_id):
     if user_id not in user_sessions: 
         user_sessions[user_id] = {
@@ -252,39 +169,16 @@ def get_session(user_id):
     return user_sessions[user_id]
 
 def get_roster_stats(session):
-    rosa = session['rosa']
-    budget = session['budget']
-    counts = {'P': 0, 'D': 0, 'C': 0, 'A': 0}
-    for p in rosa:
-        r = p.get('ruolo', 'C')
-        if r in counts: counts[r] += 1
-    slot_liberi = max(0, 25 - len(rosa))
-    max_bid = max(0, budget - (slot_liberi - 1)) if slot_liberi > 0 else budget
-    return {'counts': counts, 'slot_liberi': slot_liberi, 'max_bid': max_bid}
+    return dati.stato_rosa(session)
+
 
 def get_available_players(df, session):
-    presi_nomi = [p['nome'] for p in session.get('rosa', [])]
-    scartati_nomi = session.get('scartati', [])
-    esclusi = set(presi_nomi + scartati_nomi)
-    return df[~df['Nome'].isin(esclusi)]
+    return dati.disponibili(df, session)
 
-# =========================================================================
-# MOTORE DI RICERCA ASSOLUTO: SOLO E UNICAMENTE SUL FILE MASTER
-# =========================================================================
+
 def get_player_stats(nome, df):
-    """Estrae la riga del giocatore esclusivamente dal DataFrame Master"""
-    if df is None or df.empty: return None
-    norm_name = normalize_str(nome)
-    
-    # Match esatto
-    matches = df[df['Nome'].astype(str).apply(normalize_str) == norm_name]
-    if matches.empty:
-        # Match parziale
-        matches = df[df['Nome'].astype(str).apply(normalize_str).str.contains(norm_name, regex=False, na=False)]
-    
-    if not matches.empty:
-        return matches.iloc[0]
-    return None
+    return dati.cerca_giocatore(nome, df)
+
 
 def get_macellaio_info(nome, df):
     row = get_player_stats(nome, df)
@@ -502,13 +396,54 @@ def send_dashboard(chat_id, user_id, message_id=None):
         except Exception: bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
     else: bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
 
-def get_strategia_asta(fase, budget, max_iniziale, modificatore_attivo):
-    perc = (budget / max_iniziale) * 100 if max_iniziale else 0
-    if fase == 'P': return "Lascia scannare gli altri sul primo Top assoluto. Punta al 2° o 3° top, o fai incroci perfetti per risparmiare."
-    elif fase == 'D': return "Modificatore ATTIVO: prendi almeno un Top e 2 terzini di spinta." if modificatore_attivo else "Risparmia! Spendi il minimo indispensabile per i titolari e conserva crediti."
-    elif fase == 'C': return "Ottimo budget! Assicurati un trequartista/rigorista, poi completa." if perc > 60 else "Budget limitato! Evita rilanci e punta su titolari low-cost o piazzisti di provincia."
-    elif fase == 'A': return "ALL-IN! Scegli il tuo Bomber, sparalo alto per tagliare i deboli." if perc >= 40 else "Pochi crediti! Evita i big assoluti e componi un tridente di 2° fascia inamovibile."
-    return "Tieni d'occhio i crediti e i giocatori mancanti."
+SLOT_PER_RUOLO = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
+
+
+def get_strategia_asta(fase, session, df=None):
+    """Consiglio costruito sulla rosa vera, non un testo fisso per fase."""
+    stats = get_roster_stats(session)
+    avuti = stats['counts'].get(fase, 0)
+    mancanti = max(0, SLOT_PER_RUOLO.get(fase, 0) - avuti)
+    budget = session.get('budget', 0)
+    slot_liberi = stats['slot_liberi']
+    media_slot = (budget / slot_liberi) if slot_liberi > 0 else 0
+    modificatore = session.get('modificatore_attivo', False)
+
+    righe = [f"Ti mancano <b>{mancanti}</b> giocatori in {fase} "
+             f"(hai {avuti}/{SLOT_PER_RUOLO.get(fase, 0)}). "
+             f"Con {budget} cr e {slot_liberi} slot, la media e' <b>{media_slot:.0f} cr</b> a giocatore."]
+
+    if df is not None and not df.empty:
+        disponibili = get_available_players(df, session)
+        nel_ruolo = disponibili[disponibili['R'] == fase].copy()
+        if not nel_ruolo.empty:
+            nel_ruolo['_prezzo'] = [fair_price(r, session) for _, r in nel_ruolo.iterrows()]
+            nel_ruolo['_pv'] = nel_ruolo['Pv'].apply(_num) if 'Pv' in nel_ruolo.columns else 0
+            alla_portata = nel_ruolo[nel_ruolo['_prezzo'] <= max(1, media_slot)]
+            titolari_portata = alla_portata[alla_portata['_pv'] >= 25]
+
+            migliore = nel_ruolo.sort_values('_prezzo', ascending=False).iloc[0]
+            if migliore['_prezzo'] > budget:
+                righe.append(f"⛔ Il migliore rimasto ({migliore['Nome']}, {int(migliore['_prezzo'])} cr) "
+                             f"e' fuori dal tuo budget: punta sulla fascia sotto.")
+            elif migliore['_prezzo'] > media_slot * 2.5 and mancanti > 2:
+                righe.append(f"⚠️ {migliore['Nome']} costa {int(migliore['_prezzo'])} cr: "
+                             f"prenderlo ti lascia {(budget - int(migliore['_prezzo'])) // max(1, slot_liberi - 1)} cr "
+                             f"a slot per gli altri {slot_liberi - 1}.")
+
+            righe.append(f"Alla tua media ci sono <b>{len(titolari_portata)}</b> titolari "
+                         f"(25+ presenze) ancora liberi in {fase}.")
+            if len(titolari_portata) <= mancanti and mancanti > 0:
+                righe.append("🚨 Sono pochi per coprire gli slot: muoviti adesso o resterai coi fondi di magazzino.")
+
+    if fase == 'D' and modificatore:
+        righe.append("Modificatore attivo: conta il <b>voto puro</b>, non i bonus. "
+                     "Guarda la lista Modificatore 6.5.")
+    elif fase == 'P':
+        righe.append("Sui portieri l'incrocio con il vice della stessa squadra vale piu' del nome.")
+
+    return " ".join(righe)
+
 
 def send_asta_dashboard(chat_id, user_id, message_id=None):
     session = get_session(user_id)
@@ -517,22 +452,26 @@ def send_asta_dashboard(chat_id, user_id, message_id=None):
     lega_part, modif = session.get('lega_partecipanti', 8), session.get('modificatore_attivo', False)
     
     avail = get_available_players(df, session)
-    giocatori = avail[avail['R'] == fase].sort_values(by='FVM', ascending=False)
+    giocatori = avail[avail['R'] == fase].copy()
+    giocatori['_p'] = [fair_price(r, session) for _, r in giocatori.iterrows()]
+    giocatori = giocatori.sort_values('_p', ascending=False)
     
     top_str = ""
     for i, (_, r) in enumerate(giocatori.head(5).iterrows(), 1):
-        fvm_clean = str(r.get('FVM', 0)).replace(',', '.')
-        fvm_num = pd.to_numeric(fvm_clean, errors='coerce') or 0
-        max_bid = max(1, int(fvm_num * 0.45 * (b_iniziale / 500.0)))
-        top_str += f"{i}. <b>{r['Nome']}</b> ({r['Squadra']}) ─ Max: <code>{max_bid} cr.</code>\n"
+        max_bid = fair_price(r, session)
+        pres = int(_num(r.get('Pv')))
+        top_str += f"{i}. <b>{r['Nome']}</b> ({r['Squadra']}) ─ <code>{max_bid} cr.</code> · {pres} pres\n"
     
     testo = (f"🔨 <b>ASTA LIVE - FASE: {ROLE_ICONS.get(fase, '')} {fase}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
-             f"⭐ <b>TOP 5 RIMASTI:</b>\n{top_str}\n🧠 <b>STRATEGIA:</b>\n<i>{get_strategia_asta(fase, budget, b_iniziale, modif)}</i>\n"
+             f"⭐ <b>TOP 5 RIMASTI:</b>\n{top_str}\n🧠 <b>STRATEGIA:</b>\n<i>{get_strategia_asta(fase, session, df)}</i>\n"
              f"━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>Cassa:</b> <code>{budget} cr.</code> (Slot liberi: {get_roster_stats(session)['slot_liberi']})\n")
     
     if fase == 'D' and modif:
-        mods = avail[(avail['R'] == 'D') & (avail['FVM'] >= 5) & (avail['FVM'] <= 35)].sort_values(by='FVM', ascending=False).head(3)
-        testo += "\n🛡️ <b>TOP MODIFICATORE DA PUNTARE:</b>\n" + "\n".join([f"• {r['Nome']} - FVM: {r['FVM']}" for _, r in mods.iterrows()]) + "\n"
+        mods = analisi.candidati_modificatore(avail, limite=3)
+        if mods is not None and not mods.empty:
+            testo += "\n🛡️ <b>TOP MODIFICATORE DA PUNTARE:</b>\n" + "\n".join(
+                [f"• {r['Nome']} ({r['Squadra']}) - MV {_num(r.get('Mv')):.2f} · {fair_price(r, session)} cr"
+                 for _, r in mods.iterrows()]) + "\n"
         
     testo += "\n💡 <i>Cerca un nome o invia un vocale! (es: + nome prezzo)</i>"
     
@@ -752,7 +691,9 @@ def handle_voice(message):
         AudioSegment.from_ogg("voice.ogg").export("voice.wav", format="wav")
         with sr.AudioFile("voice.wav") as source: testo = sr.Recognizer().recognize_google(sr.Recognizer().record(source), language="it-IT").lower()
         bot.send_message(message.chat.id, f"🗣️ Hai detto: <i>'{html.escape(testo)}'</i>", parse_mode="HTML")
-        match = re.search(r'(?:preso|comprato|ho preso)?\s*([a-zA-Z\s]+)\s*(?:a|per)?\s*(\d+)', testo)
+        # I nomi con accenti o apostrofi (Ndicka, Perez, Dell'Orco) non passavano
+        match = re.search(r"(?:preso|comprato|ho preso|aggiudicato)?\s*([^\d]+?)\s*(?:a|per)?\s*(\d+)",
+                          testo, re.UNICODE)
         if match:
             n_voc, p_voc = match.group(1).strip(), int(match.group(2))
             df = load_data()
@@ -810,15 +751,13 @@ def search_player(message):
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     fname = message.document.file_name.lower()
-    if not (fname.endswith('.csv') or fname.endswith('.xlsx') or fname.endswith('.xls')):
+    if not fname.endswith(('.csv', '.xlsx', '.xls')):
         return bot.reply_to(message, "❌ Invia solo file <code>.csv</code> o <code>.xlsx</code>!", parse_mode="HTML")
 
-    percorso_finale = "Lista_Finale_Master.csv"
     temporaneo = "upload_temp" + os.path.splitext(fname)[1]
     try:
-        dati = bot.download_file(bot.get_file(message.document.file_id).file_path)
         with open(temporaneo, 'wb') as f:
-            f.write(dati)
+            f.write(bot.download_file(bot.get_file(message.document.file_id).file_path))
 
         # Un .xlsx va convertito, non rinominato: salvarlo come .csv rompeva il bot
         if fname.endswith(('.xlsx', '.xls')):
@@ -829,21 +768,12 @@ def handle_document(message):
             except Exception:
                 nuovo = pd.read_csv(temporaneo, sep=',', on_bad_lines='skip')
 
-        mancanti = [c for c in ('Nome', 'R', 'Squadra') if c not in nuovo.columns]
-        if mancanti or nuovo.empty:
+        ok, mancanti = dati.salva_da_dataframe(nuovo)
+        if not ok:
             return bot.reply_to(
                 message,
-                f"❌ <b>File non valido</b>: mancano le colonne {', '.join(mancanti) or '(file vuoto)'}.\n"
-                f"Il listone precedente NON e' stato toccato.", parse_mode="HTML")
-
-        if os.path.exists(percorso_finale):
-            try:
-                os.replace(percorso_finale, percorso_finale + ".bak")
-            except Exception:
-                pass
-
-        nuovo.to_csv(percorso_finale, sep=';', index=False)
-        load_data(force_reload=True)
+                f"❌ <b>File non valido</b>: mancano {', '.join(mancanti)}.\n"
+                f"Il listone precedente NON è stato toccato.", parse_mode="HTML")
 
         avviso = "" if 'Prezzo' in nuovo.columns else "\n⚠️ <i>Manca la colonna Prezzo: i valori saranno stimati.</i>"
         bot.reply_to(message, f"✅ <b>LISTONE AGGIORNATO</b>: {len(nuovo)} giocatori.{avviso}", parse_mode="HTML")
