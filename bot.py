@@ -154,7 +154,6 @@ def load_data(force_reload=False):
         file_target = "Lista_Finale_Master.csv" if os.path.exists("Lista_Finale_Master.csv") else ("Lista-FantaAsta-Fantacalcio.csv" if os.path.exists("Lista-FantaAsta-Fantacalcio.csv") else None)
         if file_target:
             try:
-                # Lettura adattiva del CSV (sia con separatore virgola che punto e virgola)
                 try:
                     DATA_CACHE = pd.read_csv(file_target, sep=';')
                     if len(DATA_CACHE.columns) < 3:
@@ -167,7 +166,6 @@ def load_data(force_reload=False):
                         'DataNascita', 'PhotoURL', 'Extra1', 'Extra2', 'Extra3'
                     ]
 
-                # Normalizzazione colonne chiave
                 if 'Ruolo' in DATA_CACHE.columns and 'R' not in DATA_CACHE.columns:
                     DATA_CACHE.rename(columns={'Ruolo': 'R'}, inplace=True)
                 if 'Valore_Base_Perc' in DATA_CACHE.columns and 'FVM' not in DATA_CACHE.columns:
@@ -441,7 +439,8 @@ def send_asta_dashboard(chat_id, user_id, message_id=None):
     
     top_str = ""
     for i, (_, r) in enumerate(giocatori.head(5).iterrows(), 1):
-        max_bid = max(1, int((pd.to_numeric(str(r.get('FVM', 0)).replace(',','.'), errors='coerce') * (b_iniziale / 1000.0) * (1 + ((lega_part - 8) * 0.025))) * 1.15))
+        fvm_clean = str(r.get('FVM', 0)).replace(',', '.')
+        max_bid = max(1, int((pd.to_numeric(fvm_clean, errors='coerce') * (b_iniziale / 1000.0) * (1 + ((lega_part - 8) * 0.025))) * 1.15))
         top_str += f"{i}. <b>{r['Nome']}</b> ({r['Squadra']}) ─ Max: <code>{max_bid} cr.</code>\n"
     
     testo = (f"🔨 <b>ASTA LIVE - FASE: {ROLE_ICONS.get(fase, '')} {fase}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -571,7 +570,6 @@ def process_buy_price(message, player_name, user_id):
         
     bot.send_message(chat_id, f"{titolo_acquisto}\n\n📊 <b>Valutazione Acquisto:</b>\n{giudizio}", parse_mode="HTML")
     
-    # Consigli speciali per i PORTIERI
     if ruolo == 'P':
         riserve = df[(df['R'] == 'P') & (df['Squadra'] == squadra) & (df['Nome'] != player_name)].sort_values(by='FVM', ascending=False).head(2)
         r_nomi = [r['Nome'] for _, r in riserve.iterrows()]
@@ -688,7 +686,9 @@ def modalita_cecchino(message):
             titolo = f"🎯 <b>CECCHINO A BERSAGLIO!</b>\n✅ Acquistato <b>{html.escape(p_name.upper())}</b> a <code>{costo} cr.</code>"
         else: titolo = f"🧪 <b>SIMULAZIONE CECCHINO: {html.escape(p_name.upper())} a {costo} cr.</b>\n<i>(Non salvato)</i>"
         
-        fair_price = max(1, int((pd.to_numeric(str(row.get('FVM', 0)).replace(',',','.'), errors='coerce') * (session.get('lega_budget_iniziale', 500) / 1000.0)) * (1 + ((session.get('lega_partecipanti', 8) - 8) * 0.025))))
+        fvm_clean = str(row.get('FVM', 0)).replace(',', '.')
+        fvm_val = pd.to_numeric(fvm_clean, errors='coerce') or 0
+        fair_price = max(1, int((fvm_val * (session.get('lega_budget_iniziale', 500) / 1000.0)) * (1 + ((session.get('lega_partecipanti', 8) - 8) * 0.025))))
         giudizio = f"🔥 <b>AFFARE!</b>" if costo <= fair_price * 0.75 else f"✅ <b>OTTIMO!</b>" if costo <= fair_price * 0.95 else f"⚖️ <b>GIUSTO.</b>" if costo <= fair_price * 1.15 else f"🚨 <b>SALASSO!</b>"
         
         bot.reply_to(message, f"{titolo}\n\n📊 <b>Valutazione:</b>\n{giudizio}", parse_mode="HTML")
