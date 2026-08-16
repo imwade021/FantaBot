@@ -110,25 +110,40 @@ def get_team_icon(squadra):
 DATA_CACHE = None
 
 import requests
-def auto_download_listone():
-    print("🔄 Avvio download automatico del Listone Master...")
+def auto_download_listone_raw():
+    """Scarica il Master da GitHub. Non tocca la cache (evita ricorsione con load_data)."""
+    print("🔄 Avvio download del Listone Master...")
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         res = requests.get(LISTONE_URL, headers=headers, timeout=15)
-        if res.status_code == 200:
+        if res.status_code == 200 and res.content:
             with open("Lista_Finale_Master.csv", "wb") as f:
                 f.write(res.content)
-            print("✅ Listone Master aggiornato con successo da remoto!")
-            load_data(force_reload=True)
+            print("✅ Listone Master scaricato con successo!")
             return True
+        print(f"❌ Download fallito (HTTP {res.status_code}).")
     except Exception as e:
         print(f"❌ Errore durante l'auto-download: {e}")
+    return False
+
+def auto_download_listone():
+    if auto_download_listone_raw():
+        load_data(force_reload=True)
+        return True
     return False
 
 def load_data(force_reload=False):
     global DATA_CACHE
     if DATA_CACHE is None or force_reload:
-        file_target = "Lista_Finale_Master.csv" if os.path.exists("Lista_Finale_Master.csv") else ("Lista-FantaAsta-Fantacalcio.csv" if os.path.exists("Lista-FantaAsta-Fantacalcio.csv") else None)
+        # UNICA FONTE DATI: il Master generato da fanta-master-ai.
+        # Nessun fallback locale: se manca, va scaricato (auto_download_listone).
+        file_target = "Lista_Finale_Master.csv" if os.path.exists("Lista_Finale_Master.csv") else None
+        if not file_target:
+            print("❌ Lista_Finale_Master.csv assente: avvio download remoto...")
+            if not auto_download_listone_raw():
+                print("❌ Download fallito: il bot non ha dati. Usa '📥 Download Remoto' dal menu.")
+                return None
+            file_target = "Lista_Finale_Master.csv"
         if file_target:
             try:
                 # Lettura robusta del CSV
