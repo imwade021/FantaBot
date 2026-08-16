@@ -3,13 +3,10 @@ import io
 import re
 import html
 import unicodedata
-import urllib.parse
 import threading
 import pandas as pd
 import numpy as np
 import telebot
-import requests
-from bs4 import BeautifulSoup
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -27,13 +24,6 @@ try:
     VOICE_ENABLED = True
 except ImportError:
     VOICE_ENABLED = False
-
-# Importa la libreria per la ricerca web
-try:
-    from duckduckgo_search import DDGS
-    WEB_SEARCH_ENABLED = True
-except ImportError:
-    WEB_SEARCH_ENABLED = False
 
 # ==========================================
 # CONFIGURAZIONE INIZIALE & TOKEN
@@ -64,21 +54,12 @@ GERARCHIE_RIGORISTI = {
     'Cagliari': {'rigoristi': ['Mina', 'Fazzini', 'Borrelli'], 'punizioni': ['Fazzini', 'Winks', 'Mina']},
     'Como': {'rigoristi': ['Da Cunha', 'Douvikas', 'Paz N.'], 'punizioni': ['Paz N.', 'Baturina', 'Da Cunha']},
     'Fiorentina': {'rigoristi': ['Gudmundsson A.', 'Kean', 'Mandragora'], 'punizioni': ['Gudmundsson A.', 'Mastantuono', 'Atta']},
-    'Frosinone': {'rigoristi': ['Calò', 'Raimondo', 'Ghedjemis'], 'punizioni': ['Calò', 'Ghedjemis', 'Zerbin']},
-    'Genoa': {'rigoristi': ['Colombo', 'Ostigard', 'Vitinha O.'], 'punizioni': ['Baldanzi', 'Martin', 'Vitinha O.']},
     'Inter': {'rigoristi': ['Calhanoglu', 'Zielinski', 'Martinez L.'], 'punizioni': ['Calhanoglu', 'Dimarco', 'Zielinski']},
-    'Juventus': {'rigoristi': ['Kolo Muani', 'Yildiz', 'Locatelli'], 'punizioni': ['Locatelli', 'Cambiaso']},
-    'Lazio': {'rigoristi': ['Zaccagni', 'Taylor K.', 'Cataldi'], 'punizioni': ['Rovella', 'Zaccagni', 'Cataldi']},
-    'Lecce': {'rigoristi': ['Geubbels', 'Stengs', 'Berisha M.'], 'punizioni': ['Pierotti', 'Berisha M.', 'Gandelman']},
-    'Milan': {'rigoristi': ['Nkunku', 'Ramos G.', 'Pulisic'], 'punizioni': ['Modric', 'Pulisic', 'Saelemaekers']},
-    'Monza': {'rigoristi': ['Pessina', 'Cutrone', 'Petagna'], 'punizioni': ['Pessina', 'Colpani', 'Mota']},
-    'Napoli': {'rigoristi': ['De Bruyne', 'Hojlund', 'Politano'], 'punizioni': ['De Bruyne', 'Politano', 'Neres']},
-    'Parma': {'rigoristi': ['Pellegrino M.', 'Touré E.', 'Valeri'], 'punizioni': ['Bernabé', 'Nicolussi Caviglia', 'Valeri']},
-    'Roma': {'rigoristi': ['Malen', 'Dybala', 'Castro S.'], 'punizioni': ['Dybala', 'Malen', 'Soulé']},
-    'Sassuolo': {'rigoristi': ['Berardi', 'Pinamonti', 'Laurienté'], 'punizioni': ['Berardi', 'Laurienté', 'Adzic']},
-    'Torino': {'rigoristi': ['Vlasic', 'Kulenovic', 'Simeone'], 'punizioni': ['Vlasic', 'Oristanio', 'Gineitis']},
-    'Udinese': {'rigoristi': ['Davis K.', 'Solet', 'Zaniolo'], 'punizioni': ['Zaniolo', 'Ekkelenkamp', 'Unai Gomez']},
-    'Venezia': {'rigoristi': ['Adams A.', 'Rrahmani Al.', 'Adorante'], 'punizioni': ['Busio', 'Yeboah J.', 'Perez K.']}
+    'Juventus': {'rigoristi': ['Vlahovic', 'Yildiz', 'Locatelli'], 'punizioni': ['Vlahovic', 'Cambiaso']},
+    'Lazio': {'rigoristi': ['Zaccagni', 'Castellanos', 'Dia'], 'punizioni': ['Zaccagni', 'Rovella']},
+    'Milan': {'rigoristi': ['Pulisic', 'Morata', 'Leao'], 'punizioni': ['Pulisic', 'Theo Hernandez']},
+    'Napoli': {'rigoristi': ['Kvaratskhelia', 'Politano', 'Lukaku'], 'punizioni': ['Kvaratskhelia', 'Politano']},
+    'Roma': {'rigoristi': ['Dybala', 'Pellegrini Lo.', 'Dovbyk'], 'punizioni': ['Dybala', 'Pellegrini Lo.']}
 }
 
 DATABASE_SCOMMESSE_PURE = [
@@ -111,8 +92,7 @@ INCROCI_PORTIERI = {
 }
 
 def normalize_str(s):
-    if not isinstance(s, str):
-        return ""
+    if not isinstance(s, str): return ""
     s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8')
     s = re.sub(r"[^\w\s]", "", s)
     return " ".join(s.lower().split())
@@ -125,14 +105,14 @@ def get_team_icon(squadra):
     return TEAM_COLORS.get(str(squadra).strip(), '🛡️')
 
 # ==========================================
-# AUTO-DOWNLOADER & GESTIONE DATABASE
+# AUTO-DOWNLOADER & GESTIONE DATI CENTRALIZZATA
 # ==========================================
 DATA_CACHE = None
-STATS_CACHE = None
 
+import requests
 def auto_download_listone():
     print("🔄 Avvio download automatico del Listone Master...")
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
         res = requests.get(LISTONE_URL, headers=headers, timeout=15)
         if res.status_code == 200:
@@ -141,25 +121,23 @@ def auto_download_listone():
             print("✅ Listone Master aggiornato con successo da remoto!")
             load_data(force_reload=True)
             return True
-        else:
-            print(f"⚠️ Errore download listone, status code: {res.status_code}")
-            return False
     except Exception as e:
         print(f"❌ Errore durante l'auto-download: {e}")
-        return False
+    return False
 
 def load_data(force_reload=False):
-    global DATA_CACHE, STATS_CACHE
+    global DATA_CACHE
     if DATA_CACHE is None or force_reload:
         file_target = "Lista_Finale_Master.csv" if os.path.exists("Lista_Finale_Master.csv") else ("Lista-FantaAsta-Fantacalcio.csv" if os.path.exists("Lista-FantaAsta-Fantacalcio.csv") else None)
         if file_target:
             try:
-                try:
-                    DATA_CACHE = pd.read_csv(file_target, sep=';')
-                    if len(DATA_CACHE.columns) < 3:
-                        DATA_CACHE = pd.read_csv(file_target, sep=',')
-                except Exception:
-                    DATA_CACHE = pd.read_csv(file_target, header=None)
+                # Lettura robusta del CSV
+                try: DATA_CACHE = pd.read_csv(file_target, sep=';', on_bad_lines='skip')
+                except Exception: DATA_CACHE = pd.read_csv(file_target, sep=',', on_bad_lines='skip')
+                
+                # Normalizzazione Colonne se mancano intestazioni
+                if len(DATA_CACHE.columns) < 3:
+                    DATA_CACHE = pd.read_csv(file_target, header=None, on_bad_lines='skip')
                     DATA_CACHE.columns = [
                         'Id', 'Nome_Breve', 'Nome', 'R', 'Ruolo_Esteso', 'Qt.A', 'Qt.I', 
                         'Qt.M', 'Diff.M', 'Squadra', 'FVM', 'FVM.M', 'Piede', 'Nazionalita', 
@@ -168,44 +146,13 @@ def load_data(force_reload=False):
 
                 if 'Ruolo' in DATA_CACHE.columns and 'R' not in DATA_CACHE.columns:
                     DATA_CACHE.rename(columns={'Ruolo': 'R'}, inplace=True)
-                if 'Valore_Base_Perc' in DATA_CACHE.columns and 'FVM' not in DATA_CACHE.columns:
-                    DATA_CACHE['FVM'] = DATA_CACHE['Valore_Base_Perc']
-
-                DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE['FVM'], errors='coerce').fillna(0)
-                print(f"✅ File {file_target} caricato in memoria!")
-            except Exception as e: print(f"⚠️ Errore lettura CSV Listone: {e}")
-
-    if STATS_CACHE is None or force_reload:
-        stats_file = None
-        for f in os.listdir('.'):
-            if 'statistiche' in f.lower() and (f.endswith('.xlsx') or f.endswith('.xls') or f.endswith('.csv')):
-                stats_file = f
-                break
                 
-        if stats_file:
-            try:
-                if stats_file.endswith('.csv'):
-                    STATS_CACHE = pd.read_csv(stats_file)
-                else:
-                    # RILEVAMENTO DINAMICO HEADER EXCEL PER EVITARE COLONNE SFASATE
-                    try:
-                        temp_df = pd.read_excel(stats_file, header=0)
-                        cols = [str(c).upper() for c in temp_df.columns]
-                        if 'NOME' in cols or any('NOME' in str(c) for c in cols):
-                            STATS_CACHE = temp_df
-                        else:
-                            STATS_CACHE = pd.read_excel(stats_file, header=1)
-                    except Exception:
-                        STATS_CACHE = pd.read_excel(stats_file, header=1)
+                # Assicura che la FVM sia numerica
+                DATA_CACHE['FVM'] = pd.to_numeric(DATA_CACHE.get('FVM', 0), errors='coerce').fillna(0)
                 
-                # Normalizza i nomi delle colonne
-                STATS_CACHE.columns = [str(c).strip() for c in STATS_CACHE.columns]
-                col_nome = [c for c in STATS_CACHE.columns if 'nome' in c.lower()]
-                if col_nome:
-                    STATS_CACHE['Nome_Norm'] = STATS_CACHE[col_nome[0]].apply(normalize_str)
-                    
-                print(f"✅ File {stats_file} caricato e indicizzato con successo!")
-            except Exception as e: print(f"⚠️ Errore lettura {stats_file}: {e}")
+                print(f"✅ UNICA FONTE DATI CARICATA: {file_target}")
+            except Exception as e: 
+                print(f"⚠️ Errore lettura CSV Listone: {e}")
 
     return DATA_CACHE
 
@@ -215,7 +162,6 @@ try:
     scheduler = BackgroundScheduler()
     scheduler.add_job(auto_download_listone, 'cron', hour=4, minute=0)
     scheduler.start()
-    print("⏰ Pianificatore Auto-Download attivo")
 except Exception: pass
 
 user_sessions = {}
@@ -252,53 +198,40 @@ def get_available_players(df, session):
     return df[~df['Nome'].isin(esclusi)]
 
 # =========================================================================
-# RICERCA NELLO STORICO RISOLTA (SELEZIONA LA RIGA CON PIÙ PRESENZE)
+# MOTORE DI RICERCA ASSOLUTO: SOLO E UNICAMENTE SUL FILE MASTER
 # =========================================================================
-def find_player_in_stats(nome):
-    global STATS_CACHE
-    if STATS_CACHE is None or STATS_CACHE.empty:
-        load_data()
-        if STATS_CACHE is None or STATS_CACHE.empty:
-            return None
-    
+def get_player_stats(nome, df):
+    """Estrae la riga del giocatore esclusivamente dal DataFrame Master"""
+    if df is None or df.empty: return None
     norm_name = normalize_str(nome)
     
-    matches = STATS_CACHE[STATS_CACHE['Nome_Norm'] == norm_name]
+    # Match esatto
+    matches = df[df['Nome'].astype(str).apply(normalize_str) == norm_name]
     if matches.empty:
-        matches = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(norm_name, regex=False, na=False)]
-    if matches.empty:
-        matches = STATS_CACHE[STATS_CACHE['Nome_Norm'].apply(lambda x: norm_name in x or x in norm_name if isinstance(x, str) else False)]
-    if matches.empty:
-        fw = norm_name.split()[0] if norm_name else ""
-        if len(fw) > 2:
-            matches = STATS_CACHE[STATS_CACHE['Nome_Norm'].str.contains(fw, regex=False, na=False)]
-            
+        # Match parziale
+        matches = df[df['Nome'].astype(str).apply(normalize_str).str.contains(norm_name, regex=False, na=False)]
+    
     if not matches.empty:
-        df_m = matches.copy()
-        # FIX DEFINITIVO: Ordina sempre per presenze (Pv) decrescenti!
-        for col_p in ['Pv', 'Pres', 'Pg', 'Partite']:
-            if col_p in df_m.columns:
-                df_m['Pv_Num'] = pd.to_numeric(df_m[col_p], errors='coerce').fillna(0)
-                df_m = df_m.sort_values(by='Pv_Num', ascending=False)
-                break
-        return df_m.iloc[0]
-            
+        return matches.iloc[0]
     return None
 
-def get_macellaio_info(nome):
-    row = find_player_in_stats(nome)
+def get_macellaio_info(nome, df):
+    row = get_player_stats(nome, df)
     if row is not None:
         try:
-            amm, esp, pv = int(row.get('Amm', 0)), int(row.get('Esp', 0)), int(row.get('Pv', 1))
+            amm = int(pd.to_numeric(row.get('Amm', 0), errors='coerce'))
+            esp = int(pd.to_numeric(row.get('Esp', 0), errors='coerce'))
+            pv = int(pd.to_numeric(row.get('Pv', row.get('Pres', 1)), errors='coerce'))
+            
             if (amm >= 6 or esp >= 1) and pv > 5:
-                return f"\n🪓 <b>ALLARME MACELLAIO:</b> <code>{amm} Gialli</code>, <code>{esp} Rossi</code> in <code>{pv} pres.</code>"
+                return f"\n🪓 <b>ALLARME MACELLAIO:</b> <code>{amm} Gialli</code>, <code>{esp} Rossi</code>"
             else:
-                return f"\n🛡 <b>Disciplinato:</b> <code>{amm} Gialli</code>, <code>{esp} Rossi</code> in <code>{pv} pres.</code>"
+                return f"\n🛡 <b>Disciplinato:</b> <code>{amm} Gialli</code>, <code>{esp} Rossi</code>"
         except Exception: pass
-    return ""
+    return "\n🛡 <b>Dati Cartellini assenti nel Master.</b>"
 
-def get_storico_excel_o_web(nome, squadra=""):
-    row = find_player_in_stats(nome)
+def get_storico(nome, df):
+    row = get_player_stats(nome, df)
     if row is not None:
         pv = row.get('Pv', row.get('Pres', 0))
         mv = row.get('Mv', row.get('MV', 0.0))
@@ -308,37 +241,11 @@ def get_storico_excel_o_web(nome, squadra=""):
         amm = row.get('Amm', 0)
         
         return (
-            f"📊 <b>STORICO REALE: {html.escape(nome.upper())}</b>\n───────────────────────────\n"
+            f"📊 <b>STORICO (Dal file Master): {html.escape(str(row.get('Nome', nome)).upper())}</b>\n───────────────────────────\n"
             f"🏟 Pres: <code>{pv}</code> │ 📈 MV: <code>{mv}</code> │ FM: <code>{fm}</code>\n"
             f"⚽ Gol: <code>{gf}</code> │ 🎯 Ass: <code>{ass}</code> │ 🟨 Gialli: <code>{amm}</code>\n"
         )
-    query = f'"{nome}" {squadra} statistiche presenze gol assist ammonizioni transfermarkt fantacalcio'
-    return f"📊 <b>STORICO WEB REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{fetch_real_web_data(query, max_results=2)}"
-
-def fetch_real_web_data(query, max_results=2):
-    output = []
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        res = requests.get(f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}", headers=headers, timeout=8)
-        if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            for r in soup.find_all('div', class_='result__body')[:max_results]:
-                snippet, title_tag = r.find('a', class_='result__snippet'), r.find('h2', class_='result__title')
-                if snippet and title_tag and title_tag.find('a'):
-                    link = title_tag.find('a')['href']
-                    if link.startswith('//duckduckgo.com/l/?uddg='): link = urllib.parse.unquote(link.split('uddg=')[1].split('&')[0])
-                    output.append(f"🔎 <i>{html.escape(snippet.text.strip())}</i>\n🔗 <a href=\"{html.escape(link)}\">Fonte</a>")
-    except Exception: pass
-    if not output and WEB_SEARCH_ENABLED:
-        try:
-            for r in DDGS().text(query, max_results=max_results):
-                output.append(f"🔎 <i>{html.escape(r['body'])}</i>\n🔗 <a href=\"{html.escape(r['href'])}\">Fonte</a>")
-        except Exception: pass
-    return "\n\n".join(output) if output else "⚠️ Nessun dettaglio rilevante trovato sul web."
-
-def get_cartella_clinica_reale(nome, squadra=""):
-    query = f'"{nome}" {squadra} infortunio tempi recupero rientro partite saltate SOS Fanta'
-    return f"🏥 <b>CARTELLA CLINICA REALE: {html.escape(nome.upper())} ({html.escape(squadra)})</b>\n\n{fetch_real_web_data(query, max_results=2)}"
+    return "⚠️ Nessun dato presente nel file Master per questo giocatore."
 
 def draw_pitch_image(titolari_by_role, schema="3-4-3"):
     if not PIL_ENABLED: return None
@@ -391,10 +298,12 @@ def calcola_formazione_ideale(session, df):
     tit, pan = {'P': [], 'D': [], 'C': [], 'A': []}, {'P': [], 'D': [], 'C': [], 'A': []}
     for p in rosa:
         nome, r = p['nome'], p.get('ruolo', 'C')
-        stats = find_player_in_stats(nome)
-        mv = float(str(stats.get('Mv', 6.0)).replace(',', '.')) if stats is not None else 6.0
-        fm = float(str(stats.get('Fm', 6.0)).replace(',', '.')) if stats is not None else 6.0
-        pv, amm = (int(stats.get('Pv', 0)), int(stats.get('Amm', 0))) if stats is not None else (0, 0)
+        row = get_player_stats(nome, df)
+        
+        mv = float(str(row.get('Mv', 6.0)).replace(',', '.')) if row is not None else 6.0
+        fm = float(str(row.get('Fm', 6.0)).replace(',', '.')) if row is not None else 6.0
+        amm = int(row.get('Amm', 0)) if row is not None else 0
+        
         tit[r].append({'nome': nome, 'power': fm + (mv - 6.0) - (amm * 0.05), 'fm': fm, 'amm': amm})
 
     for r in tit: tit[r] = sorted(tit[r], key=lambda x: x['power'], reverse=True)
@@ -494,7 +403,7 @@ def send_asta_dashboard(chat_id, user_id, message_id=None):
     else: bot.send_message(chat_id, testo, parse_mode="HTML", reply_markup=markup)
 
 # =========================================================================
-# SCHEDA GIOCATORE CON PREZZI E FASCE REALI RISOLTI (LEAO, MASTANTUONO, PAZ)
+# SCHEDA GIOCATORE CON PREZZI E FASCE REALI
 # =========================================================================
 def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
     p_data = df[df['Nome'] == player_name].iloc[0]
@@ -508,29 +417,26 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     lega_part = session.get('lega_partecipanti', 8)
     part_factor = 1 + ((lega_part - 8) * 0.025)
 
-    # CALCOLO FAIR PRICE CON CURVA ESPONENZIALE REALE PER RUOLO
     if ruolo == 'A':
-        if fvm_val >= 250:   fair_price = int(fvm_val * 0.50)  # Top Assoluti (Lautaro ~180-220cr)
-        elif fvm_val >= 70:  fair_price = int(fvm_val * 1.40)  # Top / Semi-Top (Leao ~120-140cr)
-        elif fvm_val >= 25:  fair_price = int(fvm_val * 0.80)  # 2°/3° Fascia
+        if fvm_val >= 250:   fair_price = int(fvm_val * 0.50)
+        elif fvm_val >= 70:  fair_price = int(fvm_val * 1.40)
+        elif fvm_val >= 25:  fair_price = int(fvm_val * 0.80)
         else:                fair_price = max(1, int(fvm_val * 0.40))
     elif ruolo == 'C':
-        if fvm_val >= 120:   fair_price = int(fvm_val * 0.65)  # Top Centrocampo
-        elif fvm_val >= 35:  fair_price = int(fvm_val * 0.85)  # Semi-Top (Mastantuono, Nico Paz ~30-45cr)
+        if fvm_val >= 120:   fair_price = int(fvm_val * 0.65)
+        elif fvm_val >= 35:  fair_price = int(fvm_val * 0.85)
         else:                fair_price = max(1, int(fvm_val * 0.40))
     elif ruolo == 'D':
         fair_price = max(1, int(fvm_val * 0.45))
-    else: # Portieri
+    else:
         fair_price = max(1, int(fvm_val * 0.50))
 
-    # Adattamento al budget e partecipanti
     fair_price = int(fair_price * (lega_bud / 500.0) * part_factor)
     fair_price = max(1, fair_price)
 
     max_rilancio = int(fair_price * 1.15)
     asta_stop = int(fair_price * 1.25)
 
-    # ASSEGNAZIONE FASCE COERENTI CON I VALORI REALI
     if ruolo == 'A':
         if fair_price >= 110:   fascia = "🥇 1° Fascia 👑"
         elif fair_price >= 40:  fascia = "🥈 2° Fascia 🥇"
@@ -550,7 +456,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     stats = get_roster_stats(session)
     info_text = (
         f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n⚠️ <b>Rischio/Macellaio:</b> {get_macellaio_info(player_name)}\n\n"
+        f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n⚠️ <b>Rischio/Macellaio:</b> {get_macellaio_info(player_name, df)}\n\n"
         f"🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price} cr.</code>\n"
         f"🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n"
         f"💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -564,8 +470,8 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     else:
         markup.add(InlineKeyboardButton("⚡ Compra (Test)", callback_data=f"buy_{player_name}"), InlineKeyboardButton("🚫 Scarta", callback_data=f"taken_{player_name}"))
 
-    markup.add(InlineKeyboardButton("📊 Storico Reale", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🏥 Clinica Web", callback_data=f"cl_{player_name}"))
-    markup.add(InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"), InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
+    markup.add(InlineKeyboardButton("📊 Storico (Master)", callback_data=f"stats_{player_name}"), InlineKeyboardButton("🔄 Sliding Doors", callback_data=f"sd_{player_name}"))
+    markup.add(InlineKeyboardButton("🔮 Simula What-If", callback_data=f"wi_{player_name}"))
     
     in_wl = player_name in session.get('wishlist', [])
     if is_scommessa:
@@ -781,14 +687,9 @@ def handle_document(message):
     if not (fname.endswith('.csv') or fname.endswith('.xlsx') or fname.endswith('.xls')): return bot.reply_to(message, "❌ Invia solo file <code>.csv</code> o <code>.xlsx</code>!", parse_mode="HTML")
     try:
         f_data = bot.download_file(bot.get_file(message.document.file_id).file_path)
-        if "statistiche" in fname:
-            with open("Statistiche.xlsx", 'wb') as f: f.write(f_data)
-            load_data(force_reload=True)
-            bot.reply_to(message, "✅ <b>STATISTICHE SINCRONIZZATE!</b>", parse_mode="HTML")
-        else:
-            with open("Lista_Finale_Master.csv" if fname.endswith('.csv') else "listone.xlsx", 'wb') as f: f.write(f_data)
-            load_data(force_reload=True)
-            bot.reply_to(message, "✅ <b>DATABASE LISTONE AGGIORNATO!</b>", parse_mode="HTML")
+        with open("Lista_Finale_Master.csv", 'wb') as f: f.write(f_data)
+        load_data(force_reload=True)
+        bot.reply_to(message, "✅ <b>DATABASE LISTONE MASTER AGGIORNATO!</b>", parse_mode="HTML")
     except Exception as e: bot.send_message(message.chat.id, f"❌ Errore caricamento: {str(e)}")
 
 # ==========================================
@@ -881,14 +782,20 @@ def handle_callbacks(call):
         bot.edit_message_text(t, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data == "menu_power":
-        hot = [f"🔥 <b>{p['nome']}</b> (FM: <code>{fm}</code>)" for p in session.get('rosa', []) if (stats := find_player_in_stats(p['nome'])) is not None and (fm := float(str(stats.get('Fm', 6.0)).replace(',', '.'))) >= 6.8]
+        hot = []
+        for p in session.get('rosa', []):
+            row = get_player_stats(p['nome'], df)
+            if row is not None:
+                fm = float(str(row.get('Fm', 0.0)).replace(',', '.'))
+                if fm >= 6.8:
+                    hot.append(f"🔥 <b>{p['nome']}</b> (FM: <code>{fm}</code>)")
         t = "🔥 <b>POWER INDEX</b>\n━━━━━━━━━━━━━━━━━━━━━━\n" + ("\n".join(hot) if hot else "<i>Nessuno in stato di grazia.</i>")
         bot.edit_message_text(t, chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data == "menu_sistema": bot.edit_message_text("⚙️ <b>SISTEMA</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=system_menu_keyboard())
     elif call.data == "reload_excel": 
         load_data(force_reload=True)
-        bot.send_message(chat_id, "⚡ <b>Dati sincronizzati!</b>", parse_mode="HTML")
+        bot.send_message(chat_id, "⚡ <b>Dati dal Master sincronizzati!</b>", parse_mode="HTML")
     elif call.data == "reset_confirm":
         user_sessions[user_id] = {'budget': session.get('lega_budget_iniziale', 500), 'rosa': [], 'wishlist': session.get('wishlist', []), 'scartati': [], 'compare_p1': None, 'lega_budget_iniziale': session.get('lega_budget_iniziale', 500), 'lega_partecipanti': session.get('lega_partecipanti', 8), 'modificatore_attivo': session.get('modificatore_attivo', False), 'fase_asta': None}
         send_dashboard(chat_id, user_id, call.message.message_id)
@@ -920,13 +827,9 @@ def handle_callbacks(call):
         markup.add(InlineKeyboardButton("🔄 Aggiorna", callback_data="pro_spiccioli"), InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
         bot.edit_message_text(f"🎰 <b>TAPPABUCHI LOW-COST</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
-    elif call.data.startswith("cl_"):
-        p = call.data.replace("cl_", "")
-        bot.edit_message_text(get_cartella_clinica_reale(p, df[df['Nome'] == p].iloc[0].get('Squadra', '')), chat_id, bot.send_message(chat_id, "⏳ <i>Ricerca notizie...</i>", parse_mode="HTML").message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
-
     elif call.data.startswith("stats_"):
         p = call.data.replace("stats_", "")
-        bot.edit_message_text(get_storico_excel_o_web(p, df[df['Nome'] == p].iloc[0].get('Squadra', '')), chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
+        bot.edit_message_text(get_storico(p, df), chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data.startswith("wi_"): bot.register_next_step_handler(bot.send_message(chat_id, f"🔮 <b>SIMULATORE WHAT-IF</b> per <b>{html.escape(call.data.replace('wi_', ''))}</b>:", parse_mode="HTML"), process_whatif_price, call.data.replace("wi_", ""), user_id)
 
