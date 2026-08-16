@@ -303,20 +303,27 @@ def get_macellaio_info(nome, df):
 
 def get_storico(nome, df):
     row = get_player_stats(nome, df)
-    if row is not None:
-        pv = row.get('Pv', row.get('Pres', 0))
-        mv = row.get('Mv', row.get('MV', 0.0))
-        fm = row.get('Fm', row.get('FM', 0.0))
-        gf = row.get('Gf', row.get('Gol', 0))
-        ass = row.get('Ass', row.get('Assist', 0))
-        amm = row.get('Amm', 0)
-        
-        return (
-            f"📊 <b>STORICO (Dal file Master): {html.escape(str(row.get('Nome', nome)).upper())}</b>\n───────────────────────────\n"
-            f"🏟 Pres: <code>{pv}</code> │ 📈 MV: <code>{mv}</code> │ FM: <code>{fm}</code>\n"
-            f"⚽ Gol: <code>{gf}</code> │ 🎯 Ass: <code>{ass}</code> │ 🟨 Gialli: <code>{amm}</code>\n"
-        )
-    return "⚠️ Nessun dato presente nel file Master per questo giocatore."
+    if row is None:
+        return "⚠️ Nessun dato presente nel file Master per questo giocatore."
+
+    prof = analisi.profilo(row, analisi.statistiche_squadre(df), analisi.baseline_ruoli(df))
+    testo = (
+        f"📊 <b>STORICO (Dal file Master): {html.escape(prof['nome'].upper())}</b>\n"
+        f"───────────────────────────\n"
+        f"🏟 Pres: <code>{prof['presenze']}</code> ({prof['etichetta_titolarita']}) │ "
+        f"📈 MV: <code>{prof['voto_puro']:.2f}</code> │ FM: <code>{prof['fantamedia']:.2f}</code>\n"
+        f"🎁 Bonus a partita: <code>{prof['bonus_partita']:+.2f}</code>\n"
+        f"⚽ Gol: <code>{prof['gol']}</code> │ 🎯 Ass: <code>{prof['assist']}</code> │ "
+        f"🟨 <code>{prof['ammonizioni']}</code> │ 🟥 <code>{prof['espulsioni']}</code>\n"
+    )
+    if prof['rigorista']:
+        testo += f"⚪ <b>Rigorista</b>: {prof['rigori_calciati']} rigori calciati\n"
+    if prof.get('gol_subiti_partita') is not None and prof['ruolo'] in ('P', 'D'):
+        testo += f"🛡 Gol subiti dalla squadra: <code>{prof['gol_subiti_partita']}</code> a partita\n"
+    if prof['presenze'] < 10 and prof['fantamedia'] > 0:
+        testo += "\n⚠️ <i>Poche presenze: le medie non sono affidabili.</i>\n"
+    return testo
+
 
 def draw_pitch_image(titolari_by_role, schema="3-4-3"):
     if not PIL_ENABLED: return None
@@ -803,13 +810,52 @@ def search_player(message):
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
     fname = message.document.file_name.lower()
-    if not (fname.endswith('.csv') or fname.endswith('.xlsx') or fname.endswith('.xls')): return bot.reply_to(message, "❌ Invia solo file <code>.csv</code> o <code>.xlsx</code>!", parse_mode="HTML")
+    if not (fname.endswith('.csv') or fname.endswith('.xlsx') or fname.endswith('.xls')):
+        return bot.reply_to(message, "❌ Invia solo file <code>.csv</code> o <code>.xlsx</code>!", parse_mode="HTML")
+
+    percorso_finale = "Lista_Finale_Master.csv"
+    temporaneo = "upload_temp" + os.path.splitext(fname)[1]
     try:
-        f_data = bot.download_file(bot.get_file(message.document.file_id).file_path)
-        with open("Lista_Finale_Master.csv", 'wb') as f: f.write(f_data)
+        dati = bot.download_file(bot.get_file(message.document.file_id).file_path)
+        with open(temporaneo, 'wb') as f:
+            f.write(dati)
+
+        # Un .xlsx va convertito, non rinominato: salvarlo come .csv rompeva il bot
+        if fname.endswith(('.xlsx', '.xls')):
+            nuovo = pd.read_excel(temporaneo)
+        else:
+            try:
+                nuovo = pd.read_csv(temporaneo, sep=';', on_bad_lines='skip')
+            except Exception:
+                nuovo = pd.read_csv(temporaneo, sep=',', on_bad_lines='skip')
+
+        mancanti = [c for c in ('Nome', 'R', 'Squadra') if c not in nuovo.columns]
+        if mancanti or nuovo.empty:
+            return bot.reply_to(
+                message,
+                f"❌ <b>File non valido</b>: mancano le colonne {', '.join(mancanti) or '(file vuoto)'}.\n"
+                f"Il listone precedente NON e' stato toccato.", parse_mode="HTML")
+
+        if os.path.exists(percorso_finale):
+            try:
+                os.replace(percorso_finale, percorso_finale + ".bak")
+            except Exception:
+                pass
+
+        nuovo.to_csv(percorso_finale, sep=';', index=False)
         load_data(force_reload=True)
-        bot.reply_to(message, "✅ <b>DATABASE LISTONE MASTER AGGIORNATO!</b>", parse_mode="HTML")
-    except Exception as e: bot.send_message(message.chat.id, f"❌ Errore caricamento: {str(e)}")
+
+        avviso = "" if 'Prezzo' in nuovo.columns else "\n⚠️ <i>Manca la colonna Prezzo: i valori saranno stimati.</i>"
+        bot.reply_to(message, f"✅ <b>LISTONE AGGIORNATO</b>: {len(nuovo)} giocatori.{avviso}", parse_mode="HTML")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Errore caricamento: {str(e)}")
+    finally:
+        if os.path.exists(temporaneo):
+            try:
+                os.remove(temporaneo)
+            except Exception:
+                pass
+
 
 # ==========================================
 # GESTIONE CALLBACKS (Bottoni Inline)
@@ -1014,14 +1060,24 @@ def handle_callbacks(call):
         send_asta_dashboard(chat_id, user_id, call.message.message_id) if session.get('fase_asta') else send_dashboard(chat_id, user_id, call.message.message_id)
 
     elif call.data.startswith("menu_modificatore"):
-        p, mods = int(call.data.split("_page_")[1]) if "_page_" in call.data else 1, get_available_players(df, session)[(get_available_players(df, session)['R'] == 'D') & (get_available_players(df, session)['FVM'] <= 35)].sort_values(by='FVM', ascending=False)
+        p = int(call.data.split("_page_")[1]) if "_page_" in call.data else 1
+        mods = analisi.candidati_modificatore(get_available_players(df, session), limite=45)
         markup, nav = InlineKeyboardMarkup(row_width=1), []
-        for _, r in mods.iloc[(p-1)*15:p*15].iterrows(): markup.add(InlineKeyboardButton(f"🛡️ {r['Nome']} (FVM: {r['FVM']})", callback_data=f"sq_pl_{r['Nome']}"))
-        if p > 1: nav.append(InlineKeyboardButton("◀️ Precedenti", callback_data=f"menu_modificatore_page_{p - 1}"))
-        if len(mods) > p*15: nav.append(InlineKeyboardButton(f"➕ Altri", callback_data=f"menu_modificatore_page_{p + 1}"))
+        if mods is not None and not mods.empty:
+            for _, r in mods.iloc[(p - 1) * 15:p * 15].iterrows():
+                markup.add(InlineKeyboardButton(
+                    f"🛡️ {r['Nome']} ({r['Squadra']}) · MV {_num(r.get('Mv')):.2f} · {int(_num(r.get('Pv')))} pres",
+                    callback_data=f"sq_pl_{r['Nome']}"))
+            if p > 1:
+                nav.append(InlineKeyboardButton("◀️ Precedenti", callback_data=f"menu_modificatore_page_{p - 1}"))
+            if len(mods) > p * 15:
+                nav.append(InlineKeyboardButton("➕ Altri", callback_data=f"menu_modificatore_page_{p + 1}"))
         if nav: markup.row(*nav)
         markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"🛡️ <b>MODIFICATORE 6.5</b> (Pag. {p})", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        bot.edit_message_text(
+            f"🛡️ <b>MODIFICATORE 6.5</b> (Pag. {p})\n"
+            f"<i>Conta il voto puro, non la fantamedia: ordinati per MV ponderata e solidita' della difesa</i>",
+            chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_rosa":
         r = "\n".join([f"<b>{ROLE_ICONS[ru]} {ru}:</b>\n" + "".join([f"• {html.escape(p['nome'])} (<code>{p['prezzo']} cr.</code>)\n" for p in session.get('rosa', []) if p.get('ruolo') == ru]) for ru in ['P', 'D', 'C', 'A'] if any(p.get('ruolo') == ru for p in session.get('rosa', []))])
@@ -1062,7 +1118,7 @@ def handle_callbacks(call):
 
     elif call.data == "menu_scommessa_start":
         avail = get_available_players(df, session)
-        sl = trova_scommesse(avail)
+        sl = analisi.scommesse(avail)
         send_player_card_view(chat_id, sl.sample(1).iloc[0]['Nome'], call.message.message_id, df, session, True) if sl is not None and not sl.empty else safe_answer_callback(call.id, "Nessuna scommessa!", True)
 
     elif call.data == "menu_studio_start":
