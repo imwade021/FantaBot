@@ -62,6 +62,29 @@ def _num(v, default=0.0):
         return default
 
 
+def fair_price(row, session):
+    """
+    UNICO punto in cui si calcola il prezzo consigliato di un giocatore.
+    Parte dalla colonna Prezzo del Master (tarata su 8 squadre / 500 crediti)
+    e la riscala su budget e partecipanti della lega.
+    """
+    if row is None:
+        return 1
+    dati = row if isinstance(row, dict) else row.to_dict()
+
+    prezzo = _num(dati.get('Prezzo'))
+    if prezzo <= 0:
+        # Master vecchio senza colonna Prezzo: stima dalla FVM
+        fvm = _num(dati.get('FVM'))
+        quote = {'A': 0.50, 'C': 0.55, 'D': 0.45, 'P': 0.50}
+        prezzo = fvm * quote.get(str(dati.get('R', '')).upper(), 0.50)
+
+    budget = session.get('lega_budget_iniziale', 500)
+    partecipanti = session.get('lega_partecipanti', 8)
+    fattore = 1 + ((partecipanti - 8) * 0.025)
+    return max(1, int(prezzo * (budget / 500.0) * fattore))
+
+
 def gerarchie_rigoristi(df, squadra=None):
     """Chi ha calciato rigori la scorsa stagione, per squadra, dal piu' usato."""
     if df is None or df.empty or 'Rc' not in df.columns:
@@ -354,34 +377,86 @@ def advanced_trade_analyzer_3d(p1, p2, session, df=None):
 
 
 def calcola_formazione_ideale(session, df):
+    """
+    Schieramento consigliato. Il 'power' non somma piu' fantamedia e voto
+    (che si contavano due volte): usa la fantamedia ponderata per presenze,
+    con un bonus per chi e' titolare fisso e un malus per i cartellini.
+    """
     rosa = session.get('rosa', [])
-    if not rosa: return "❌ <b>La tua rosa è vuota!</b> Acquista o aggiungi giocatori.", None
+    if not rosa:
+        return "❌ <b>La tua rosa è vuota!</b> Acquista o aggiungi giocatori.", None
 
-    tit, pan = {'P': [], 'D': [], 'C': [], 'A': []}, {'P': [], 'D': [], 'C': [], 'A': []}
+    baseline = analisi.baseline_ruoli(df)
+    per_ruolo = {'P': [], 'D': [], 'C': [], 'A': []}
+
     for p in rosa:
-        nome, r = p['nome'], p.get('ruolo', 'C')
-        row = get_player_stats(nome, df)
-        
-        mv = float(str(row.get('Mv', 6.0)).replace(',', '.')) if row is not None else 6.0
-        fm = float(str(row.get('Fm', 6.0)).replace(',', '.')) if row is not None else 6.0
-        amm = int(row.get('Amm', 0)) if row is not None else 0
-        
-        tit[r].append({'nome': nome, 'power': fm + (mv - 6.0) - (amm * 0.05), 'fm': fm, 'amm': amm})
+        ruolo = p.get('ruolo', 'C')
+        if ruolo not in per_ruolo:
+            continue
+        row = get_player_stats(p['nome'], df)
+        if row is None:
+            per_ruolo[ruolo].append({'nome': p['nome'], 'power': 0.0, 'fm': 0.0,
+                                     'amm': 0, 'pres': 0, 'nota': 'senza dati'})
+            continue
 
-    for r in tit: tit[r] = sorted(tit[r], key=lambda x: x['power'], reverse=True)
-    p_t, d_t, c_t, a_t = tit['P'][:1], tit['D'][:3], tit['C'][:4], tit['A'][:3]
-    for r in ['P', 'D', 'C', 'A']: pan[r] = [x for x in tit[r] if x['nome'] not in [t['nome'] for t in p_t + d_t + c_t + a_t]]
+        prof = analisi.profilo(row, None, baseline)
+        power = prof['fantamedia_ponderata'] + (prof['titolarita'] * 0.5) - (prof['ammonizioni'] * 0.02)
+        per_ruolo[ruolo].append({
+            'nome': prof['nome'], 'power': round(power, 3), 'fm': prof['fantamedia'],
+            'amm': prof['ammonizioni'], 'pres': prof['presenze'],
+            'nota': prof['etichetta_titolarita'],
+        })
 
-    testo = "📋 <b>FORMAZIONE CONSIGLIATA (3-4-3)</b>\n━━━━━━━━━━━━━━━━━━━━━━\n<b>TITOLARI:</b>\n"
-    testo += f"🧤 <b>P:</b> {p_t[0]['nome'] if p_t else 'Nessuno'}\n🛡️ <b>D:</b> {', '.join([x['nome'] for x in d_t])}\n"
-    testo += f"⚙️ <b>C:</b> {', '.join([x['nome'] for x in c_t])}\n🎯 <b>A:</b> {', '.join([x['nome'] for x in a_t])}\n\n<b>PANCHINA:</b>\n"
-    for r in ['P', 'D', 'C', 'A']:
-        if pan[r]: testo += f"{ROLE_ICONS[r]} <b>{r}:</b> {', '.join([f'{x['nome']} (FM:{x['fm']})' for x in pan[r][:3]])}\n"
-    
-    diff = [f"⚠️ {x['nome']} ({x['amm']} gialli)" for x in p_t + d_t + c_t + a_t if x['amm'] >= 4]
-    if diff: testo += "\n🚨 <b>RADAR DIFFIDATI:</b>\n" + "\n".join(diff)
+    for ruolo in per_ruolo:
+        per_ruolo[ruolo].sort(key=lambda x: x['power'], reverse=True)
 
-    return testo, draw_pitch_image({'P': p_t, 'D': d_t, 'C': c_t, 'A': a_t}, "3-4-3")
+    # Il modulo si adatta a chi hai davvero in rosa
+    moduli = [(3, 4, 3), (3, 5, 2), (4, 4, 2), (4, 3, 3), (4, 5, 1), (5, 3, 2), (5, 4, 1)]
+    disponibili = {r: len(per_ruolo[r]) for r in per_ruolo}
+    schema = next((m for m in moduli
+                   if disponibili['D'] >= m[0] and disponibili['C'] >= m[1] and disponibili['A'] >= m[2]),
+                  None)
+    if schema is None:
+        schema = (min(disponibili['D'], 3), min(disponibili['C'], 4), min(disponibili['A'], 3))
+
+    titolari = {
+        'P': per_ruolo['P'][:1],
+        'D': per_ruolo['D'][:schema[0]],
+        'C': per_ruolo['C'][:schema[1]],
+        'A': per_ruolo['A'][:schema[2]],
+    }
+    nomi_titolari = {x['nome'] for gruppo in titolari.values() for x in gruppo}
+    panchina = {r: [x for x in per_ruolo[r] if x['nome'] not in nomi_titolari] for r in per_ruolo}
+
+    modulo = f"{schema[0]}-{schema[1]}-{schema[2]}"
+    testo = f"📋 <b>FORMAZIONE CONSIGLIATA ({modulo})</b>\n━━━━━━━━━━━━━━━━━━━━━━\n<b>TITOLARI:</b>\n"
+    for ruolo in ['P', 'D', 'C', 'A']:
+        elenco = ", ".join(x['nome'] for x in titolari[ruolo]) or "—"
+        testo += f"{ROLE_ICONS[ruolo]} <b>{ruolo}:</b> {elenco}\n"
+
+    voci_panchina = []
+    for ruolo in ['P', 'D', 'C', 'A']:
+        if panchina[ruolo]:
+            nomi = ", ".join(f"{x['nome']} ({x['fm']:.2f})" for x in panchina[ruolo][:3])
+            voci_panchina.append(f"{ROLE_ICONS[ruolo]} <b>{ruolo}:</b> {nomi}")
+    if voci_panchina:
+        testo += "\n<b>PANCHINA:</b>\n" + "\n".join(voci_panchina) + "\n"
+
+    if disponibili['P'] == 0:
+        testo += "\n🚨 <b>Manca il portiere!</b>\n"
+
+    rischi = [f"⚠️ {x['nome']} ({x['amm']} gialli)"
+              for gruppo in titolari.values() for x in gruppo if x['amm'] >= 4]
+    panchinari = [f"🪑 {x['nome']} è un {x['nota']} ({x['pres']} pres.)"
+                  for gruppo in titolari.values() for x in gruppo
+                  if x['nota'] in ('riserva', 'alternanza')]
+    if rischi:
+        testo += "\n🚨 <b>RADAR DIFFIDATI:</b>\n" + "\n".join(rischi) + "\n"
+    if panchinari:
+        testo += "\n<b>ATTENZIONE ALLA TITOLARITÀ:</b>\n" + "\n".join(panchinari)
+
+    return testo, draw_pitch_image(titolari, modulo)
+
 
 # ==========================================
 # MENU E DASHBOARD
@@ -481,44 +556,32 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
 
     # Il prezzo lo calcola il Master (colonna Prezzo, tarata su 8 squadre/500 crediti).
     # Qui si riscala solo su budget e numero di partecipanti della lega.
-    prezzo_master = _num(p_data.get('Prezzo', 0))
+    fair_price_val = fair_price(p_data, session)
 
-    if prezzo_master > 0:
-        fair_price = prezzo_master
-    else:
-        # Fallback per file Master vecchi, senza colonna Prezzo
-        if ruolo == 'A':      fair_price = max(1, int(fvm_val * 0.50))
-        elif ruolo == 'C':    fair_price = max(1, int(fvm_val * 0.55))
-        elif ruolo == 'D':    fair_price = max(1, int(fvm_val * 0.45))
-        else:                 fair_price = max(1, int(fvm_val * 0.50))
-
-    # Il Prezzo del Master e' tarato su 8 squadre / 500 crediti: qui si adatta alla lega
-    fair_price = max(1, int(fair_price * (lega_bud / 500.0) * part_factor))
-
-    max_rilancio = int(fair_price * 1.15)
-    asta_stop = int(fair_price * 1.25)
+    max_rilancio = int(fair_price_val * 1.15)
+    asta_stop = int(fair_price_val * 1.25)
 
     if ruolo == 'A':
-        if fair_price >= 110:   fascia = "🥇 1° Fascia 👑"
-        elif fair_price >= 40:  fascia = "🥈 2° Fascia 🥇"
-        elif fair_price >= 15:  fascia = "🥉 3° Fascia 🥈"
-        elif fair_price >= 5:   fascia = "🚜 4° Fascia (Rotazione)"
+        if fair_price_val >= 110:   fascia = "🥇 1° Fascia 👑"
+        elif fair_price_val >= 40:  fascia = "🥈 2° Fascia 🥇"
+        elif fair_price_val >= 15:  fascia = "🥉 3° Fascia 🥈"
+        elif fair_price_val >= 5:   fascia = "🚜 4° Fascia (Rotazione)"
         else:                   fascia = "🎲 Scommessa 🎲"
     elif ruolo == 'C':
-        if fair_price >= 50:    fascia = "🥇 1° Fascia 👑"
-        elif fair_price >= 25:  fascia = "🥈 2° Fascia 🥇"
-        elif fair_price >= 10:  fascia = "🥉 3° Fascia 🥈"
+        if fair_price_val >= 50:    fascia = "🥇 1° Fascia 👑"
+        elif fair_price_val >= 25:  fascia = "🥈 2° Fascia 🥇"
+        elif fair_price_val >= 10:  fascia = "🥉 3° Fascia 🥈"
         else:                   fascia = "🎲 4°/5° Fascia 🎲"
     else:
-        if fair_price >= 25:    fascia = "🥇 1° Fascia 👑"
-        elif fair_price >= 12:  fascia = "🥈 2° Fascia 🥇"
+        if fair_price_val >= 25:    fascia = "🥇 1° Fascia 👑"
+        elif fair_price_val >= 12:  fascia = "🥈 2° Fascia 🥇"
         else:                   fascia = "🥉 3°/4° Fascia 🥈"
 
     stats = get_roster_stats(session)
     info_text = (
         f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n⚠️ <b>Rischio/Macellaio:</b> {get_macellaio_info(player_name, df)}\n\n"
-        f"🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price} cr.</code>\n"
+        f"🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price_val} cr.</code>\n"
         f"🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n"
         f"💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
     )
@@ -593,13 +656,13 @@ def process_buy_price(message, player_name, user_id):
         titolo_acquisto = f"🧪 <b>SIMULAZIONE: {html.escape(player_name.upper())} a {costo} cr.</b>\n<i>(Non salvato in Rosa)</i>"
     
     lega_bud, lega_part = session.get('lega_budget_iniziale', 500), session.get('lega_partecipanti', 8)
-    fair_price = max(1, int((fvm_raw * (lega_bud / 1000.0)) * (1 + ((lega_part - 8) * 0.025))))
+    fair_price_val = fair_price(row, session)
     
-    if costo <= fair_price * 0.75: giudizio = f"🔥 <b>AFFARE D'ORO!</b> Hai risparmiato circa {fair_price - costo} cr."
-    elif costo <= fair_price * 0.95: giudizio = f"✅ <b>OTTIMO COLPO!</b> Preso sotto costo (Fair Price: {fair_price} cr)."
-    elif costo <= fair_price * 1.15: giudizio = f"⚖️ <b>PREZZO GIUSTO.</b> Pagato esattamente il suo valore."
-    elif costo <= fair_price * 1.30: giudizio = f"⚠️ <b>LEGGERO OVERPAY.</b> Pagato un po' di più (Fair Price: {fair_price} cr)."
-    else: giudizio = f"🚨 <b>SALASSO!</b> Strapagato! Hai speso ben {costo - fair_price} cr. in più."
+    if costo <= fair_price_val * 0.75: giudizio = f"🔥 <b>AFFARE D'ORO!</b> Hai risparmiato circa {fair_price_val - costo} cr."
+    elif costo <= fair_price_val * 0.95: giudizio = f"✅ <b>OTTIMO COLPO!</b> Preso sotto costo (Fair Price: {fair_price_val} cr)."
+    elif costo <= fair_price_val * 1.15: giudizio = f"⚖️ <b>PREZZO GIUSTO.</b> Pagato esattamente il suo valore."
+    elif costo <= fair_price_val * 1.30: giudizio = f"⚠️ <b>LEGGERO OVERPAY.</b> Pagato un po' di più (Fair Price: {fair_price_val} cr)."
+    else: giudizio = f"🚨 <b>SALASSO!</b> Strapagato! Hai speso ben {costo - fair_price_val} cr. in più."
         
     bot.send_message(chat_id, f"{titolo_acquisto}\n\n📊 <b>Valutazione Acquisto:</b>\n{giudizio}", parse_mode="HTML")
     
@@ -634,17 +697,17 @@ def process_whatif_price(message, player_name, user_id):
     ruolo, fvm_raw = row.get('R', 'A'), pd.to_numeric(str(row.get('FVM', 0)).replace(',', '.').replace('-', '0'), errors='coerce')
     lega_bud, lega_part = session.get('lega_budget_iniziale', 500), session.get('lega_partecipanti', 8)
     f_part = 1 + ((lega_part - 8) * 0.025)
-    fair_price = max(1, int((fvm_raw * (lega_bud / 1000.0)) * f_part))
+    fair_price_val = fair_price(row, session)
 
     budget_left, slots_left = session['budget'] - hyp_price, get_roster_stats(session)['slot_liberi'] - 1
     if slots_left < 0: return bot.send_message(chat_id, "❌ Hai già la rosa piena!", parse_mode="HTML")
         
     avg_left = budget_left / slots_left if slots_left > 0 else 0
-    analisi = f"🔥 <b>PREZZO D'OCCASIONE!</b> Valore: <code>{fair_price}</code>" if hyp_price <= fair_price * 0.70 else f"✅ <b>CONGRUITA:</b> Linea con il Fair Price (<code>{fair_price}</code>)." if hyp_price <= fair_price * 1.15 else f"🚨 <b>OVERPAY RISCHIOSO:</b> +<code>{hyp_price - fair_price}</code> cr. del valore ideale."
+    analisi = f"🔥 <b>PREZZO D'OCCASIONE!</b> Valore: <code>{fair_price_val}</code>" if hyp_price <= fair_price_val * 0.70 else f"✅ <b>CONGRUITA:</b> Linea con il Fair Price (<code>{fair_price_val}</code>)." if hyp_price <= fair_price_val * 1.15 else f"🚨 <b>OVERPAY RISCHIOSO:</b> +<code>{hyp_price - fair_price_val}</code> cr. del valore ideale."
 
     avail = get_available_players(df, session)
     target = avail[(avail['R'] == ruolo) & (avail['Nome'] != player_name)].copy()
-    target['base_p'] = target['FVM'] * (lega_bud / 1000.0) * f_part
+    target['base_p'] = [fair_price(t, session) for _, t in target.iterrows()]
     compatibili = target[target['base_p'] <= avg_left].sort_values(by='FVM', ascending=False).head(3)
     txt_target = "\n".join([f"• {t['Nome']} ({t['Squadra']}) ─ Fair Price: ~{int(t['base_p'])} cr." for _, t in compatibili.iterrows()]) or "• Solo scommesse o tappabuchi a 1 credito."
 
@@ -716,8 +779,8 @@ def modalita_cecchino(message):
         
         fvm_clean = str(row.get('FVM', 0)).replace(',', '.')
         fvm_val = pd.to_numeric(fvm_clean, errors='coerce') or 0
-        fair_price = max(1, int((fvm_val * (session.get('lega_budget_iniziale', 500) / 1000.0)) * (1 + ((session.get('lega_partecipanti', 8) - 8) * 0.025))))
-        giudizio = f"🔥 <b>AFFARE!</b>" if costo <= fair_price * 0.75 else f"✅ <b>OTTIMO!</b>" if costo <= fair_price * 0.95 else f"⚖️ <b>GIUSTO.</b>" if costo <= fair_price * 1.15 else f"🚨 <b>SALASSO!</b>"
+        fair_price_val = fair_price(row, session)
+        giudizio = f"🔥 <b>AFFARE!</b>" if costo <= fair_price_val * 0.75 else f"✅ <b>OTTIMO!</b>" if costo <= fair_price_val * 0.95 else f"⚖️ <b>GIUSTO.</b>" if costo <= fair_price_val * 1.15 else f"🚨 <b>SALASSO!</b>"
         
         bot.reply_to(message, f"{titolo}\n\n📊 <b>Valutazione:</b>\n{giudizio}", parse_mode="HTML")
         send_asta_dashboard(message.chat.id, message.from_user.id) if is_asta else send_dashboard(message.chat.id, message.from_user.id)
