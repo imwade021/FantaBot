@@ -193,9 +193,10 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     ruolo_g = str(riga.get('R', '')).strip().upper()
     baseline = baseline or BASELINE_FALLBACK
     fm_rif, bonus_rif = baseline.get(ruolo_g, BASELINE_FALLBACK.get(ruolo_g, (6.0, 0.3)))
-    # Si pondera sulle presenze effettive: 18 gare vere valgono piu' di 18
-    # spezzoni, e chi ha giocato mezza stagione altrove ha comunque un campione.
-    peso_presenze = max(pv, pv_totali * 0.75)
+    # L'affidabilita' della fantamedia dipende dalle SOLE gare di Serie A su cui
+    # e' calcolata: le partite giocate altrove non la rendono piu' solida. Un
+    # 8.97 su 18 gare resta un campione da 18 gare, anche se in stagione ne ha 40.
+    peso_presenze = pv
     fm_pond = round(_pondera(fm, peso_presenze, fm_rif), 2) if fm > 0 else 0.0
     bonus_pond = round(_pondera(bonus_partita, peso_presenze, bonus_rif), 2) if fm > 0 else 0.0
 
@@ -647,10 +648,15 @@ def valuta_rischio(riga, df, squadre=8):
     # --- Caso speciale: nessun dato su cui giudicare ---
     if prof['senza_dati']:
         esito = fascia_giocatore(prof['nome'], df, squadre)
-        caro = esito and esito[0] in ('top', 'semitop', 'seconda')
+        # Il rango da solo inganna: fra i difensori il #16 puo' costare 11 crediti.
+        # Conta quanto costa davvero rispetto agli altri del suo ruolo.
+        prezzi_ruolo = _colonna(df[df['R'].astype(str).str.upper() == ruolo], 'Prezzo')
+        mediana = prezzi_ruolo[prezzi_ruolo > 0].median() if not prezzi_ruolo.empty else 0
+        caro = mediana and prof['prezzo'] >= max(10, mediana * 2.5)
+
         punteggio += 3.5 if caro else 1.0
         motivi.append("nessuna statistica disponibile: e' un'incognita totale"
-                      + (", e costa da fascia alta" if caro else ""))
+                      + (f", e costa {prof['prezzo']} crediti" if caro else ""))
         peso = PESO_FASCIA.get(esito[0], 1.0) if esito else 1.0
         return _confeziona_rischio(punteggio * peso, motivi, forze, prof)
 
