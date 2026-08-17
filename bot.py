@@ -559,7 +559,15 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     else:
         markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"))
         
-    if not is_asta: markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+    if not is_asta:
+        # "Indietro" riporta alla lista da cui si e' arrivati (squadra, fascia,
+        # rigoristi...): il contesto viene salvato dalle liste stesse.
+        ritorno = session.get('ritorno')
+        if ritorno and ritorno != "go_home":
+            markup.add(InlineKeyboardButton("🔙 Indietro", callback_data=ritorno),
+                       InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        else:
+            markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
     
     try: bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
     except Exception:
@@ -806,6 +814,17 @@ def handle_callbacks(call):
     user_id, chat_id = call.from_user.id, call.message.chat.id
     session, df = get_session(user_id), load_data()
 
+    # Le schermate-elenco diventano il punto di ritorno della card giocatore:
+    # cosi' "Indietro" riporta alla lista giusta invece che alla Home.
+    if (call.data.startswith(("sq_ru_", "rig_sq_", "menu_top_ru_", "menu_gemme_ru_",
+                              "menu_panic_ru_", "menu_modificatore"))
+            or call.data in ("pro_spiccioli", "pro_stakanov", "pro_griglia",
+                             "menu_wishlist", "menu_rosa", "menu_rigoristi",
+                             "sq_start", "menu_power")):
+        session['ritorno'] = call.data
+    elif call.data == "go_home":
+        session['ritorno'] = None
+
     if call.data == "clear_screen":
         for i in range(call.message.message_id, max(0, call.message.message_id - 80), -1):
             try: bot.delete_message(chat_id, i)
@@ -981,7 +1000,12 @@ def handle_callbacks(call):
 
     elif call.data.startswith("stats_"):
         p = call.data.replace("stats_", "")
-        bot.edit_message_text(get_storico(p, df), chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton("🔙 Indietro", callback_data=f"sq_pl_{p}"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
+        tastiera = InlineKeyboardMarkup(row_width=2).add(
+            InlineKeyboardButton("🔙 Scheda", callback_data=f"sq_pl_{p}"),
+            InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        if session.get('ritorno'):
+            tastiera.add(InlineKeyboardButton("↩️ Torna alla lista", callback_data=session['ritorno']))
+        bot.edit_message_text(get_storico(p, df), chat_id, call.message.message_id, parse_mode="HTML", reply_markup=tastiera)
 
     elif call.data.startswith("wi_"): bot.register_next_step_handler(bot.send_message(chat_id, f"🔮 <b>SIMULATORE WHAT-IF</b> per <b>{html.escape(call.data.replace('wi_', ''))}</b>:", parse_mode="HTML"), process_whatif_price, call.data.replace("wi_", ""), user_id)
 
@@ -1030,7 +1054,8 @@ def handle_callbacks(call):
     elif call.data.startswith("sq_sq_"): bot.edit_message_text("Scegli ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=4).add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"sq_ru_{call.data.replace('sq_sq_', '')}_{r}") for r in ['P', 'D', 'C', 'A']]).add(InlineKeyboardButton("🔙 Squadre", callback_data="sq_start")))
     elif call.data.startswith("sq_ru_"):
         sq, ru = call.data.split("_")[2], call.data.split("_")[3]
-        markup = InlineKeyboardMarkup(row_width=1).add(*[InlineKeyboardButton(f"{'⭐ ' if r['Nome'] in session.get('wishlist', []) else ''}{ROLE_ICONS.get(ru,'')} {r['Nome']} ─ FVM:{r.get('FVM', '-')}", callback_data=f"sq_pl_{r['Nome']}") for _, r in df[(df['Squadra'] == sq) & (df['R'] == ru)].iterrows()]).add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data=f"sq_sq_{sq}"))
+        markup = InlineKeyboardMarkup(row_width=1).add(*[InlineKeyboardButton(f"{'⭐ ' if r['Nome'] in session.get('wishlist', []) else ''}{ROLE_ICONS.get(ru,'')} {r['Nome']} ─ {fair_price(r, session)} cr", callback_data=f"sq_pl_{r['Nome']}") for _, r in df[(df['Squadra'] == sq) & (df['R'] == ru)].iterrows()]).add(InlineKeyboardButton("🔙 Cambia Ruolo", callback_data=f"sq_sq_{sq}"),
+             InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(f"Giocatori ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_top_start" or call.data == "menu_gemme_start" or call.data == "menu_panic_start":
