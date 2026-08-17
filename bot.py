@@ -376,39 +376,92 @@ def calcola_formazione_ideale(session, df):
 # ==========================================
 # MENU E DASHBOARD
 # ==========================================
+SLOT_PER_RUOLO_HOME = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
+
+
 def main_menu_keyboard(session):
+    """Poche voci in home: gli strumenti di scouting stanno in un sottomenu."""
     markup = InlineKeyboardMarkup(row_width=2)
     if session.get('fase_asta'):
-        markup.add(InlineKeyboardButton("🔴 RIPRENDI ASTA LIVE", callback_data="asta_resume"))
-        markup.add(InlineKeyboardButton("🛑 Termina Asta", callback_data="asta_end"))
+        markup.add(InlineKeyboardButton("🔴  RIPRENDI ASTA", callback_data="asta_resume"))
+        markup.add(InlineKeyboardButton("🛑  Termina asta", callback_data="asta_end"))
     else:
-        markup.add(InlineKeyboardButton("🔨 AVVIA ASTA LIVE", callback_data="asta_setup_start"))
-        
-    markup.add(InlineKeyboardButton("👕 Esplora", callback_data="sq_start"), InlineKeyboardButton("📋 La mia Rosa", callback_data="menu_rosa"))
-    markup.add(InlineKeyboardButton("⚽ Formazione", callback_data="menu_formazione"), InlineKeyboardButton("🎯 Rigoristi", callback_data="menu_rigoristi"))
-    markup.add(InlineKeyboardButton("⭐ Wishlist", callback_data="menu_wishlist"), InlineKeyboardButton("📊 Trade 3D", callback_data="menu_studio_start"))
-    markup.add(InlineKeyboardButton("🔥 Power Index", callback_data="menu_power"), InlineKeyboardButton("🛡️ Modificatore 6.5", callback_data="menu_modificatore"))
-    markup.add(InlineKeyboardButton("🏆 Top Liberi", callback_data="menu_top_start"), InlineKeyboardButton("💎 Gemme Nascoste", callback_data="menu_gemme_start"))
-    markup.add(InlineKeyboardButton("🚨 Panic Button", callback_data="menu_panic_start"), InlineKeyboardButton("🛠️ Strumenti PRO", callback_data="menu_pro"))
-    markup.add(InlineKeyboardButton("⚙️ Impost. Lega", callback_data="menu_impostazioni_lega"), InlineKeyboardButton("⚙️ Sistema", callback_data="menu_sistema"))
+        markup.add(InlineKeyboardButton("🔨  AVVIA ASTA LIVE", callback_data="asta_setup_start"))
+
+    markup.add(InlineKeyboardButton("👕  Esplora", callback_data="sq_start"),
+               InlineKeyboardButton("📋  La mia rosa", callback_data="menu_rosa"))
+    markup.add(InlineKeyboardButton("🔎  Scouting", callback_data="menu_scouting"),
+               InlineKeyboardButton("⚖️  Confronta", callback_data="menu_studio_start"))
+    markup.add(InlineKeyboardButton("⭐  Wishlist", callback_data="menu_wishlist"),
+               InlineKeyboardButton("⚽  Formazione", callback_data="menu_formazione"))
+    markup.add(InlineKeyboardButton("⚙️  Lega", callback_data="menu_impostazioni_lega"),
+               InlineKeyboardButton("🧰  Sistema", callback_data="menu_sistema"))
     return markup
+
+
+def scouting_menu_keyboard():
+    """Tutti gli strumenti di ricerca giocatori, in un posto solo."""
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("👑  Top liberi", callback_data="menu_top_start"),
+               InlineKeyboardButton("💎  Gemme", callback_data="menu_gemme_start"))
+    markup.add(InlineKeyboardButton("🎯  Rigoristi", callback_data="menu_rigoristi"),
+               InlineKeyboardButton("🛡️  Modificatore", callback_data="menu_modificatore"))
+    markup.add(InlineKeyboardButton("🔥  Power index", callback_data="menu_power"),
+               InlineKeyboardButton("🧱  Stakanovisti", callback_data="pro_stakanov"))
+    markup.add(InlineKeyboardButton("🎰  Tappabuchi", callback_data="pro_spiccioli"),
+               InlineKeyboardButton("🧤  Griglia difesa", callback_data="pro_griglia"))
+    markup.add(InlineKeyboardButton("🚨  Panic button", callback_data="menu_panic_start"),
+               InlineKeyboardButton("🛠️  Altri strumenti", callback_data="menu_pro"))
+    markup.add(InlineKeyboardButton("🏠  Home", callback_data="go_home"))
+    return markup
+
+
+def barra(valore, totale, caselle=6):
+    """Barra proporzionale: la lunghezza si legge prima della cifra."""
+    try:
+        if totale <= 0:
+            return "▱" * caselle
+        piene = max(0, min(caselle, round((float(valore) / float(totale)) * caselle)))
+    except Exception:
+        piene = 0
+    return "▰" * piene + "▱" * (caselle - piene)
+
 
 def send_dashboard(chat_id, user_id, message_id=None):
     session = get_session(user_id)
     stats = get_roster_stats(session)
-    c, budget, slot, max_bid = stats['counts'], session['budget'], stats['slot_liberi'], stats['max_bid']
-    media_str = f"(Media: {budget/slot:.1f} cr)" if slot > 0 else "✅ ROSA COMPLETA!"
+    conteggi = stats['counts']
+    budget = session['budget']
+    budget_iniziale = session.get('lega_budget_iniziale', 500)
+    slot, max_bid = stats['slot_liberi'], stats['max_bid']
+    media = f"{budget / slot:.0f} cr a slot" if slot > 0 else "rosa completa"
+
+    righe_ruoli = []
+    for ruolo in ('P', 'D', 'C', 'A'):
+        totale = SLOT_PER_RUOLO_HOME[ruolo]
+        avuti = conteggi[ruolo]
+        righe_ruoli.append(
+            f"{ROLE_ICONS[ruolo]} <code>{barra(avuti, totale, 8)}</code> "
+            f"<b>{avuti}</b>/{totale}")
+
     text = (
-        "🏆 <b>FANTABOT PRO DASHBOARD</b> 📊\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Cassa:</b> <code> {budget} cr. </code>\n🛍️ <b>Slot Liberi:</b> <code> {slot} </code> <i>{media_str}</i>\n"
-        f"🛑 <b>MAX BID CONSENTITO:</b> <code> {max_bid} cr. </code>\n\n"
-        f"🧤 P: {c['P']}/3  │ 🛡️ D: {c['D']}/8 \n⚙️ C: {c['C']}/8  │ 🎯 A: {c['A']}/6 \n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n💡 <i>Cerca nome o scrivi 'ho preso [nome] a [prezzo]'</i>"
+        f"<b>FANTAHUB</b>  ·  <i>{'asta in corso' if session.get('fase_asta') else 'pre-asta'}</i>\n"
+        f"<code>{barra(budget, budget_iniziale, 12)}</code>\n"
+        f"💰 <b>{budget}</b> cr  ·  {slot} slot  ·  {media}\n"
+        f"🛑 offerta massima <b>{max_bid}</b> cr\n\n"
+        + "\n".join(righe_ruoli) +
+        "\n\n<blockquote>Scrivi un nome per la scheda, "
+        "oppure <i>“ho preso Dybala a 35”</i></blockquote>"
     )
+
     if message_id:
-        try: bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
-        except Exception: bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
-    else: bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
+        try:
+            bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
+            return
+        except Exception:
+            pass
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
+
 
 SLOT_PER_RUOLO = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
 
@@ -531,17 +584,37 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         fascia = "—"
 
     stats = get_roster_stats(session)
+    prof = analisi.profilo(p_data, analisi.statistiche_squadre(df), analisi.baseline_ruoli(df))
+    rischio = analisi.valuta_rischio(p_data, df, lega_part)
+    banner = analisi.banner_infortunio(p_data)
+
+    # Barre: la lunghezza si legge prima della cifra
+    riga_titolarita = (f"Titolarità  <code>{barra(prof['presenze'], 38)}</code>  "
+                       f"{prof['presenze']}/38" if prof['presenze'] else "")
+    riga_bonus = (f"Bonus       <code>{barra(prof['bonus_partita'], 1.2)}</code>  "
+                  f"{prof['bonus_partita']:+.2f}" if prof['fantamedia'] else "")
+    saltate = prof.get('gare_saltate', 0)
+    riga_integrita = (f"Integrità   <code>{barra(max(0, 38 - saltate), 38)}</code>  "
+                      f"{saltate} salt." if saltate else "")
+    barre = "\n".join(r for r in (riga_titolarita, riga_bonus, riga_integrita) if r)
+
+    avvisi = analisi.formatta_rischio(rischio, compatto=False)
+    macellaio = get_macellaio_info(player_name, df).strip()
+    mostra_macellaio = macellaio and 'ALLARME' in macellaio
+
     info_text = (
-        f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{(analisi.banner_infortunio(p_data) + chr(10)) if analisi.banner_infortunio(p_data) else ''}"
-        f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n"
-        f"{analisi.formatta_rischio(analisi.valuta_rischio(p_data, df, lega_part), compatto=False)}\n"
-        f"{get_macellaio_info(player_name, df).strip()}\n\n"
-        f"🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price_val} cr.</code>\n"
-        f"🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n"
-        f"💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{photo_embed}<b>{html.escape(player_name.upper())}</b>  ·  "
+        f"{get_team_icon(sq_name)} {html.escape(sq_name)}  ·  <code>{html.escape(ruolo)}</code>\n"
+        f"{fascia}\n"
+        + (f"\n{banner}\n" if banner else "")
+        + (f"\n{barre}\n" if barre else "")
+        + f"\n{avvisi}\n"
+        + (f"{macellaio}\n" if mostra_macellaio else "")
+        + f"\n💰 <b>{fair_price_val} cr</b>  ·  max <b>{max_rilancio}</b>  ·  stop <b>{asta_stop}</b>\n"
+        f"<i>lega da {lega_part} · {lega_bud} cr</i>\n"
+        f"💼 cassa <b>{session['budget']}</b> cr  ·  offerta max <b>{stats['max_bid']}</b>\n"
     )
-    
+
     is_asta = session.get('fase_asta') is not None
     markup = InlineKeyboardMarkup(row_width=2)
     if is_asta:
@@ -955,6 +1028,12 @@ def handle_callbacks(call):
     elif call.data == "reset_confirm":
         user_sessions[user_id] = {'budget': session.get('lega_budget_iniziale', 500), 'rosa': [], 'wishlist': session.get('wishlist', []), 'scartati': [], 'compare_p1': None, 'lega_budget_iniziale': session.get('lega_budget_iniziale', 500), 'lega_partecipanti': session.get('lega_partecipanti', 8), 'modificatore_attivo': session.get('modificatore_attivo', False), 'fase_asta': None}
         send_dashboard(chat_id, user_id, call.message.message_id)
+
+    elif call.data == "menu_scouting":
+        bot.edit_message_text(
+            "🔎 <b>SCOUTING</b>\n<i>Trova i giocatori giusti per il tuo budget</i>",
+            chat_id, call.message.message_id, parse_mode="HTML",
+            reply_markup=scouting_menu_keyboard())
 
     elif call.data == "menu_pro": bot.edit_message_text("🛠️ <b>STRUMENTI PRO</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=pro_menu_keyboard())
     elif call.data == "pro_stakanov":
