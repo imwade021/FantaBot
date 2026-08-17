@@ -55,6 +55,90 @@ def _num(valore, default=0.0):
     return default if pd.isna(n) else float(n)
 
 
+# L'API restituisce le cause in inglese ("Knee Injury"): qui si traducono.
+PARTI_CORPO = {
+    'knee': 'al ginocchio', 'calf': 'al polpaccio', 'thigh': 'alla coscia',
+    'ankle': 'alla caviglia', 'groin': "all'inguine", 'hamstring': 'al flessore',
+    'shoulder': 'alla spalla', 'back': 'alla schiena', 'foot': 'al piede',
+    'hip': "all'anca", 'toe': 'a un dito del piede', 'head': 'alla testa',
+    'elbow': 'al gomito', 'wrist': 'al polso', 'hand': 'alla mano',
+    'neck': 'al collo', 'chest': 'al torace', 'abdominal': "all'addome",
+    'adductor': "all'adduttore", 'rib': 'alle costole', 'leg': 'alla gamba',
+    'arm': 'al braccio', 'muscle': 'muscolare', 'facial': 'al volto',
+    'shin': 'alla tibia', 'heel': 'al tallone', 'finger': 'a un dito',
+}
+
+FRASI_INFORTUNIO = {
+    'cruciate ligament rupture': 'rottura del legamento crociato',
+    'cruciate ligament injury': 'lesione del legamento crociato',
+    'ankle/foot injury': 'infortunio a caviglia o piede',
+    'achilles tendon injury': "infortunio al tendine d'Achille",
+    'achilles tendon rupture': "rottura del tendine d'Achille",
+    'meniscus injury': 'lesione del menisco',
+    'broken ankle': 'frattura della caviglia',
+    'broken leg': 'frattura della gamba',
+    'broken foot': 'frattura del piede',
+    'muscle injury': 'infortunio muscolare',
+    'knock': 'contusione',
+    'illness': 'malattia',
+    'flu': 'influenza',
+    'fever': 'febbre',
+    'fitness': 'condizione fisica',
+    'fatigue': 'affaticamento',
+    'rest': 'riposo',
+    'suspended': 'squalifica',
+    'suspension': 'squalifica',
+    'red card suspension': 'squalifica per espulsione',
+    'yellow cards suspension': 'squalifica per somma di ammonizioni',
+    'personal reasons': 'motivi personali',
+    'national selection': 'impegni con la nazionale',
+    'coronavirus': 'Covid',
+    'concussion': 'trauma cranico',
+    'missing fixture': 'indisponibile',
+    'questionable': 'in dubbio',
+    'doubtful': 'in dubbio',
+    'surgery': 'operazione',
+    'groin surgery': "operazione all'inguine",
+    'back surgery': 'operazione alla schiena',
+    'unknown': 'motivo non specificato',
+}
+
+SUFFISSI = [('injury', 'infortunio'), ('strain', 'stiramento'),
+            ('rupture', 'rottura'), ('fracture', 'frattura'),
+            ('sprain', 'distorsione'), ('problems', 'problemi'),
+            ('surgery', 'operazione'), ('inflammation', 'infiammazione')]
+
+
+def _maiuscola(testo):
+    """Alza solo la prima lettera: capitalize() rovinerebbe "tendine d'Achille"."""
+    return testo[:1].upper() + testo[1:] if testo else testo
+
+
+def traduci_causa(testo):
+    """'Knee Injury' -> 'Infortunio al ginocchio'. Se non riconosce, lascia com'e'."""
+    grezzo = _testo(testo)
+    if not grezzo:
+        return ""
+
+    minuscolo = grezzo.lower().strip()
+    if minuscolo in FRASI_INFORTUNIO:
+        return _maiuscola(FRASI_INFORTUNIO[minuscolo])
+
+    for suffisso, tradotto in SUFFISSI:
+        if minuscolo.endswith(suffisso):
+            parte = minuscolo[:-len(suffisso)].strip()
+            if parte in PARTI_CORPO:
+                return _maiuscola(f"{tradotto} {PARTI_CORPO[parte]}")
+            if not parte:
+                return _maiuscola(tradotto)
+
+    for chiave, valore in FRASI_INFORTUNIO.items():
+        if chiave in minuscolo:
+            return _maiuscola(valore)
+
+    return grezzo
+
+
 def _giorni_fermo(data_inizio):
     """Da quanti giorni e' fermo. La data di rientro non e' un dato disponibile."""
     import datetime
@@ -156,7 +240,7 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     # Gare saltate per infortunio nella stagione passata: e' il dato che
     # distingue chi si e' rotto da chi non veniva schierato.
     gare_saltate = int(_num(riga.get('GareSaltate')))
-    motivo_stop = _testo(riga.get('MotivoStop'))
+    motivo_stop = traduci_causa(riga.get('MotivoStop'))
     fragile = gare_saltate >= 8
 
     # Perche' ha poche presenze? Chi parte titolare e gioca 80 minuti ogni volta
@@ -207,7 +291,7 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     fm_pond = round(_pondera(fm, peso_presenze, fm_rif), 2) if fm > 0 else 0.0
     bonus_pond = round(_pondera(bonus_partita, peso_presenze, bonus_rif), 2) if fm > 0 else 0.0
 
-    infortunio = _testo(riga.get('Infortunio'))
+    infortunio = traduci_causa(riga.get('Infortunio'))
     tipo_infortunio = _testo(riga.get('InfortunioTipo'))
 
     dati = {
@@ -678,10 +762,22 @@ def valuta_rischio(riga, df, squadre=8):
     if prof['presenze'] > 0:
         if prof['fragile']:
             # Ora il motivo si sa: ha saltato partite per infortunio
-            punteggio += 1.0 if prof['gare_saltate'] < 15 else 2.0
-            dettaglio = f" ({prof['motivo_stop']})" if prof['motivo_stop'] else ""
-            motivi.append(f"ha saltato {prof['gare_saltate']} gare per infortunio"
-                          f"{dettaglio}: giocatore fragile")
+            causa = prof['motivo_stop']
+            minuscolo = causa.lower()
+            dettaglio = f"per {causa[0].lower() + causa[1:]}" if causa else "per infortunio"
+
+            # Squalifiche e assenze non fisiche non fanno di uno un giocatore fragile
+            if 'squalific' in minuscolo or 'espulsione' in minuscolo:
+                punteggio += 0.8
+                conclusione = "problema disciplinare"
+            elif any(x in minuscolo for x in ('nazionale', 'motivi personali', 'riposo')):
+                punteggio += 0.3
+                conclusione = "assenze non fisiche"
+            else:
+                punteggio += 1.0 if prof['gare_saltate'] < 15 else 2.0
+                conclusione = "giocatore fragile"
+
+            motivi.append(f"ha saltato {prof['gare_saltate']} gare {dettaglio}: {conclusione}")
         elif prof['stagione_piena']:
             # Ha giocato tanto, ma non in Serie A: trasferimento o rientro
             punteggio += 0.8
@@ -799,7 +895,7 @@ def _data_leggibile(iso):
 
 def banner_infortunio(riga):
     """Riga dedicata in cima alla card: se e' fermo, si deve vedere subito."""
-    infortunio = _testo(riga.get('Infortunio'))
+    infortunio = traduci_causa(riga.get('Infortunio'))
     if not infortunio:
         return ""
 
