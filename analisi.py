@@ -121,7 +121,14 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     espulsioni = _num(riga.get('Esp'))
 
     titolarita = pv / PARTITE_STAGIONE if pv > 0 else 0.0
-    etichetta = next(nome for soglia, nome in SOGLIE_TITOLARITA if titolarita >= soglia)
+    if pv > 0:
+        etichetta = next(nome for soglia, nome in SOGLIE_TITOLARITA if titolarita >= soglia)
+    elif fm > 0:
+        # Nessuna presenza in Serie A ma una fantamedia: e' una proiezione dello
+        # scout su dati esteri, non un rendimento reale. Va detto.
+        etichetta = "nuovo in Serie A"
+    else:
+        etichetta = "nessun dato"
 
     # Il cuore: quanto della fantamedia arriva dai bonus e non dal voto
     bonus_partita = round(fm - mv, 2) if (fm > 0 and mv > 0) else 0.0
@@ -133,6 +140,8 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     bonus_pond = round(_pondera(bonus_partita, pv, bonus_rif), 2) if fm > 0 else 0.0
 
     dati = {
+        'proiezione': pv == 0 and fm > 0,
+        'senza_dati': pv == 0 and fm <= 0,
         'nome': str(riga.get('Nome', '')).strip(),
         'ruolo': str(riga.get('R', '')).strip().upper(),
         'squadra': str(riga.get('Squadra', '')).strip(),
