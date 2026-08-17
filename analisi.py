@@ -36,6 +36,20 @@ K_PRESENZE = 8
 BASELINE_FALLBACK = {'P': (5.0, 0.1), 'D': (5.8, 0.2), 'C': (6.0, 0.4), 'A': (6.2, 0.7)}
 
 
+def _testo(valore):
+    """Le celle vuote del CSV diventano NaN e str(NaN) e' la stringa 'nan':
+    senza questo filtro il bot scriveva 'INDISPONIBILE: nan' su tutti."""
+    if valore is None:
+        return ""
+    try:
+        if pd.isna(valore):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    testo = str(valore).strip()
+    return "" if testo.lower() in ('nan', 'none', 'nat') else testo
+
+
 def _num(valore, default=0.0):
     n = pd.to_numeric(str(valore).replace(',', '.'), errors='coerce')
     return default if pd.isna(n) else float(n)
@@ -134,7 +148,10 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     # verrebbe segnalato come rischio invece che come affare.
     pv_totali = _num(riga.get('PvTot'), pv) or pv
     squadre_stagione = int(_num(riga.get('SquadreStag'), 1) or 1)
-    arrivato_in_corsa = pv_totali >= pv * 1.5 and pv_totali >= 25 and pv > 0
+    # Serve aver giocato in DUE squadre diverse: sommare Serie A, Champions e
+    # Coppa Italia gonfiava il totale e faceva sembrare tutti dei nuovi arrivi.
+    arrivato_in_corsa = (squadre_stagione >= 2 and pv > 0
+                         and pv_totali >= pv * 1.4 and pv_totali >= 25)
 
     # Perche' ha poche presenze? Chi parte titolare e gioca 80 minuti ogni volta
     # che c'e' non e' un panchinaro: le partite che mancano sono infortuni o
@@ -154,7 +171,8 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     )
 
     titolarita = pv / PARTITE_STAGIONE if pv > 0 else 0.0
-    titolarita_reale = min(1.0, pv_totali / PARTITE_STAGIONE) if pv_totali > 0 else titolarita
+    titolarita_reale = (min(1.0, pv_totali / PARTITE_STAGIONE)
+                        if arrivato_in_corsa and pv_totali > 0 else titolarita)
     if pv > 0:
         etichetta = next(nome for soglia, nome in SOGLIE_TITOLARITA
                          if titolarita_reale >= soglia)
@@ -181,15 +199,15 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     fm_pond = round(_pondera(fm, peso_presenze, fm_rif), 2) if fm > 0 else 0.0
     bonus_pond = round(_pondera(bonus_partita, peso_presenze, bonus_rif), 2) if fm > 0 else 0.0
 
-    infortunio = str(riga.get('Infortunio', '') or '').strip()
-    tipo_infortunio = str(riga.get('InfortunioTipo', '') or '').strip()
+    infortunio = _testo(riga.get('Infortunio'))
+    tipo_infortunio = _testo(riga.get('InfortunioTipo'))
 
     dati = {
         'infortunato': bool(infortunio),
         'giorni_fermo': _giorni_fermo(riga.get('InfortunioDal')),
         'infortunio': infortunio,
         'infortunio_tipo': tipo_infortunio,
-        'aggiornato': str(riga.get('Aggiornato', '') or '').strip(),
+        'aggiornato': _testo(riga.get('Aggiornato')),
         'proiezione': pv == 0 and fm > 0,
         'senza_dati': pv == 0 and fm <= 0,
         'nome': str(riga.get('Nome', '')).strip(),
@@ -648,7 +666,7 @@ def valuta_rischio(riga, df, squadre=8):
         elif prof['titolare_quando_disponibile'] and prof['titolarita_reale'] < 0.75:
             # Titolare vero, ma assente a lungo: rischio fisico, non gerarchia
             punteggio += 1.2
-            partite_perse = PARTITE_STAGIONE - int(prof['presenze_totali'])
+            partite_perse = PARTITE_STAGIONE - int(prof['presenze'])
             motivi.append(f"titolare quando c'e' ({prof['minuti_medi']:.0f} min a partita) "
                           f"ma ha saltato {partite_perse} gare: rischio infortuni")
         elif prof['subentrante']:
@@ -755,13 +773,13 @@ def _data_leggibile(iso):
 
 def banner_infortunio(riga):
     """Riga dedicata in cima alla card: se e' fermo, si deve vedere subito."""
-    infortunio = str(riga.get('Infortunio', '') or '').strip()
+    infortunio = _testo(riga.get('Infortunio'))
     if not infortunio:
         return ""
 
-    tipo = str(riga.get('InfortunioTipo', '') or '').strip()
-    aggiornato = str(riga.get('Aggiornato', '') or '').strip()
-    dal = str(riga.get('InfortunioDal', '') or '').strip()
+    tipo = _testo(riga.get('InfortunioTipo'))
+    aggiornato = _testo(riga.get('Aggiornato'))
+    dal = _testo(riga.get('InfortunioDal'))
 
     etichetta = "🩹 <b>IN DUBBIO</b>" if tipo.lower() == 'questionable' else "🚑 <b>INDISPONIBILE</b>"
     righe = [f"{etichetta}: {infortunio}"]
