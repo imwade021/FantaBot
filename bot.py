@@ -201,9 +201,23 @@ def get_storico(nome, df):
         return "⚠️ Nessun dato presente nel file Master per questo giocatore."
 
     prof = analisi.profilo(row, analisi.statistiche_squadre(df), analisi.baseline_ruoli(df))
-    testo = (
-        f"📊 <b>STORICO (Dal file Master): {html.escape(prof['nome'].upper())}</b>\n"
-        f"───────────────────────────\n"
+    titolo = f"📊 <b>STORICO (Dal file Master): {html.escape(prof['nome'].upper())}</b>\n───────────────────────────\n"
+
+    # Tre casi distinti: storico vero, proiezione su dati esteri, nessun dato.
+    if prof['senza_dati']:
+        return (titolo +
+                "❔ <b>Nessuno storico disponibile.</b>\n"
+                "Non ha giocato in Serie A e le fonti esterne non lo coprono.\n"
+                f"La valutazione si basa solo sulla quotazione ufficiale "
+                f"(<code>{prof['quotazione']:.0f}</code>).\n")
+
+    if prof['proiezione']:
+        return (titolo +
+                "🆕 <b>Nuovo in Serie A</b> — nessuna presenza nel campionato italiano.\n"
+                f"🔮 Fantamedia <b>proiettata</b> dai dati esteri: <code>{prof['fantamedia']:.2f}</code>\n"
+                "<i>È una stima, non un rendimento reale: pesala di conseguenza.</i>\n")
+
+    testo = (titolo +
         f"🏟 Pres: <code>{prof['presenze']}</code> ({prof['etichetta_titolarita']}) │ "
         f"📈 MV: <code>{prof['voto_puro']:.2f}</code> │ FM: <code>{prof['fantamedia']:.2f}</code>\n"
         f"🎁 Bonus a partita: <code>{prof['bonus_partita']:+.2f}</code>\n"
@@ -214,7 +228,7 @@ def get_storico(nome, df):
         testo += f"⚪ <b>Rigorista</b>: {prof['rigori_calciati']} rigori calciati\n"
     if prof.get('gol_subiti_partita') is not None and prof['ruolo'] in ('P', 'D'):
         testo += f"🛡 Gol subiti dalla squadra: <code>{prof['gol_subiti_partita']}</code> a partita\n"
-    if prof['presenze'] < 10 and prof['fantamedia'] > 0:
+    if prof['presenze'] < 10:
         testo += "\n⚠️ <i>Poche presenze: le medie non sono affidabili.</i>\n"
     return testo
 
