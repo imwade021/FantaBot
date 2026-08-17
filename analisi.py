@@ -41,6 +41,15 @@ def _num(valore, default=0.0):
     return default if pd.isna(n) else float(n)
 
 
+def _giorni_fermo(data_inizio):
+    """Da quanti giorni e' fermo. La data di rientro non e' un dato disponibile."""
+    import datetime
+    try:
+        return (datetime.date.today() - datetime.date.fromisoformat(str(data_inizio))).days
+    except Exception:
+        return None
+
+
 def _colonna(df, nome):
     return df[nome].apply(_num) if nome in df.columns else pd.Series(0.0, index=df.index)
 
@@ -120,12 +129,42 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     ammonizioni = _num(riga.get('Amm'))
     espulsioni = _num(riga.get('Esp'))
 
+    # Presenze totali di stagione: chi arriva a gennaio ha poche gare in Serie A
+    # ma non e' un panchinaro. Senza questa distinzione, un 14 gol in 18 partite
+    # verrebbe segnalato come rischio invece che come affare.
+    pv_totali = _num(riga.get('PvTot'), pv) or pv
+    squadre_stagione = int(_num(riga.get('SquadreStag'), 1) or 1)
+    arrivato_in_corsa = pv_totali >= pv * 1.5 and pv_totali >= 25 and pv > 0
+
+    # Perche' ha poche presenze? Chi parte titolare e gioca 80 minuti ogni volta
+    # che c'e' non e' un panchinaro: le partite che mancano sono infortuni o
+    # squalifiche. Chi invece entra sempre dalla panchina ha tante presenze e
+    # pochi minuti. Sono due rischi diversi e vanno detti in modo diverso.
+    da_titolare = _num(riga.get('Tit'))
+    minuti = _num(riga.get('Min'))
+    quota_titolare = (da_titolare / pv_totali) if pv_totali > 0 and da_titolare > 0 else None
+    minuti_medi = (minuti / pv_totali) if pv_totali > 0 and minuti > 0 else None
+    titolare_quando_disponibile = bool(
+        quota_titolare is not None and quota_titolare >= 0.80 and
+        minuti_medi is not None and minuti_medi >= 65
+    )
+    subentrante = bool(
+        quota_titolare is not None and quota_titolare <= 0.45 and
+        minuti_medi is not None and minuti_medi <= 45
+    )
+
     titolarita = pv / PARTITE_STAGIONE if pv > 0 else 0.0
+    titolarita_reale = min(1.0, pv_totali / PARTITE_STAGIONE) if pv_totali > 0 else titolarita
     if pv > 0:
-        etichetta = next(nome for soglia, nome in SOGLIE_TITOLARITA if titolarita >= soglia)
+        etichetta = next(nome for soglia, nome in SOGLIE_TITOLARITA
+                         if titolarita_reale >= soglia)
+        if arrivato_in_corsa:
+            etichetta += " (arrivato in corsa)"
+        elif titolare_quando_disponibile and titolarita_reale < 0.75:
+            etichetta = "titolare, ma spesso indisponibile"
+        elif subentrante:
+            etichetta = "subentrante"
     elif fm > 0:
-        # Nessuna presenza in Serie A ma una fantamedia: e' una proiezione dello
-        # scout su dati esteri, non un rendimento reale. Va detto.
         etichetta = "nuovo in Serie A"
     else:
         etichetta = "nessun dato"
@@ -136,10 +175,21 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     ruolo_g = str(riga.get('R', '')).strip().upper()
     baseline = baseline or BASELINE_FALLBACK
     fm_rif, bonus_rif = baseline.get(ruolo_g, BASELINE_FALLBACK.get(ruolo_g, (6.0, 0.3)))
-    fm_pond = round(_pondera(fm, pv, fm_rif), 2) if fm > 0 else 0.0
-    bonus_pond = round(_pondera(bonus_partita, pv, bonus_rif), 2) if fm > 0 else 0.0
+    # Si pondera sulle presenze effettive: 18 gare vere valgono piu' di 18
+    # spezzoni, e chi ha giocato mezza stagione altrove ha comunque un campione.
+    peso_presenze = max(pv, pv_totali * 0.75)
+    fm_pond = round(_pondera(fm, peso_presenze, fm_rif), 2) if fm > 0 else 0.0
+    bonus_pond = round(_pondera(bonus_partita, peso_presenze, bonus_rif), 2) if fm > 0 else 0.0
+
+    infortunio = str(riga.get('Infortunio', '') or '').strip()
+    tipo_infortunio = str(riga.get('InfortunioTipo', '') or '').strip()
 
     dati = {
+        'infortunato': bool(infortunio),
+        'giorni_fermo': _giorni_fermo(riga.get('InfortunioDal')),
+        'infortunio': infortunio,
+        'infortunio_tipo': tipo_infortunio,
+        'aggiornato': str(riga.get('Aggiornato', '') or '').strip(),
         'proiezione': pv == 0 and fm > 0,
         'senza_dati': pv == 0 and fm <= 0,
         'nome': str(riga.get('Nome', '')).strip(),
@@ -149,7 +199,16 @@ def profilo(riga, contesto_squadre=None, baseline=None):
         'quotazione': _num(riga.get('Qt.A')),
         'fvm': _num(riga.get('FVM')),
         'presenze': int(pv),
+        'presenze_totali': int(pv_totali),
+        'squadre_stagione': squadre_stagione,
+        'arrivato_in_corsa': arrivato_in_corsa,
+        'da_titolare': int(da_titolare),
+        'minuti_medi': round(minuti_medi, 1) if minuti_medi else None,
+        'quota_titolare': round(quota_titolare, 2) if quota_titolare else None,
+        'titolare_quando_disponibile': titolare_quando_disponibile,
+        'subentrante': subentrante,
         'titolarita': round(titolarita, 2),
+        'titolarita_reale': round(titolarita_reale, 2),
         'etichetta_titolarita': etichetta,
         'voto_puro': mv,
         'fantamedia': fm,
@@ -304,38 +363,109 @@ def formatta_confronto(esito):
 
 
 # ----------------------------------------------------------------------
-# FASCE PER PERCENTILE (sostituiscono le soglie fisse sulla FVM)
+# FASCE: definite da QUANTI NE ESISTONO, non da soglie in crediti
 # ----------------------------------------------------------------------
-FASCE = {
-    'top':       (0.85, 1.01),   # il 15% piu' caro del ruolo
-    'medi':      (0.45, 0.85),
-    'gemme':     (0.20, 0.45),   # poco costosi ma con rendimento
-    'panic':     (0.00, 0.20),   # ultima spiaggia
-}
+# Con 8 squadre, i primi 8 attaccanti sono "Top" perche' ce n'e' uno per
+# squadra: chi non lo prende resta senza. Soglie in crediti fisse (es. "1a
+# fascia sopra 110") si rompono appena cambia il budget della lega.
+SLOT_RUOLO = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
+
+# Sei livelli: la corona sta sopra l'oro, chiave inglese e dado sotto il bronzo.
+# Cosi' le tre medaglie restano, ma la scala copre tutte le fasce d'asta.
+FASCE_ETICHETTE = [
+    ('top',        '👑 TOP'),
+    ('semitop',    '🥇 SEMI-TOP'),
+    ('seconda',    '🥈 2ª FASCIA'),
+    ('terza',      '🥉 3ª FASCIA'),
+    ('quarta',     '🔧 4ª/5ª FASCIA'),
+    ('scommessa',  '🎲 SCOMMESSE'),
+]
+
+FASCE = {nome: etichetta for nome, etichetta in FASCE_ETICHETTE}
 
 
-def fascia(df, ruolo, nome_fascia, solo_con_dati=True):
-    """
-    Seleziona una fascia di prezzo DENTRO il ruolo, per percentile.
-    Regge anche se la scala della FVM cambia.
-    """
-    if df is None or df.empty or nome_fascia not in FASCE:
-        return df.iloc[0:0] if df is not None else None
+def soglie_fasce(ruolo, squadre=8):
+    """Confini delle fasce espressi in posizioni, non in crediti."""
+    slot = SLOT_RUOLO.get(str(ruolo).upper(), 8)
+    titolari = slot * squadre          # quanti ne verranno comprati in totale
 
+    # Frazioni dei titolari, non multipli fissi del numero di squadre: con soli
+    # 3 slot (portieri) le fasce alte avrebbero divorato tutte le altre.
+    grezze = [
+        ('top',       titolari * 0.08),
+        ('semitop',   titolari * 0.25),
+        ('seconda',   titolari * 0.50),
+        ('terza',     titolari * 1.00),
+        ('quarta',    titolari * 1.60),
+    ]
+
+    soglie, precedente = {}, 0
+    for nome, valore in grezze:
+        # ogni fascia deve contenere almeno un giocatore
+        precedente = max(precedente + 1, int(round(valore)))
+        soglie[nome] = precedente
+    return soglie
+
+
+def _classifica_ruolo(df, ruolo):
+    """Giocatori del ruolo ordinati per valore, dal piu' caro."""
     gruppo = df[df['R'].astype(str).str.upper() == str(ruolo).upper()].copy()
     if gruppo.empty:
         return gruppo
+    colonna = 'Prezzo' if 'Prezzo' in gruppo.columns else 'FVM'
+    gruppo['_valore'] = _colonna(gruppo, colonna)
+    return gruppo.sort_values('_valore', ascending=False)
 
-    gruppo['_val'] = _colonna(gruppo, 'FVM')
+
+def fascia_giocatore(nome, df, squadre=8):
+    """
+    Fascia di un singolo giocatore: (chiave, etichetta, posizione, totale).
+    La posizione e' il suo rango nel ruolo, il dato piu' utile all'asta.
+    """
+    riga = df[df['Nome'].astype(str) == str(nome).strip()]
+    if riga.empty:
+        return None
+    ruolo = str(riga.iloc[0].get('R', '')).upper()
+
+    ordinati = _classifica_ruolo(df, ruolo)
+    if ordinati.empty:
+        return None
+
+    nomi = list(ordinati['Nome'].astype(str))
+    if str(nome).strip() not in nomi:
+        return None
+    posizione = nomi.index(str(nome).strip()) + 1
+
+    soglie = soglie_fasce(ruolo, squadre)
+    chiave = 'scommessa'
+    for nome in ('top', 'semitop', 'seconda', 'terza', 'quarta'):
+        if posizione <= soglie[nome]:
+            chiave = nome
+            break
+
+    return chiave, FASCE[chiave], posizione, len(nomi)
+
+
+def fascia(df, ruolo, nome_fascia, squadre=8, solo_con_dati=True):
+    """Tutti i giocatori di una fascia, dal piu' caro."""
+    if df is None or df.empty or nome_fascia not in FASCE:
+        return df.iloc[0:0] if df is not None else None
+
+    ordinati = _classifica_ruolo(df, ruolo)
+    if ordinati.empty:
+        return ordinati
     if solo_con_dati:
-        gruppo = gruppo[gruppo['_val'] > 0]
-    if gruppo.empty:
-        return gruppo
+        ordinati = ordinati[ordinati['_valore'] > 0]
 
-    minimo, massimo = FASCE[nome_fascia]
-    rango = gruppo['_val'].rank(pct=True)
-    selezione = gruppo[(rango >= minimo) & (rango < massimo)]
-    return selezione.sort_values('_val', ascending=False)
+    soglie = soglie_fasce(ruolo, squadre)
+    ordine = ['top', 'semitop', 'seconda', 'terza', 'quarta']
+    confini, precedente = {}, 0
+    for nome in ordine:
+        confini[nome] = (precedente, soglie[nome])
+        precedente = soglie[nome]
+    confini['scommessa'] = (precedente, len(ordinati))
+    inizio, fine = confini[nome_fascia]
+    return ordinati.iloc[inizio:fine]
 
 
 # ----------------------------------------------------------------------
@@ -437,3 +567,227 @@ def scommesse(df, limite=12):
         return df.iloc[0:0]
     insieme = pd.concat(pezzi)
     return migliori_per_resa(insieme, limite=limite)
+
+
+# ----------------------------------------------------------------------
+# RISCHIO: non e' una fascia, e' un asse a parte.
+# Un giocatore puo' essere TOP e insieme da evitare (caro e mai in campo).
+# ----------------------------------------------------------------------
+LIVELLI_RISCHIO = [
+    (4.0, 'evita',      '⛔ DA EVITARE'),
+    (2.0, 'attenzione', '⚠️ ATTENZIONE'),
+    (0.8, 'lieve',      '🟨 QUALCHE DUBBIO'),
+    (0.0, 'nessuno',    '✅ NESSUN ALLARME'),
+]
+
+# Sotto queste soglie di bonus a partita un giocatore offensivo non incide
+BONUS_ATTESI = {'A': 0.45, 'C': 0.25, 'D': 0.10, 'P': 0.0}
+
+# Lo stesso difetto pesa diversamente secondo il prezzo: 8 presenze in un TOP
+# sono un disastro, in una scommessa da 2 crediti sono il prezzo del biglietto.
+PESO_FASCIA = {
+    'top': 1.25, 'semitop': 1.15, 'seconda': 1.0,
+    'terza': 0.75, 'quarta': 0.5, 'scommessa': 0.4,
+}
+
+
+def valuta_rischio(riga, df, squadre=8):
+    """
+    Restituisce livello, motivi e punti di forza. Ogni segnale pesa: serve
+    piu' di un indizio per arrivare a 'da evitare', perche' un singolo dato
+    fuori media capita a tutti.
+    """
+    baseline = baseline_ruoli(df)
+    contesto = statistiche_squadre(df)
+    prof = profilo(riga, contesto, baseline)
+    ruolo = prof['ruolo']
+    fm_rif, bonus_rif = baseline.get(ruolo, (6.0, 0.3))
+
+    punteggio = 0.0
+    motivi, forze = [], []
+
+    # --- 0. Indisponibile adesso: e' l'informazione piu' urgente della card ---
+    if prof['infortunato']:
+        # Piu' a lungo dura lo stop, piu' pesa: un dato certo, non una previsione
+        giorni = prof.get('giorni_fermo') or 0
+        in_dubbio = str(prof['infortunio_tipo']).lower() == 'questionable'
+        if in_dubbio:
+            punteggio += 1.0
+        elif giorni >= 30:
+            punteggio += 3.0
+        elif giorni >= 10:
+            punteggio += 2.5
+        else:
+            punteggio += 2.0
+
+        dettaglio = prof['infortunio'] or prof['infortunio_tipo']
+        testo = f"{'in dubbio' if in_dubbio else 'FERMO ORA'}: {dettaglio}"
+        if giorni > 0:
+            testo += f", da {giorni} giorni"
+        motivi.append(testo)
+
+    # --- Caso speciale: nessun dato su cui giudicare ---
+    if prof['senza_dati']:
+        esito = fascia_giocatore(prof['nome'], df, squadre)
+        caro = esito and esito[0] in ('top', 'semitop', 'seconda')
+        punteggio += 3.5 if caro else 1.0
+        motivi.append("nessuna statistica disponibile: e' un'incognita totale"
+                      + (", e costa da fascia alta" if caro else ""))
+        peso = PESO_FASCIA.get(esito[0], 1.0) if esito else 1.0
+        return _confeziona_rischio(punteggio * peso, motivi, forze, prof)
+
+    if prof['proiezione']:
+        punteggio += 1.0
+        motivi.append(f"mai giocato in Serie A: la {prof['fantamedia']:.2f} e' una stima")
+
+    # --- 1. Titolarita': si guarda la stagione intera, non solo la Serie A ---
+    if prof['presenze'] > 0:
+        if prof['arrivato_in_corsa']:
+            forze.append(f"{prof['presenze']} gare in Serie A ma "
+                         f"{prof['presenze_totali']} in stagione: arrivato a mercato aperto")
+        elif prof['titolare_quando_disponibile'] and prof['titolarita_reale'] < 0.75:
+            # Titolare vero, ma assente a lungo: rischio fisico, non gerarchia
+            punteggio += 1.2
+            partite_perse = PARTITE_STAGIONE - int(prof['presenze_totali'])
+            motivi.append(f"titolare quando c'e' ({prof['minuti_medi']:.0f} min a partita) "
+                          f"ma ha saltato {partite_perse} gare: rischio infortuni")
+        elif prof['subentrante']:
+            punteggio += 2.0
+            motivi.append(f"quasi sempre subentrante ({prof['minuti_medi']:.0f} min a partita)")
+        elif prof['titolarita_reale'] < 0.45:
+            punteggio += 2.0
+            motivi.append(f"solo {prof['presenze']} presenze su {PARTITE_STAGIONE}")
+        elif prof['titolarita_reale'] < 0.62:
+            punteggio += 1.0
+            motivi.append(f"{prof['presenze']} presenze: non e' un titolare fisso")
+        elif prof['titolarita_reale'] >= 0.85:
+            forze.append(f"inamovibile ({prof['presenze_totali']} presenze in stagione)")
+
+    # --- 2. Bonus: per chi attacca, non portarne e' il difetto peggiore ---
+    if prof['presenze'] >= 10:
+        atteso = BONUS_ATTESI.get(ruolo, 0.2)
+        if ruolo in ('A', 'C') and prof['bonus_partita'] < atteso:
+            punteggio += 1.5
+            motivi.append(f"bonus quasi assenti ({prof['bonus_partita']:+.2f} a partita)")
+        elif prof['bonus_partita'] >= max(0.25, bonus_rif * 1.5):
+            forze.append(f"{prof['bonus_partita']:+.2f} di bonus a partita")
+
+    # --- 3. Voto puro sotto la media del ruolo ---
+    if prof['presenze'] >= 10 and prof['voto_puro'] > 0:
+        if prof['voto_puro'] < fm_rif - 0.35:
+            punteggio += 1.0
+            motivi.append(f"voto puro basso ({prof['voto_puro']:.2f})")
+
+    # --- 4. Disciplina ---
+    if prof['presenze'] >= 10:
+        gialli_partita = prof['ammonizioni'] / prof['presenze']
+        if gialli_partita >= 0.22:
+            punteggio += 1.0
+            motivi.append(f"{prof['ammonizioni']} ammonizioni: malus ricorrente")
+        if prof['espulsioni'] >= 2:
+            punteggio += 0.5
+            motivi.append(f"{prof['espulsioni']} espulsioni")
+
+    # --- 5. Squadra che subisce troppo (pesa su difensori e portieri) ---
+    subiti = prof.get('gol_subiti_partita')
+    if ruolo in ('P', 'D') and subiti:
+        medie = [d['gol_subiti_partita'] for d in contesto.values()
+                 if d['gol_subiti_partita'] is not None]
+        media_lega = sum(medie) / len(medie) if medie else 1.3
+        if subiti > media_lega * 1.25:
+            punteggio += 1.0
+            motivi.append(f"difesa fragile: {subiti} gol subiti a partita")
+        elif subiti < media_lega * 0.8:
+            forze.append(f"difesa solida ({subiti} gol subiti a partita)")
+
+    # --- 6. Il rischio peggiore: pagare da fascia alta chi non scende in campo ---
+    esito = fascia_giocatore(prof['nome'], df, squadre)
+    fascia_alta = esito and esito[0] in ('top', 'semitop', 'seconda')
+    if fascia_alta:
+        nome_fascia = esito[1].split(maxsplit=1)[1].lower()
+        if prof['arrivato_in_corsa'] or prof['titolare_quando_disponibile']:
+            pass          # gerarchia non in discussione: il tema semmai e' fisico
+        elif prof['presenze'] > 0 and prof['titolarita_reale'] < 0.45:
+            punteggio += 2.5
+            motivi.append(f"costa da {nome_fascia} ma ha giocato "
+                          f"{prof['presenze']} partite su {PARTITE_STAGIONE}")
+        elif prof['presenze'] > 0 and prof['titolarita_reale'] < 0.62:
+            punteggio += 1.5
+            motivi.append(f"costa da {nome_fascia} senza essere un titolare fisso")
+
+        if prof['fantamedia_ponderata'] < fm_rif and prof['presenze'] >= 10:
+            punteggio += 2.0
+            motivi.append(f"prezzo da {nome_fascia}, rendimento sotto la media di ruolo")
+
+    if prof['rigorista']:
+        forze.append(f"rigorista ({prof['rigori_calciati']} calciati)")
+
+    # Il rischio si misura su quanto costa: si scala per la fascia
+    peso = PESO_FASCIA.get(esito[0], 1.0) if esito else 1.0
+    return _confeziona_rischio(punteggio * peso, motivi, forze, prof)
+
+
+def _confeziona_rischio(punteggio, motivi, forze, prof):
+    livello, etichetta = next((chiave, testo) for soglia, chiave, testo in LIVELLI_RISCHIO
+                              if punteggio >= soglia)
+    return {
+        'livello': livello,
+        'etichetta': etichetta,
+        'punteggio': round(punteggio, 1),
+        'motivi': motivi,
+        'forze': forze,
+        'nome': prof['nome'],
+    }
+
+
+MESI = ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 'luglio',
+        'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre']
+
+
+def _data_leggibile(iso):
+    """'2026-10-12' -> '12 ottobre'."""
+    try:
+        anno, mese, giorno = (int(x) for x in str(iso).split('-'))
+        return f"{giorno} {MESI[mese - 1]}"
+    except Exception:
+        return str(iso)
+
+
+def banner_infortunio(riga):
+    """Riga dedicata in cima alla card: se e' fermo, si deve vedere subito."""
+    infortunio = str(riga.get('Infortunio', '') or '').strip()
+    if not infortunio:
+        return ""
+
+    tipo = str(riga.get('InfortunioTipo', '') or '').strip()
+    aggiornato = str(riga.get('Aggiornato', '') or '').strip()
+    dal = str(riga.get('InfortunioDal', '') or '').strip()
+
+    etichetta = "🩹 <b>IN DUBBIO</b>" if tipo.lower() == 'questionable' else "🚑 <b>INDISPONIBILE</b>"
+    righe = [f"{etichetta}: {infortunio}"]
+
+    if dal:
+        giorni = _giorni_fermo(dal)
+        durata = f" ({giorni} giorni)" if giorni and giorni > 0 else ""
+        righe.append(f"   📅 fermo dal {_data_leggibile(dal)}{durata}")
+
+    if aggiornato:
+        righe.append(f"   <i>dato aggiornato al {_data_leggibile(aggiornato)}</i>")
+    return "\n".join(righe)
+
+
+def formatta_rischio(esito, compatto=True):
+    """Riga per la card: il timbro da solo non serve, servono i motivi."""
+    if not esito:
+        return "—"
+    if esito['livello'] == 'nessuno':
+        testo = esito['etichetta']
+        if esito['forze']:
+            testo += f" · {esito['forze'][0]}"
+        return testo
+
+    motivi = esito['motivi'][:2] if compatto else esito['motivi']
+    testo = f"{esito['etichetta']}\n" + "\n".join(f"   └ {m}" for m in motivi)
+    if esito['forze']:
+        testo += f"\n   ✓ {esito['forze'][0]}"
+    return testo
