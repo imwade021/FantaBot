@@ -521,26 +521,22 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     max_rilancio = int(fair_price_val * 1.15)
     asta_stop = int(fair_price_val * 1.25)
 
-    if ruolo == 'A':
-        if fair_price_val >= 110:   fascia = "🥇 1° Fascia 👑"
-        elif fair_price_val >= 40:  fascia = "🥈 2° Fascia 🥇"
-        elif fair_price_val >= 15:  fascia = "🥉 3° Fascia 🥈"
-        elif fair_price_val >= 5:   fascia = "🚜 4° Fascia (Rotazione)"
-        else:                   fascia = "🎲 Scommessa 🎲"
-    elif ruolo == 'C':
-        if fair_price_val >= 50:    fascia = "🥇 1° Fascia 👑"
-        elif fair_price_val >= 25:  fascia = "🥈 2° Fascia 🥇"
-        elif fair_price_val >= 10:  fascia = "🥉 3° Fascia 🥈"
-        else:                   fascia = "🎲 4°/5° Fascia 🎲"
+    # Fascia = posizione nel proprio ruolo, non soglia in crediti: cosi' resta
+    # valida anche cambiando budget o numero di partecipanti.
+    esito_fascia = analisi.fascia_giocatore(player_name, df, lega_part)
+    if esito_fascia:
+        _, etichetta, posizione, totale = esito_fascia
+        fascia = f"{etichetta} <i>(#{posizione} fra i {ruolo})</i>"
     else:
-        if fair_price_val >= 25:    fascia = "🥇 1° Fascia 👑"
-        elif fair_price_val >= 12:  fascia = "🥈 2° Fascia 🥇"
-        else:                   fascia = "🥉 3°/4° Fascia 🥈"
+        fascia = "—"
 
     stats = get_roster_stats(session)
     info_text = (
         f"{photo_embed}📋 <b>ANALISI: {html.escape(player_name.upper())}</b> ({get_team_icon(sq_name)} {html.escape(sq_name)})\n━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n⚠️ <b>Rischio/Macellaio:</b> {get_macellaio_info(player_name, df)}\n\n"
+        f"{(analisi.banner_infortunio(p_data) + chr(10)) if analisi.banner_infortunio(p_data) else ''}"
+        f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n"
+        f"{analisi.formatta_rischio(analisi.valuta_rischio(p_data, df, lega_part), compatto=False)}\n"
+        f"🩺 {get_macellaio_info(player_name, df)}\n\n"
         f"🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price_val} cr.</code>\n"
         f"🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n"
         f"💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1048,7 +1044,10 @@ def handle_callbacks(call):
         avail = get_available_players(df, session)
         lst = avail[avail['R'] == r]
         # Fasce per percentile dentro il ruolo (vedi analisi.FASCE)
-        lst = analisi.fascia(avail, r, pfx if pfx in ("gemme", "panic") else "top")
+        # "gemme" e "panic" del menu corrispondono alle fasce low cost e scommessa
+        mappa_fasce = {'gemme': 'quarta', 'panic': 'scommessa', 'top': 'top'}
+        lst = analisi.fascia(avail, r, mappa_fasce.get(pfx, 'top'),
+                             session.get('lega_partecipanti', 8))
         if lst is None or lst.empty:
             lst = avail[avail['R'] == r].sort_values(by='FVM', ascending=False)
         
