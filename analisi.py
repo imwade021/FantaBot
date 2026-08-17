@@ -148,10 +148,16 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     # verrebbe segnalato come rischio invece che come affare.
     pv_totali = _num(riga.get('PvTot'), pv) or pv
     squadre_stagione = int(_num(riga.get('SquadreStag'), 1) or 1)
-    # Serve aver giocato in DUE squadre diverse: sommare Serie A, Champions e
-    # Coppa Italia gonfiava il totale e faceva sembrare tutti dei nuovi arrivi.
-    arrivato_in_corsa = (squadre_stagione >= 2 and pv > 0
-                         and pv_totali >= pv * 1.4 and pv_totali >= 25)
+    # NON si deduce PERCHE' ha giocato poco in Serie A: infortunio, trasferimento
+    # di gennaio, ritorno dall'estero e panchina producono gli stessi numeri.
+    # Si espone solo il dato: quante gare in Serie A, quante in stagione.
+    stagione_piena = pv > 0 and pv_totali >= pv * 1.4 and pv_totali >= 25
+
+    # Gare saltate per infortunio nella stagione passata: e' il dato che
+    # distingue chi si e' rotto da chi non veniva schierato.
+    gare_saltate = int(_num(riga.get('GareSaltate')))
+    motivo_stop = _testo(riga.get('MotivoStop'))
+    fragile = gare_saltate >= 8
 
     # Perche' ha poche presenze? Chi parte titolare e gioca 80 minuti ogni volta
     # che c'e' non e' un panchinaro: le partite che mancano sono infortuni o
@@ -171,13 +177,14 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     )
 
     titolarita = pv / PARTITE_STAGIONE if pv > 0 else 0.0
-    titolarita_reale = (min(1.0, pv_totali / PARTITE_STAGIONE)
-                        if arrivato_in_corsa and pv_totali > 0 else titolarita)
+    titolarita_reale = titolarita
     if pv > 0:
         etichetta = next(nome for soglia, nome in SOGLIE_TITOLARITA
                          if titolarita_reale >= soglia)
-        if arrivato_in_corsa:
-            etichetta += " (arrivato in corsa)"
+        if fragile:
+            etichetta = f"fragile: {gare_saltate} gare saltate"
+        elif stagione_piena:
+            etichetta += f" in Serie A ({pv_totali} gare in stagione)"
         elif titolare_quando_disponibile and titolarita_reale < 0.75:
             etichetta = "titolare, ma spesso indisponibile"
         elif subentrante:
@@ -220,7 +227,10 @@ def profilo(riga, contesto_squadre=None, baseline=None):
         'presenze': int(pv),
         'presenze_totali': int(pv_totali),
         'squadre_stagione': squadre_stagione,
-        'arrivato_in_corsa': arrivato_in_corsa,
+        'stagione_piena': stagione_piena,
+        'gare_saltate': gare_saltate,
+        'motivo_stop': motivo_stop,
+        'fragile': fragile,
         'da_titolare': int(da_titolare),
         'minuti_medi': round(minuti_medi, 1) if minuti_medi else None,
         'quota_titolare': round(quota_titolare, 2) if quota_titolare else None,
@@ -666,22 +676,32 @@ def valuta_rischio(riga, df, squadre=8):
 
     # --- 1. Titolarita': si guarda la stagione intera, non solo la Serie A ---
     if prof['presenze'] > 0:
-        if prof['arrivato_in_corsa']:
-            forze.append(f"{prof['presenze']} gare in Serie A ma "
-                         f"{prof['presenze_totali']} in stagione: arrivato a mercato aperto")
+        if prof['fragile']:
+            # Ora il motivo si sa: ha saltato partite per infortunio
+            punteggio += 1.0 if prof['gare_saltate'] < 15 else 2.0
+            dettaglio = f" ({prof['motivo_stop']})" if prof['motivo_stop'] else ""
+            motivi.append(f"ha saltato {prof['gare_saltate']} gare per infortunio"
+                          f"{dettaglio}: giocatore fragile")
+        elif prof['stagione_piena']:
+            # Ha giocato tanto, ma non in Serie A: trasferimento o rientro
+            punteggio += 0.8
+            squadre = prof['squadre_stagione']
+            motivi.append(f"solo {prof['presenze']} gare in Serie A, "
+                          f"{prof['presenze_totali']} in stagione"
+                          + (f" con {squadre} squadre" if squadre > 1 else ""))
         elif prof['titolare_quando_disponibile'] and prof['titolarita_reale'] < 0.75:
             # Titolare vero, ma assente a lungo: rischio fisico, non gerarchia
             punteggio += 1.2
             partite_perse = PARTITE_STAGIONE - int(prof['presenze'])
             motivi.append(f"titolare quando c'e' ({prof['minuti_medi']:.0f} min a partita) "
-                          f"ma ha saltato {partite_perse} gare: rischio infortuni")
+                          f"ma ha saltato {partite_perse} gare di campionato")
         elif prof['subentrante']:
             punteggio += 2.0
             motivi.append(f"quasi sempre subentrante ({prof['minuti_medi']:.0f} min a partita)")
         elif prof['titolarita_reale'] < 0.45:
             punteggio += 2.0
             motivi.append(f"solo {prof['presenze']} presenze su {PARTITE_STAGIONE}")
-        elif prof['titolarita_reale'] < 0.62:
+        elif prof['titolarita_reale'] < 0.62 and not prof['fragile']:
             punteggio += 1.0
             motivi.append(f"{prof['presenze']} presenze: non e' un titolare fisso")
         elif prof['titolarita_reale'] >= 0.85:
@@ -729,8 +749,8 @@ def valuta_rischio(riga, df, squadre=8):
     fascia_alta = esito and esito[0] in ('top', 'semitop', 'seconda')
     if fascia_alta:
         nome_fascia = esito[1].split(maxsplit=1)[1].lower()
-        if prof['arrivato_in_corsa'] or prof['titolare_quando_disponibile']:
-            pass          # gerarchia non in discussione: il tema semmai e' fisico
+        if prof['stagione_piena'] or prof['titolare_quando_disponibile']:
+            pass          # ha giocato: il poco impiego in Serie A ha altre cause
         elif prof['presenze'] > 0 and prof['titolarita_reale'] < 0.45:
             punteggio += 2.5
             motivi.append(f"costa da {nome_fascia} ma ha giocato "
