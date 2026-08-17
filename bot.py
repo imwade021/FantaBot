@@ -536,7 +536,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         f"{(analisi.banner_infortunio(p_data) + chr(10)) if analisi.banner_infortunio(p_data) else ''}"
         f"📌 <b>Ruolo:</b> <code>{html.escape(ruolo)}</code>\n🧮 <b>Fascia:</b> {fascia}\n"
         f"{analisi.formatta_rischio(analisi.valuta_rischio(p_data, df, lega_part), compatto=False)}\n"
-        f"🩺 {get_macellaio_info(player_name, df)}\n\n"
+        f"{get_macellaio_info(player_name, df).strip()}\n\n"
         f"🎯 <b>VALUTAZIONE (Lega a {lega_part} - {lega_bud} cr)</b>\n💰 <b>Fair Price:</b> <code>{fair_price_val} cr.</code>\n"
         f"🟢 <b>Max Consigliato:</b> <code>{max_rilancio} cr.</code>\n🛑 <b>OVERPAY:</b> <code>> {asta_stop} cr.</code>\n\n"
         f"💼 Budget residuo: <code>{session['budget']}</code> cr. (Max Bid: <code>{stats['max_bid']}</code>)\n━━━━━━━━━━━━━━━━━━━━━━\n"
