@@ -10,7 +10,7 @@ import io
 import math
 import os
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 # ----------------------------------------------------------------------
 # IDENTITA' VISIVA
@@ -538,6 +538,13 @@ def _tela():
     return immagine
 
 
+def _fondo_testo(disegno, xy, testo, font):
+    """Coordinata Y in cui il testo finisce davvero: con font grandi l'altezza
+    dipende dai glifi, e piazzare la riga successiva 'a occhio' fa sovrapporre."""
+    riquadro = disegno.textbbox(xy, testo, font=font)
+    return riquadro[3]
+
+
 def _linea(disegno, y, x1=72, x2=LARGHEZZA - 72, colore=(38, 34, 32)):
     disegno.line([(x1, y), (x2, y)], fill=colore, width=2)
 
@@ -611,18 +618,23 @@ def disegna_dashboard_v2(dati):
     disegno.text((104 + lm, 76), "HUB", font=_font(56), fill=ARANCIO)
 
     # --- IL numero ---
-    disegno.text((72, 210), str(budget), font=_font(300), fill=TESTO)
-    lb = disegno.textlength(str(budget), font=_font(300))
-    disegno.text((84 + lb, 380), "cr", font=_font(76), fill=TESTO_DEBOLE)
+    font_cassa = _font(300)
+    disegno.text((72, 210), str(budget), font=font_cassa, fill=TESTO)
+    lb = disegno.textlength(str(budget), font=font_cassa)
+    fondo_cassa = _fondo_testo(disegno, (72, 210), str(budget), font_cassa)
 
-    _spaziato(disegno, (76, 508), testo_sicuro(f"{slot} SLOT DA RIEMPIRE  ·  {media:.0f} CR A TESTA"),
+    font_cr = _font(76)
+    disegno.text((84 + lb, fondo_cassa - _fondo_testo(disegno, (0, 0), "cr", font_cr)),
+                 "cr", font=font_cr, fill=TESTO_DEBOLE)
+
+    y_sotto = fondo_cassa + 34
+    _spaziato(disegno, (76, y_sotto), testo_sicuro(f"{slot} SLOT DA RIEMPIRE  ·  {media:.0f} CR A TESTA"),
               _font(30), TESTO_MEDIO, 5)
 
-    # barra sottile a tutta larghezza: un solo indicatore, non un anello
     colore = ARANCIO if quota > 0.35 else (ARANCIO_SCURO if quota > 0.15 else ROSSO)
-    _barra(disegno, 72, 570, LARGHEZZA - 144, 10, quota, colore)
+    _barra(disegno, 72, y_sotto + 62, LARGHEZZA - 144, 10, quota, colore)
 
-    _linea(disegno, 660)
+    _linea(disegno, y_sotto + 152)
 
     # --- Reparti: una riga sola, niente schede ---
     conteggi = dati.get('conteggi', {})
@@ -658,6 +670,52 @@ def disegna_dashboard_v2(dati):
 CARTELLA_FOTO = os.path.join(os.path.dirname(__file__), "cache_foto")
 
 
+def _rimuovi_sfondo_chiaro(foto, tolleranza=42):
+    """
+    Toglie il fondo bianco dei ritratti ufficiali. Parte dai quattro angoli e
+    si espande: cosi' una maglia bianca al centro non viene cancellata, perche'
+    non e' collegata al bordo.
+    """
+    rgb = foto.convert("RGB")
+    sentinella = (255, 0, 255)
+    for angolo in ((0, 0), (rgb.width - 1, 0), (0, rgb.height - 1),
+                   (rgb.width - 1, rgb.height - 1)):
+        try:
+            pixel = rgb.getpixel(angolo)
+            if min(pixel) > 200:          # solo se l'angolo e' davvero chiaro
+                ImageDraw.floodfill(rgb, angolo, sentinella, thresh=tolleranza)
+        except Exception:
+            pass
+
+    maschera = Image.new("L", foto.size, 255)
+    dati_rgb = rgb.load()
+    dati_maschera = maschera.load()
+    for y in range(foto.height):
+        for x in range(foto.width):
+            if dati_rgb[x, y] == sentinella:
+                dati_maschera[x, y] = 0
+
+    # bordo sfumato: evita il contorno seghettato del ritaglio
+    maschera = maschera.filter(ImageFilter.GaussianBlur(1.6))
+    risultato = foto.convert("RGBA")
+    risultato.putalpha(maschera)
+    return risultato
+
+
+def _sfuma_in_basso(foto, altezza_sfumatura=140):
+    """Dissolve il bordo inferiore nel nero: la figura non sembra incollata."""
+    alpha = foto.getchannel("A")
+    sfumatura = Image.new("L", foto.size, 255)
+    disegno = ImageDraw.Draw(sfumatura)
+    for indice in range(altezza_sfumatura):
+        y = foto.height - altezza_sfumatura + indice
+        disegno.line([(0, y), (foto.width, y)],
+                     fill=int(255 * (1 - indice / altezza_sfumatura)))
+    foto.putalpha(Image.composite(alpha, Image.new("L", foto.size, 0), sfumatura)
+                  if False else ImageChops.multiply(alpha, sfumatura))
+    return foto
+
+
 def carica_foto(url, lato=520):
     """Scarica (o riprende dalla cache) la foto del giocatore. None se non c'e'."""
     if not url or not str(url).startswith("http"):
@@ -686,8 +744,14 @@ def carica_foto(url, lato=520):
         return None
 
     proporzione = lato / max(foto.width, foto.height)
-    return foto.resize((int(foto.width * proporzione), int(foto.height * proporzione)),
+    foto = foto.resize((int(foto.width * proporzione), int(foto.height * proporzione)),
                        Image.LANCZOS)
+    try:
+        foto = _rimuovi_sfondo_chiaro(foto)
+        foto = _sfuma_in_basso(foto)
+    except Exception:
+        pass
+    return foto
 
 
 def _silhouette(lato=520):
@@ -709,11 +773,10 @@ def disegna_card_foto(g):
     ImageDraw.Draw(alone).ellipse([560, 120, 1240, 800], fill=(104, 50, 0))
     immagine = Image.blend(immagine, alone.filter(ImageFilter.GaussianBlur(150)), 0.55)
 
-    # Ordine delle fonti: foto API-Football (agganciata per id), poi il
-    # campioncino di Fantacalcio, poi la sagoma. Non fallisce mai.
-    foto = (carica_foto(g.get('foto_api'), 560)
-            or carica_foto(g.get('foto'), 560)
-            or _silhouette(560))
+    # Solo il ritratto API-Football: il campioncino di Fantacalcio porta con se'
+    # la propria cornice blu e oro e litiga con questa grafica. Meglio la sagoma.
+    # Per riattivarlo basta rimettere carica_foto(g.get('foto'), 560) in mezzo.
+    foto = carica_foto(g.get('foto_api'), 560) or _silhouette(560)
     immagine.paste(foto, (LARGHEZZA - foto.width - 20, 150), foto)
 
     disegno = ImageDraw.Draw(immagine)
@@ -724,21 +787,30 @@ def disegna_card_foto(g):
               _font(26), TESTO_MEDIO, 5)
 
     prezzo = str(g.get('prezzo', 0))
-    disegno.text((72, 300), prezzo, font=_font(280), fill=ARANCIO)
-    lp = disegno.textlength(prezzo, font=_font(280))
-    disegno.text((84 + lp, 452), "cr", font=_font(72), fill=ARANCIO_SCURO)
-    _spaziato(disegno, (76, 566), f"MAX {g.get('max', 0)}   ·   STOP {g.get('stop', 0)}",
+    font_prezzo = _font(280)
+    disegno.text((72, 300), prezzo, font=font_prezzo, fill=ARANCIO)
+    lp = disegno.textlength(prezzo, font=font_prezzo)
+    fondo_prezzo = _fondo_testo(disegno, (72, 300), prezzo, font_prezzo)
+
+    # "cr" allineato al piede del numero, non a un'altezza indovinata
+    font_cr = _font(72)
+    disegno.text((84 + lp, fondo_prezzo - _fondo_testo(disegno, (0, 0), "cr", font_cr)),
+                 "cr", font=font_cr, fill=ARANCIO_SCURO)
+
+    y_max_stop = fondo_prezzo + 28
+    _spaziato(disegno, (76, y_max_stop), f"MAX {g.get('max', 0)}   ·   STOP {g.get('stop', 0)}",
               _font(30), TESTO_MEDIO, 5)
 
-    _linea(disegno, 700)
+    _linea(disegno, y_max_stop + 92)
 
-    y = 744
+    y = y_max_stop + 136
     colonne = g.get('numeri', [])
     passo = (LARGHEZZA - 144) / max(1, len(colonne))
     for indice, (etichetta, valore, evidenzia) in enumerate(colonne):
         x = 72 + passo * indice
-        disegno.text((x, y), testo_sicuro(valore), font=_font(62),
-                     fill=ARANCIO if evidenzia else TESTO)
+        negativo = str(valore).strip().startswith('-')
+        colore_valore = ROSSO if negativo else (ARANCIO if evidenzia else TESTO)
+        disegno.text((x, y), testo_sicuro(valore), font=_font(62), fill=colore_valore)
         _spaziato(disegno, (x + 2, y + 74), testo_sicuro(etichetta), _font(22), TESTO_DEBOLE, 4)
 
     avviso = g.get('avviso')
