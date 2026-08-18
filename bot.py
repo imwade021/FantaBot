@@ -8,9 +8,10 @@ import pandas as pd
 import analisi
 import config
 import dati
+import interfaccia
 import numpy as np
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # Tenta di importare la libreria per la grafica del campo
@@ -411,9 +412,33 @@ def scouting_menu_keyboard():
     markup.add(InlineKeyboardButton("🎰  Tappabuchi", callback_data="pro_spiccioli"),
                InlineKeyboardButton("🧤  Griglia difesa", callback_data="pro_griglia"))
     markup.add(InlineKeyboardButton("🚨  Panic button", callback_data="menu_panic_start"),
-               InlineKeyboardButton("🛠️  Altri strumenti", callback_data="menu_pro"))
-    markup.add(InlineKeyboardButton("🏠  Home", callback_data="go_home"))
+               InlineKeyboardButton("⚖️  Confronta", callback_data="menu_studio_start"))
+    markup.add(InlineKeyboardButton("🔙  Indietro", callback_data="go_home"))
     return markup
+
+
+def invia_immagine(chat_id, immagine, message_id=None, markup=None, didascalia=None):
+    """
+    Manda un PNG, sostituendo il messaggio precedente quando possibile.
+    Telegram non converte un messaggio di testo in foto: se l'edit fallisce
+    si cancella il vecchio e se ne manda uno nuovo, cosi' la chat resta pulita.
+    """
+    foto = io.BytesIO(immagine)
+    foto.name = "fantahub.png"
+    if message_id:
+        try:
+            bot.edit_message_media(
+                media=InputMediaPhoto(foto, caption=didascalia, parse_mode="HTML"),
+                chat_id=chat_id, message_id=message_id, reply_markup=markup)
+            return
+        except Exception:
+            try:
+                bot.delete_message(chat_id, message_id)
+            except Exception:
+                pass
+            foto = io.BytesIO(immagine)
+            foto.name = "fantahub.png"
+    bot.send_photo(chat_id, foto, caption=didascalia, parse_mode="HTML", reply_markup=markup)
 
 
 def barra(valore, totale, caselle=6):
@@ -430,37 +455,37 @@ def barra(valore, totale, caselle=6):
 def send_dashboard(chat_id, user_id, message_id=None):
     session = get_session(user_id)
     stats = get_roster_stats(session)
+    markup = main_menu_keyboard(session)
+
+    dati = {
+        'budget': session['budget'],
+        'budget_iniziale': session.get('lega_budget_iniziale', 500),
+        'slot_liberi': stats['slot_liberi'],
+        'max_bid': stats['max_bid'],
+        'conteggi': stats['counts'],
+        'slot_totali': SLOT_PER_RUOLO_HOME,
+        'stato': 'asta live' if session.get('fase_asta') else 'pre-asta',
+    }
+
+    try:
+        invia_immagine(chat_id, interfaccia.disegna_dashboard_v2(dati), message_id, markup)
+        return
+    except Exception as e:
+        print(f"⚠️ Dashboard grafica non disponibile ({e}): uso il testo.")
+
+    # Ripiego testuale: il bot deve funzionare anche se il disegno fallisce
     conteggi = stats['counts']
-    budget = session['budget']
-    budget_iniziale = session.get('lega_budget_iniziale', 500)
-    slot, max_bid = stats['slot_liberi'], stats['max_bid']
-    media = f"{budget / slot:.0f} cr a slot" if slot > 0 else "rosa completa"
-
-    righe_ruoli = []
-    for ruolo in ('P', 'D', 'C', 'A'):
-        totale = SLOT_PER_RUOLO_HOME[ruolo]
-        avuti = conteggi[ruolo]
-        righe_ruoli.append(
-            f"{ROLE_ICONS[ruolo]} <code>{barra(avuti, totale, 8)}</code> "
-            f"<b>{avuti}</b>/{totale}")
-
-    text = (
-        f"<b>FANTAHUB</b>  ·  <i>{'asta in corso' if session.get('fase_asta') else 'pre-asta'}</i>\n"
-        f"<code>{barra(budget, budget_iniziale, 12)}</code>\n"
-        f"💰 <b>{budget}</b> cr  ·  {slot} slot  ·  {media}\n"
-        f"🛑 offerta massima <b>{max_bid}</b> cr\n\n"
-        + "\n".join(righe_ruoli) +
-        "\n\n<blockquote>Scrivi un nome per la scheda, "
-        "oppure <i>“ho preso Dybala a 35”</i></blockquote>"
-    )
-
+    testo = (f"<b>FANTAHUB</b>\n💰 <b>{session['budget']}</b> cr · {stats['slot_liberi']} slot\n"
+             f"🛑 offerta massima <b>{stats['max_bid']}</b> cr\n\n"
+             + "  ·  ".join(f"{ROLE_ICONS[r]} {conteggi[r]}/{SLOT_PER_RUOLO_HOME[r]}"
+                            for r in ('P', 'D', 'C', 'A')))
     if message_id:
         try:
-            bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
+            bot.edit_message_text(testo, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
             return
         except Exception:
             pass
-    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=main_menu_keyboard(session))
+    bot.send_message(chat_id, testo, parse_mode="HTML", reply_markup=markup)
 
 
 SLOT_PER_RUOLO = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
@@ -642,24 +667,64 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         else:
             markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
     
-    try: bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
+    # Card grafica: nome, prezzo, numeri e foto in una sola immagine
+    prof = analisi.profilo(p_data, analisi.statistiche_squadre(df), analisi.baseline_ruoli(df))
+    esito_rischio = analisi.valuta_rischio(p_data, df, lega_part)
+    esito_fascia = analisi.fascia_giocatore(player_name, df, lega_part)
+
+    livello = esito_rischio['livello']
+    avviso = None
+    if livello != 'nessuno' and esito_rischio['motivi']:
+        avviso = ('evita' if livello == 'evita' else 'attenzione', esito_rischio['motivi'][0])
+    elif esito_rischio['forze']:
+        avviso = ('ok', esito_rischio['forze'][0])
+
+    dati_card = {
+        'nome': player_name,
+        'squadra': str(sq_name),
+        'ruolo': ruolo,
+        'fascia': esito_fascia[1].split(maxsplit=1)[1] if esito_fascia else '',
+        'prezzo': fair_price_val, 'max': max_rilancio, 'stop': asta_stop,
+        'numeri': [
+            ('PRESENZE', f"{prof['presenze']}/38", False),
+            ('BONUS/PARTITA', f"{prof['bonus_partita']:+.2f}", True),
+            ('GARE SALTATE', str(prof.get('gare_saltate', 0)), False),
+        ],
+        'avviso': avviso,
+        'avviso_extra': esito_rischio['motivi'][1] if len(esito_rischio['motivi']) > 1 else '',
+        'cassa': session['budget'], 'max_bid': stats['max_bid'],
+        'foto_api': str(p_data.get('FotoAPI', '') or ''),
+        'foto': str(p_data.get('PhotoURL', '') or ''),
+    }
+
+    try:
+        invia_immagine(chat_id, interfaccia.disegna_card_foto(dati_card), message_id, markup)
+        return
+    except Exception as e:
+        print(f"⚠️ Card grafica non disponibile ({e}): uso il testo.")
+
+    try:
+        bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML",
+                              reply_markup=markup, disable_web_page_preview=False)
     except Exception:
-        try: bot.delete_message(chat_id, message_id)
-        except Exception: pass
-        bot.send_message(chat_id, info_text, parse_mode="HTML", reply_markup=markup, disable_web_page_preview=False)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+        bot.send_message(chat_id, info_text, parse_mode="HTML", reply_markup=markup,
+                         disable_web_page_preview=False)
+
 
 def system_menu_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("📥 Download Remoto", callback_data="force_download_listone"), InlineKeyboardButton("🔄 Sync Dati", callback_data="reload_excel"))
     markup.add(InlineKeyboardButton("⚠️ Reset Rosa", callback_data="reset_confirm"), InlineKeyboardButton("🧹 Pulisci Schermo", callback_data="clear_screen"))
-    markup.add(InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
+    markup.add(InlineKeyboardButton("🔙 Indietro", callback_data="go_home"))
     return markup
 
 def pro_menu_keyboard():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("🎰 Ultimi Spiccioli", callback_data="pro_spiccioli"), InlineKeyboardButton("🧱 Stakanovisti", callback_data="pro_stakanov"))
-    markup.add(InlineKeyboardButton("🕸️ Griglia Perfetta (D)", callback_data="pro_griglia"), InlineKeyboardButton("🏠 Torna alla Home", callback_data="go_home"))
-    return markup
+    """Il vecchio menu PRO e' confluito nello scouting: si evita il doppione."""
+    return scouting_menu_keyboard()
 
 # ==========================================
 # HANDLERS: ACQUISTO E VALUTAZIONE
@@ -1140,7 +1205,8 @@ def handle_callbacks(call):
     elif call.data == "menu_top_start" or call.data == "menu_gemme_start" or call.data == "menu_panic_start":
         pfx = call.data.split("_")[1]
         t = {"top": "🏆 TOP LIBERI", "gemme": "💎 GEMME NASCOSTE (FVM 6-20)", "panic": "🚨 PANIC BUTTON (FVM 1-5)"}[pfx]
-        bot.edit_message_text(f"{t} - Scegli ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=4).add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_{pfx}_ru_{r}") for r in ['P', 'D', 'C', 'A']]).add(InlineKeyboardButton("🔙 Home", callback_data="go_home")))
+        bot.edit_message_text(f"{t} - Scegli ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=4).add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_{pfx}_ru_{r}") for r in ['P', 'D', 'C', 'A']]).add(InlineKeyboardButton("🔙 Scouting", callback_data="menu_scouting"),
+     InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data.startswith("menu_top_ru_") or call.data.startswith("menu_gemme_ru_") or call.data.startswith("menu_panic_ru_"):
         pfx, raw = call.data.split("_")[1], call.data.split("_ru_")[1]
@@ -1172,11 +1238,13 @@ def handle_callbacks(call):
         session['compare_p1'] = None
         bot.edit_message_text("📊 <b>STUDIO 3D</b>\nSquadra TUO giocatore:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(*[InlineKeyboardButton(f"{get_team_icon(s)} {s}", callback_data=f"std1_sq_{s}") for s in sorted(df['Squadra'].dropna().astype(str).unique())]).add(InlineKeyboardButton("🔙 Home", callback_data="go_home")))
 
-    elif call.data.startswith("std1_sq_"): bot.edit_message_text("Scegli ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=4).add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"std1_ru_{call.data.replace('std1_sq_', '')}_{r}") for r in ['P', 'D', 'C', 'A']]).add(InlineKeyboardButton("🔙", callback_data="menu_studio_start")))
+    elif call.data.startswith("std1_sq_"): bot.edit_message_text("Scegli ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=4).add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"std1_ru_{call.data.replace('std1_sq_', '')}_{r}") for r in ['P', 'D', 'C', 'A']]).add(InlineKeyboardButton("🔙 Indietro", callback_data="menu_studio_start"),
+     InlineKeyboardButton("🏠 Home", callback_data="go_home")))
     elif call.data.startswith("std1_ru_"): bot.edit_message_text("Seleziona:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=1).add(*[InlineKeyboardButton(f"{r['Nome']}", callback_data=f"std1_pl_{r['Nome']}") for _, r in df[(df['Squadra'] == call.data.split('_')[2]) & (df['R'] == call.data.split('_')[3])].iterrows()]).add(InlineKeyboardButton("🔙", callback_data=f"std1_sq_{call.data.split('_')[2]}")))
     elif call.data.startswith("std1_pl_"):
         session['compare_p1'] = df[df['Nome'] == call.data.replace("std1_pl_", "")].iloc[0].to_dict()
-        bot.edit_message_text(f"📊 <b>Hai scelto {html.escape(session['compare_p1']['Nome'].upper())}</b>\nSquadra PROPOSTO:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(*[InlineKeyboardButton(f"{get_team_icon(s)} {s}", callback_data=f"std2_sq_{s}") for s in sorted(df['Squadra'].dropna().astype(str).unique())]).add(InlineKeyboardButton("🔙 Reset", callback_data="menu_studio_start")))
+        bot.edit_message_text(f"📊 <b>Hai scelto {html.escape(session['compare_p1']['Nome'].upper())}</b>\nSquadra PROPOSTO:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(*[InlineKeyboardButton(f"{get_team_icon(s)} {s}", callback_data=f"std2_sq_{s}") for s in sorted(df['Squadra'].dropna().astype(str).unique())]).add(InlineKeyboardButton("🔙 Ricomincia", callback_data="menu_studio_start"),
+     InlineKeyboardButton("🏠 Home", callback_data="go_home")))
     elif call.data.startswith("std2_sq_"): bot.edit_message_text("Scegli:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=1).add(*[InlineKeyboardButton(f"🆚 {r['Nome']}", callback_data=f"std2_pl_{r['Nome']}") for _, r in df[(df['Squadra'] == call.data.replace("std2_sq_", "")) & (df['R'] == session['compare_p1']['R']) & (df['Nome'] != session['compare_p1']['Nome'])].iterrows()]).add(InlineKeyboardButton("🔙", callback_data=f"std1_pl_{session['compare_p1']['Nome']}")))
     elif call.data.startswith("std2_pl_"): bot.edit_message_text(advanced_trade_analyzer_3d(session['compare_p1'], df[df['Nome'] == call.data.replace("std2_pl_", "")].iloc[0].to_dict(), session, df), chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=2).add(InlineKeyboardButton(f"⚡ Compra {session['compare_p1']['Nome']}", callback_data=f"buy_{session['compare_p1']['Nome']}"), InlineKeyboardButton(f"⚡ Compra {call.data.replace('std2_pl_', '')}", callback_data=f"buy_{call.data.replace('std2_pl_', '')}")).add(InlineKeyboardButton("🔄 Nuovo", callback_data="menu_studio_start"), InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
