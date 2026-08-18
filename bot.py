@@ -417,6 +417,40 @@ def scouting_menu_keyboard():
     return markup
 
 
+# Telegram non trasforma una foto in testo: se il messaggio corrente e'
+# un'immagine, edit_message_text fallisce. Invece di correggere quaranta
+# chiamate, si rende tollerante quella una volta sola.
+_edit_testo_originale = bot.edit_message_text
+
+
+def _edit_testo_tollerante(text, chat_id=None, message_id=None, **extra):
+    try:
+        return _edit_testo_originale(text, chat_id=chat_id, message_id=message_id, **extra)
+    except Exception:
+        pass
+
+    # secondo tentativo: forse e' una foto e basta cambiare la didascalia
+    try:
+        return bot.edit_message_caption(
+            caption=text, chat_id=chat_id, message_id=message_id,
+            parse_mode=extra.get('parse_mode'), reply_markup=extra.get('reply_markup'))
+    except Exception:
+        pass
+
+    # ultimo: si sostituisce il messaggio
+    try:
+        bot.delete_message(chat_id, message_id)
+    except Exception:
+        pass
+    return bot.send_message(
+        chat_id, text, parse_mode=extra.get('parse_mode'),
+        reply_markup=extra.get('reply_markup'),
+        disable_web_page_preview=extra.get('disable_web_page_preview'))
+
+
+bot.edit_message_text = _edit_testo_tollerante
+
+
 def invia_immagine(chat_id, immagine, message_id=None, markup=None, didascalia=None):
     """
     Manda un PNG, sostituendo il messaggio precedente quando possibile.
