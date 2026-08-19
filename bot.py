@@ -664,13 +664,20 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     nomi_liberi = set(disponibili['Nome'].astype(str)) if disponibili is not None else None
     contesto = analisi.contesto_asta(player_name, df, nomi_liberi, lega_part)
     if contesto:
-        fascia = (f"{contesto['etichetta']} <i>(#{contesto['posizione']} "
-                  f"fra {contesto['totale_ruolo']} {ruolo})</i>")
+        # Una riga sola: fascia, posizione e quanti ne restano. Prima erano
+        # due righe che sul telefono andavano a capo e si leggevano male.
+        liberi = contesto['rimasti_fascia']
+        fascia = (f"{contesto['etichetta']}  ·  <b>#{contesto['posizione']}</b> "
+                  f"di {contesto['totale_ruolo']} {ruolo}")
+        if contesto['totale_fascia']:
+            fascia += (f"  ·  <b>{liberi}</b> liber{'o' if liberi == 1 else 'i'} "
+                       f"in fascia")
     else:
         fascia = "—"
 
     stats = get_roster_stats(session)
-    prof = analisi.profilo(p_data, analisi.statistiche_squadre(df), analisi.baseline_ruoli(df))
+    prof = analisi.profilo(p_data, analisi.statistiche_squadre(df),
+                           analisi.baseline_ruoli(df), analisi.gerarchia_rigori(df))
     rischio = analisi.valuta_rischio(p_data, df, lega_part)
     banner = analisi.banner_infortunio(p_data)
 
@@ -688,12 +695,11 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     macellaio = get_macellaio_info(player_name, df).strip()
     mostra_macellaio = macellaio and 'ALLARME' in macellaio
 
-    # Quanti ne restano in fascia e quanto il modello si scosta dal mercato:
-    # sono le due cose che fanno alzare o mollare, e non stanno nelle barre.
-    contesto_riga = analisi.riga_contesto(contesto, prof)
+    # Da dove viene il bonus, e se e' davvero lui a tirare i rigori.
+    riga_gol = analisi.riga_bonus(prof, analisi.gerarchia_rigori(df))
 
-    # Da dove viene il bonus, e se tira i rigori.
-    riga_gol = analisi.riga_bonus(prof)
+    # Modello e listino in disaccordo: detto a parole, non in percentuale.
+    nota = analisi.nota_valore(prof)
 
     # Dove sta dentro il suo ruolo: un numero assoluto non si giudica da solo.
     riga_confronto = analisi.righe_percentili(analisi.percentili_ruolo(p_data, df))
@@ -737,7 +743,6 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         f"{photo_embed}<b>{html.escape(player_name.upper())}</b>  ·  "
         f"{get_team_icon(sq_name)} {html.escape(sq_name)}  ·  <code>{html.escape(ruolo)}</code>\n"
         f"{fascia}\n"
-        + (f"<i>{contesto_riga.lower()}</i>\n" if contesto_riga else "")
         + (f"\n{banner}\n" if banner else "")
         + (f"\n{barre}\n" if barre else "")
         + (f"{riga_gol}\n" if riga_gol else "")
@@ -747,6 +752,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         + f"\n{avvisi}\n"
         + (f"{macellaio}\n" if mostra_macellaio else "")
         + f"\n💰 <b>{fair_price_val} cr</b>  ·  max <b>{max_rilancio}</b>  ·  stop <b>{asta_stop}</b>\n"
+        + (f"{nota}\n" if nota else "")
         + (f"{riga_slot}\n" if riga_slot else "")
         + f"💼 cassa <b>{session['budget']}</b> cr  ·  offerta max <b>{stats['max_bid']}</b>\n"
     )
