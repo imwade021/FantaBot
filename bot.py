@@ -1,17 +1,18 @@
 import os
 import io
 import re
+import sys
 import html
-import unicodedata
+import json
 import threading
 import pandas as pd
 import analisi
 import config
 import dati
 import interfaccia
-import numpy as np
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from telebot.apihelper import ApiTelegramException
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # Tenta di importare la libreria per la grafica del campo
@@ -45,8 +46,37 @@ ROLE_ICONS = config.ROLE_ICONS
 TEAM_COLORS = config.TEAM_COLORS
 SLOT_PER_RUOLO = config.SLOT_PER_RUOLO
 
-# Sessioni in memoria, una per utente Telegram (si azzerano al riavvio)
+# Sessioni utente. Stanno in memoria per velocita', ma vengono salvate su disco:
+# durante un'asta dal vivo un riavvio di Render azzerava rosa, cassa e scartati.
 user_sessions = {}
+_sessioni_lock = threading.Lock()
+
+
+def carica_sessioni():
+    """Ripristina le sessioni salvate. Un file corrotto non blocca l'avvio."""
+    if not os.path.exists(config.FILE_SESSIONI):
+        return
+    try:
+        with open(config.FILE_SESSIONI, 'r', encoding='utf-8') as f:
+            salvate = json.load(f)
+        for chiave, sessione in salvate.items():
+            user_sessions[int(chiave)] = sessione
+        print(f"✅ Sessioni ripristinate: {len(user_sessions)}.")
+    except Exception as e:
+        print(f"⚠️ Sessioni non ripristinate ({e}): si riparte da zero.")
+
+
+def salva_sessioni():
+    """Scrittura atomica: se il processo muore a meta', il file resta valido."""
+    try:
+        with _sessioni_lock:
+            istantanea = {str(k): v for k, v in user_sessions.items()}
+        temporaneo = config.FILE_SESSIONI + ".tmp"
+        with open(temporaneo, 'w', encoding='utf-8') as f:
+            json.dump(istantanea, f, ensure_ascii=False)
+        os.replace(temporaneo, config.FILE_SESSIONI)
+    except Exception as e:
+        print(f"⚠️ Salvataggio sessioni fallito: {e}")
 
 # Rigoristi, coppie di portieri e scommesse NON sono piu' liste scritte a mano:
 # si ricavano dalle colonne del Lista_Finale_Master.csv (Rc = rigori calciati,
@@ -103,34 +133,6 @@ def trova_partner_portiere(nome, df):
     compagni = compagni.assign(_fvm=compagni['FVM'].apply(_num)).sort_values('_fvm', ascending=False)
     return str(compagni.iloc[0]['Nome'])
 
-
-def trova_scommesse(df, limite_quotazione=8.0):
-    """Giocatori a poco prezzo con un rendimento sopra la media del loro ruolo."""
-    if df is None or df.empty:
-        return df.iloc[0:0] if df is not None else None
-
-    lavoro = df.copy()
-    lavoro['_qt'] = lavoro['Qt.A'].apply(_num) if 'Qt.A' in lavoro.columns else 0.0
-    lavoro['_fvm'] = lavoro['FVM'].apply(_num)
-    economici = lavoro[(lavoro['_qt'] > 0) & (lavoro['_qt'] <= limite_quotazione)]
-    if economici.empty:
-        return economici
-
-    # Nel proprio ruolo, chi sta nel quarto superiore per FVM fra gli economici
-    selezione = []
-    for ruolo, gruppo in economici.groupby(economici['R'].astype(str).str.upper()):
-        if gruppo.empty:
-            continue
-        soglia = gruppo['_fvm'].quantile(0.75)
-        selezione.append(gruppo[gruppo['_fvm'] >= soglia])
-    return pd.concat(selezione) if selezione else economici.iloc[0:0]
-
-
-def normalize_str(s):
-    if not isinstance(s, str): return ""
-    s = unicodedata.normalize('NFKD', s).encode('ASCII', 'ignore').decode('utf-8')
-    s = re.sub(r"[^\w\s]", "", s)
-    return " ".join(s.lower().split())
 
 def safe_answer_callback(call_id, text=None, show_alert=False):
     try: bot.answer_callback_query(call_id, text=text, show_alert=show_alert)
@@ -949,14 +951,30 @@ def handle_document(message):
         with open(temporaneo, 'wb') as f:
             f.write(bot.download_file(bot.get_file(message.document.file_id).file_path))
 
-        # Un .xlsx va convertito, non rinominato: salvarlo come .csv rompeva il bot
+        # Un .xlsx va convertito, non rinominato: salvarlo come .csv rompeva il bot.
+        # I file di Fantacalcio hanno una riga di titolo prima delle intestazioni:
+        # si prova header=0 e, se le colonne non tornano, header=1.
         if fname.endswith(('.xlsx', '.xls')):
             nuovo = pd.read_excel(temporaneo)
+            if 'Nome' not in nuovo.columns:
+                nuovo = pd.read_excel(temporaneo, header=1)
         else:
             try:
                 nuovo = pd.read_csv(temporaneo, sep=';', on_bad_lines='skip')
             except Exception:
                 nuovo = pd.read_csv(temporaneo, sep=',', on_bad_lines='skip')
+
+        # Il listone delle quotazioni NON e' il Master: non ha FVM, Prezzo,
+        # infortuni e foto. Accettarlo qui significava buttare via meta' dei dati
+        # fino al download successivo. Le quotazioni vanno nel repo del motore.
+        if 'Prezzo' not in nuovo.columns and 'FVM' not in nuovo.columns:
+            return bot.reply_to(
+                message,
+                "❌ <b>Questo sembra il listone quotazioni</b>, non il Master.\n"
+                "Caricarlo qui cancellerebbe FVM, prezzi e infortuni.\n\n"
+                "Mettilo invece nel repository <code>fanta-master-ai</code>: "
+                "il motore lo userà al prossimo giro notturno e il bot scaricherà "
+                "il Master aggiornato da solo.", parse_mode="HTML")
 
         ok, mancanti = dati.salva_da_dataframe(nuovo)
         if not ok:
@@ -1051,8 +1069,13 @@ def handle_callbacks(call):
         bot.edit_message_text(f"⚙️ <b>IMPOSTAZIONI</b>\n💰 Budget: <code>{session.get('lega_budget_iniziale', 500)} cr.</code>\n👥 Partecipanti: <code>{session.get('lega_partecipanti', 8)} squadre</code>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data.startswith("imposta_bud_"):
-        session['lega_budget_iniziale'] = session['budget'] = int(call.data.replace("imposta_bud_", ""))
-        safe_answer_callback(call.id, f"✅ Budget: {session['budget']} cr!", True)
+        # Si sposta il tetto, non la cassa: se hai gia' comprato, quello che hai
+        # speso resta speso. Prima cambiare budget a meta' asta te lo azzerava.
+        nuovo_budget = int(call.data.replace("imposta_bud_", ""))
+        speso = session.get('lega_budget_iniziale', 500) - session.get('budget', 500)
+        session['lega_budget_iniziale'] = nuovo_budget
+        session['budget'] = max(0, nuovo_budget - speso)
+        safe_answer_callback(call.id, f"✅ Budget: {nuovo_budget} cr (cassa {session['budget']})!", True)
         call.data = "menu_impostazioni_lega"
         handle_callbacks(call)
 
@@ -1238,7 +1261,7 @@ def handle_callbacks(call):
 
     elif call.data == "menu_top_start" or call.data == "menu_gemme_start" or call.data == "menu_panic_start":
         pfx = call.data.split("_")[1]
-        t = {"top": "🏆 TOP LIBERI", "gemme": "💎 GEMME NASCOSTE (FVM 6-20)", "panic": "🚨 PANIC BUTTON (FVM 1-5)"}[pfx]
+        t = {"top": "👑 TOP LIBERI", "gemme": "🔧 4ª/5ª FASCIA", "panic": "🎲 SCOMMESSE"}[pfx]
         bot.edit_message_text(f"{t} - Scegli ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=4).add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_{pfx}_ru_{r}") for r in ['P', 'D', 'C', 'A']]).add(InlineKeyboardButton("🔙 Scouting", callback_data="menu_scouting"),
      InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
@@ -1246,12 +1269,15 @@ def handle_callbacks(call):
         pfx, raw = call.data.split("_")[1], call.data.split("_ru_")[1]
         r, p = (raw.split("_page_")[0], int(raw.split("_page_")[1])) if "_page_" in raw else (raw, 1)
         avail = get_available_players(df, session)
-        lst = avail[avail['R'] == r]
-        # Fasce per percentile dentro il ruolo (vedi analisi.FASCE)
-        # "gemme" e "panic" del menu corrispondono alle fasce low cost e scommessa
+        # La fascia si calcola SEMPRE sul listone intero, altrimenti lo stesso
+        # giocatore risulta TOP nella sua card e di un'altra fascia nell'elenco,
+        # perche' i compagni gia' comprati sparivano dalla classifica di ruolo.
+        # Chi e' gia' stato preso lo si toglie dopo, solo dalla visualizzazione.
         mappa_fasce = {'gemme': 'quarta', 'panic': 'scommessa', 'top': 'top'}
-        lst = analisi.fascia(avail, r, mappa_fasce.get(pfx, 'top'),
+        lst = analisi.fascia(df, r, mappa_fasce.get(pfx, 'top'),
                              session.get('lega_partecipanti', 8))
+        if lst is not None and not lst.empty:
+            lst = lst[lst['Nome'].isin(avail['Nome'])]
         if lst is None or lst.empty:
             lst = avail[avail['R'] == r].sort_values(by='FVM', ascending=False)
         
@@ -1265,7 +1291,7 @@ def handle_callbacks(call):
 
     elif call.data == "menu_scommessa_start":
         avail = get_available_players(df, session)
-        sl = analisi.scommesse(avail)
+        sl = analisi.scommesse(avail, squadre=session.get('lega_partecipanti', 8))
         send_player_card_view(chat_id, sl.sample(1).iloc[0]['Nome'], call.message.message_id, df, session, True) if sl is not None and not sl.empty else safe_answer_callback(call.id, "Nessuna scommessa!", True)
 
     elif call.data == "menu_studio_start":
@@ -1297,8 +1323,75 @@ def handle_callbacks(call):
 
     elif call.data == "menu_wishlist": bot.edit_message_text("⭐ <b>WISHLIST:</b>\n" if session.get('wishlist') else "⭐ <b>VUOTA</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=1).add(*[InlineKeyboardButton(f"🔍 {n}", callback_data=f"sq_pl_{n}") for n in session.get('wishlist', [])]).add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
+def verifica_istanza_unica():
+    """
+    Una chiamata a getUpdates prima di partire. Se un'altra istanza sta gia'
+    leggendo, Telegram risponde 409 subito e si esce con un messaggio chiaro.
+    Serve perche' infinity_polling intercetta gli errori e ritenta all'infinito:
+    il 409 finiva nei log come rumore, senza mai fermare il processo.
+    """
+    try:
+        bot.get_updates(offset=-1, timeout=1)
+        return True
+    except ApiTelegramException as e:
+        if getattr(e, 'error_code', None) == 409:
+            print("🛑 HTTP 409: un'altra istanza del bot è già in ascolto.\n"
+                  "   Su Render: un solo Background Worker, 1 istanza, nessun "
+                  "deploy vecchio ancora vivo, nessuna copia in locale.")
+            return False
+        print(f"⚠️ Telegram ha risposto {getattr(e, 'error_code', '?')}: proseguo comunque.")
+        return True
+    except Exception as e:
+        print(f"⚠️ Controllo istanza non riuscito ({e}): proseguo comunque.")
+        return True
+
+
+def avvia_pianificatore():
+    """
+    Download notturno del Master e salvataggio periodico delle sessioni.
+    Prima lo scheduler era importato ma mai istanziato: il listone si aggiornava
+    solo per caso, quando Render riavviava il servizio.
+    """
+    pianificatore = BackgroundScheduler(timezone="Europe/Rome")
+    pianificatore.add_job(auto_download_listone, 'cron',
+                          hour=config.ORA_DOWNLOAD, minute=0,
+                          id='download_master', replace_existing=True)
+    pianificatore.add_job(salva_sessioni, 'interval', seconds=30,
+                          id='salva_sessioni', replace_existing=True)
+    pianificatore.start()
+    print(f"⏰ Download del Master pianificato ogni giorno alle "
+          f"{config.ORA_DOWNLOAD:02d}:00 (Europe/Rome).")
+    return pianificatore
+
+
 if __name__ == '__main__':
-    try: bot.remove_webhook()
-    except: pass
+    carica_sessioni()
+    load_data()
+
+    try:
+        bot.remove_webhook()
+    except Exception:
+        pass
+
+    if not verifica_istanza_unica():
+        sys.exit(1)
+
+    pianificatore = avvia_pianificatore()
     print("🚀 FANTABOT PRO ASTA LIVE In Ascolto!")
-    bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
+
+    try:
+        bot.infinity_polling(timeout=10, long_polling_timeout=5, skip_pending=True)
+    except ApiTelegramException as e:
+        if getattr(e, 'error_code', None) == 409:
+            print("🛑 HTTP 409 durante il polling: è comparsa una seconda istanza.")
+            salva_sessioni()
+            sys.exit(1)
+        raise
+    except KeyboardInterrupt:
+        pass
+    finally:
+        salva_sessioni()
+        try:
+            pianificatore.shutdown(wait=False)
+        except Exception:
+            pass

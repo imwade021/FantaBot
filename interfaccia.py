@@ -55,27 +55,10 @@ def _spaziato(disegno, xy, testo, font, colore, spaziatura=4):
     return x
 
 
-def _larghezza_spaziata(disegno, testo, font, spaziatura=4):
-    return sum(disegno.textlength(c, font=font) + spaziatura for c in testo) - spaziatura
 
 
-def _sfondo(immagine):
-    """Nero caldo con un alone arancione in alto a sinistra: da' profondita'
-    senza introdurre un secondo colore."""
-    disegno = ImageDraw.Draw(immagine)
-    for y in range(ALTEZZA):
-        quota = y / ALTEZZA
-        colore = tuple(int(NERO_CALDO[i] + (NERO[i] - NERO_CALDO[i]) * quota) for i in range(3))
-        disegno.line([(0, y), (LARGHEZZA, y)], fill=colore)
-
-    alone = Image.new("RGB", (LARGHEZZA, ALTEZZA), (0, 0, 0))
-    ImageDraw.Draw(alone).ellipse([-260, -340, 620, 300], fill=(70, 34, 0))
-    alone = alone.filter(ImageFilter.GaussianBlur(160))
-    return Image.blend(immagine, Image.blend(immagine, alone, 0.0), 0).point(lambda v: v), alone
 
 
-def _scheda(disegno, riquadro, raggio=30, riempimento=SUPERFICIE, bordo=BORDO):
-    disegno.rounded_rectangle(riquadro, raggio, fill=riempimento, outline=bordo, width=2)
 
 
 def _barra(disegno, x, y, larghezza, altezza, quota, colore):
@@ -86,127 +69,13 @@ def _barra(disegno, x, y, larghezza, altezza, quota, colore):
         disegno.rounded_rectangle([x, y, x + piena, y + altezza], raggio, fill=colore)
 
 
-def _anello(disegno, centro, raggio, spessore, quota, colore, fondo=(42, 38, 36)):
-    """Anello di progresso: piu' 'app' di una barra per una percentuale."""
-    cx, cy = centro
-    riquadro = [cx - raggio, cy - raggio, cx + raggio, cy + raggio]
-    disegno.ellipse(riquadro, outline=fondo, width=spessore)
-    gradi = max(0.0, min(1.0, quota)) * 360
-    if gradi > 2:
-        disegno.arc(riquadro, -90, -90 + gradi, fill=colore, width=spessore)
 
 
-def _pallini(disegno, x, y, pieni, totale, colore, passo=30, raggio=9):
-    """Uno slot, un pallino: per numeri piccoli si leggono meglio di una barra."""
-    for indice in range(totale):
-        cx = x + indice * passo
-        if indice < pieni:
-            disegno.ellipse([cx - raggio, y - raggio, cx + raggio, y + raggio], fill=colore)
-        else:
-            disegno.ellipse([cx - raggio, y - raggio, cx + raggio, y + raggio],
-                            outline=(64, 58, 54), width=3)
 
 
 # ----------------------------------------------------------------------
 # DASHBOARD
 # ----------------------------------------------------------------------
-def disegna_dashboard(dati):
-    immagine = Image.new("RGB", (LARGHEZZA, ALTEZZA), NERO)
-
-    # sfondo sfumato + alone
-    base = ImageDraw.Draw(immagine)
-    for y in range(ALTEZZA):
-        quota = y / ALTEZZA
-        colore = tuple(int(NERO_CALDO[i] + (NERO[i] - NERO_CALDO[i]) * quota) for i in range(3))
-        base.line([(0, y), (LARGHEZZA, y)], fill=colore)
-    alone = Image.new("RGB", (LARGHEZZA, ALTEZZA), (0, 0, 0))
-    ImageDraw.Draw(alone).ellipse([-300, -380, 660, 260], fill=(86, 42, 0))
-    immagine = Image.blend(immagine, alone.filter(ImageFilter.GaussianBlur(170)), 0.55)
-
-    disegno = ImageDraw.Draw(immagine)
-
-    # --- Marchio ---
-    disegno.rounded_rectangle([56, 60, 68, 116], 6, fill=ARANCIO)
-    disegno.text((92, 52), "FANTA", font=_font(66), fill=TESTO)
-    larghezza_marchio = disegno.textlength("FANTA", font=_font(66))
-    disegno.text((92 + larghezza_marchio, 52), "HUB", font=_font(66), fill=ARANCIO)
-
-    stato = dati.get('stato', 'pre-asta').upper()
-    font_stato = _font(24)
-    larghezza_stato = _larghezza_spaziata(disegno, stato, font_stato, 5)
-    disegno.rounded_rectangle([LARGHEZZA - 76 - larghezza_stato - 40, 64,
-                               LARGHEZZA - 56, 112], 24,
-                              fill=(38, 24, 8), outline=BORDO_ACCESO, width=2)
-    _spaziato(disegno, (LARGHEZZA - 76 - larghezza_stato - 20, 76), stato,
-              font_stato, ARANCIO_CHIARO, 5)
-
-    # --- Scheda cassa ---
-    _scheda(disegno, [56, 168, LARGHEZZA - 56, 452])
-
-    budget = int(dati.get('budget', 0))
-    iniziale = max(1, int(dati.get('budget_iniziale', 500)))
-    quota_budget = budget / iniziale
-    colore_cassa = ARANCIO if quota_budget > 0.35 else (ARANCIO_SCURO if quota_budget > 0.15 else ROSSO)
-
-    _spaziato(disegno, (96, 202), "CASSA", _font(26), TESTO_DEBOLE, 6)
-    disegno.text((92, 232), str(budget), font=_font(132), fill=TESTO)
-    larghezza_cifra = disegno.textlength(str(budget), font=_font(132))
-    disegno.text((100 + larghezza_cifra, 302), "cr", font=_font(46), fill=TESTO_MEDIO)
-
-    slot = int(dati.get('slot_liberi', 0))
-    media = (budget / slot) if slot else 0
-    _spaziato(disegno, (96, 378), f"{media:.0f} CR A SLOT  ·  {slot} DA PRENDERE",
-              _font(26), TESTO_MEDIO, 3)
-
-    # anello percentuale
-    _anello(disegno, (LARGHEZZA - 190, 300), 92, 16, quota_budget, colore_cassa)
-    percentuale = f"{int(quota_budget * 100)}%"
-    font_percentuale = _font(52)
-    larghezza_percentuale = disegno.textlength(percentuale, font=font_percentuale)
-    disegno.text((LARGHEZZA - 190 - larghezza_percentuale / 2, 272), percentuale,
-                 font=font_percentuale, fill=TESTO)
-
-    # --- Reparti ---
-    _spaziato(disegno, (62, 484), "ROSA", _font(28), TESTO_DEBOLE, 6)
-
-    conteggi = dati.get('conteggi', {})
-    totali = dati.get('slot_totali', {'P': 3, 'D': 8, 'C': 8, 'A': 6})
-    y = 530
-    for ruolo in ('P', 'D', 'C', 'A'):
-        avuti, totale = int(conteggi.get(ruolo, 0)), int(totali.get(ruolo, 1))
-        colore = INTENSITA_RUOLO[ruolo]
-        completo = avuti >= totale
-
-        _scheda(disegno, [56, y, LARGHEZZA - 56, y + 92], 26,
-                riempimento=(28, 24, 22) if completo else SUPERFICIE,
-                bordo=BORDO_ACCESO if completo else BORDO)
-        disegno.rounded_rectangle([56, y + 18, 62, y + 74], 3, fill=colore)
-
-        disegno.text((96, y + 20), ruolo, font=_font(46), fill=colore)
-        _spaziato(disegno, (146, y + 34), NOMI_RUOLO[ruolo], _font(26), TESTO_MEDIO, 4)
-
-        _pallini(disegno, 520, y + 46, avuti, totale, colore)
-
-        etichetta = f"{avuti}/{totale}"
-        font_etichetta = _font(40)
-        larghezza_etichetta = disegno.textlength(etichetta, font=font_etichetta)
-        disegno.text((LARGHEZZA - 96 - larghezza_etichetta, y + 24), etichetta,
-                     font=font_etichetta, fill=colore if completo else TESTO)
-        y += 104
-
-    # --- Piede ---
-    _scheda(disegno, [56, ALTEZZA - 132, LARGHEZZA - 56, ALTEZZA - 48], 26,
-            riempimento=(30, 20, 12), bordo=BORDO_ACCESO)
-    _spaziato(disegno, (96, ALTEZZA - 116), "OFFERTA MASSIMA", _font(24), TESTO_DEBOLE, 5)
-    valore = f"{int(dati.get('max_bid', 0))} cr"
-    font_valore = _font(44)
-    larghezza_valore = disegno.textlength(valore, font=font_valore)
-    disegno.text((LARGHEZZA - 96 - larghezza_valore, ALTEZZA - 122), valore,
-                 font=font_valore, fill=ARANCIO)
-
-    buffer = io.BytesIO()
-    immagine.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 if __name__ == "__main__":
@@ -224,90 +93,8 @@ if __name__ == "__main__":
 # ----------------------------------------------------------------------
 # CARD GIOCATORE
 # ----------------------------------------------------------------------
-def _riquadro_valore(disegno, x, y, larghezza, etichetta, valore, colore=TESTO, altezza=118):
-    _scheda(disegno, [x, y, x + larghezza, y + altezza], 22, riempimento=(28, 25, 24))
-    _spaziato(disegno, (x + 22, y + 20), etichetta, _font(22), TESTO_DEBOLE, 4)
-    disegno.text((x + 20, y + 46), valore, font=_font(52), fill=colore)
 
 
-def disegna_card(g):
-    immagine = Image.new("RGB", (LARGHEZZA, ALTEZZA), NERO)
-    base = ImageDraw.Draw(immagine)
-    for y in range(ALTEZZA):
-        q = y / ALTEZZA
-        base.line([(0, y), (LARGHEZZA, y)],
-                  fill=tuple(int(NERO_CALDO[i] + (NERO[i] - NERO_CALDO[i]) * q) for i in range(3)))
-    alone = Image.new("RGB", (LARGHEZZA, ALTEZZA), (0, 0, 0))
-    ImageDraw.Draw(alone).ellipse([420, -300, 1300, 420], fill=(92, 44, 0))
-    immagine = Image.blend(immagine, alone.filter(ImageFilter.GaussianBlur(170)), 0.5)
-    disegno = ImageDraw.Draw(immagine)
-
-    # intestazione: ruolo, nome, squadra
-    disegno.rounded_rectangle([56, 62, 132, 138], 20, fill=ARANCIO)
-    ruolo = g.get('ruolo', 'A')
-    lr = disegno.textlength(ruolo, font=_font(56))
-    disegno.text((94 - lr / 2, 74), ruolo, font=_font(56), fill=NERO)
-
-    disegno.text((156, 58), testo_sicuro(g.get('nome', '').upper()), font=_font(72), fill=TESTO)
-    _spaziato(disegno, (160, 138), testo_sicuro(g.get('squadra', '').upper()),
-              _font(26), TESTO_MEDIO, 5)
-
-    # fascia
-    fascia = testo_sicuro(g.get('fascia', ''))
-    ff = _font(26)
-    lf = _larghezza_spaziata(disegno, fascia, ff, 5)
-    disegno.rounded_rectangle([LARGHEZZA - 96 - lf, 66, LARGHEZZA - 56, 118], 24,
-                              fill=(38, 24, 8), outline=BORDO_ACCESO, width=2)
-    _spaziato(disegno, (LARGHEZZA - 76 - lf, 80), fascia, ff, ARANCIO_CHIARO, 5)
-
-    # tre metriche in barre
-    y = 210
-    _scheda(disegno, [56, y, LARGHEZZA - 56, y + 268])
-    yy = y + 34
-    for etichetta, quota, valore in g.get('barre', []):
-        _spaziato(disegno, (96, yy), testo_sicuro(etichetta), _font(24), TESTO_MEDIO, 4)
-        vl = disegno.textlength(valore, font=_font(34))
-        disegno.text((LARGHEZZA - 96 - vl, yy - 8), valore, font=_font(34), fill=TESTO)
-        _barra(disegno, 96, yy + 38, LARGHEZZA - 320, 14, quota, ARANCIO)
-        yy += 78
-
-    # avviso
-    y = 510
-    avviso = g.get('avviso')
-    if avviso:
-        livello, righe = avviso
-        colore = {'evita': ROSSO, 'attenzione': ARANCIO, 'ok': (120, 190, 120)}.get(livello, ARANCIO)
-        altezza = 70 + 40 * len(righe)
-        _scheda(disegno, [56, y, LARGHEZZA - 56, y + altezza], 26,
-                riempimento=(32, 20, 14), bordo=(colore[0] // 2, colore[1] // 3, colore[2] // 4))
-        disegno.rounded_rectangle([56, y + 20, 62, y + altezza - 20], 3, fill=colore)
-        _spaziato(disegno, (96, y + 22), testo_sicuro(g.get('titolo_avviso', '')),
-                  _font(26), colore, 5)
-        yy = y + 62
-        for riga in righe:
-            disegno.text((96, yy), "·  " + testo_sicuro(riga), font=_font(28), fill=TESTO_MEDIO)
-            yy += 40
-        y += altezza + 40
-
-    # prezzi
-    larghezza_col = (LARGHEZZA - 112 - 48) // 3
-    y = max(y, ALTEZZA - 320)
-    _riquadro_valore(disegno, 56, y, larghezza_col, "PREZZO", f"{g.get('prezzo', 0)}", ARANCIO, 140)
-    _riquadro_valore(disegno, 56 + larghezza_col + 24, y, larghezza_col, "MAX", f"{g.get('max', 0)}", TESTO, 140)
-    _riquadro_valore(disegno, 56 + 2 * (larghezza_col + 24), y, larghezza_col, "STOP",
-                     f"{g.get('stop', 0)}", ROSSO, 140)
-
-    # piede: cassa
-    _scheda(disegno, [56, ALTEZZA - 132, LARGHEZZA - 56, ALTEZZA - 48], 26,
-            riempimento=(24, 22, 21))
-    _spaziato(disegno, (96, ALTEZZA - 116), "LA TUA CASSA", _font(24), TESTO_DEBOLE, 5)
-    testo = f"{g.get('cassa', 0)} cr  ·  max {g.get('max_bid', 0)}"
-    lt = disegno.textlength(testo, font=_font(40))
-    disegno.text((LARGHEZZA - 96 - lt, ALTEZZA - 120), testo, font=_font(40), fill=TESTO)
-
-    buffer = io.BytesIO()
-    immagine.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 # Bebas non ha accenti maiuscoli ne' l'ordinale: si sostituiscono a monte
@@ -325,202 +112,21 @@ def testo_sicuro(testo):
 # ----------------------------------------------------------------------
 # DISTINTA / FORMAZIONE
 # ----------------------------------------------------------------------
-def disegna_formazione(dati):
-    immagine = Image.new("RGB", (LARGHEZZA, ALTEZZA), NERO)
-    disegno = ImageDraw.Draw(immagine)
-    disegno.rectangle([0, 0, LARGHEZZA, ALTEZZA], fill=(12, 11, 11))
-
-    # campo stilizzato: solo linee, niente verde
-    campo = [80, 150, LARGHEZZA - 80, ALTEZZA - 150]
-    disegno.rounded_rectangle(campo, 18, outline=(48, 42, 38), width=3)
-    mezzo = (campo[1] + campo[3]) // 2
-    disegno.line([(campo[0], mezzo), (campo[2], mezzo)], fill=(38, 34, 32), width=3)
-    disegno.ellipse([LARGHEZZA // 2 - 90, mezzo - 90, LARGHEZZA // 2 + 90, mezzo + 90],
-                    outline=(38, 34, 32), width=3)
-    disegno.rounded_rectangle([LARGHEZZA // 2 - 190, campo[3] - 130, LARGHEZZA // 2 + 190, campo[3]],
-                              4, outline=(38, 34, 32), width=3)
-    disegno.rounded_rectangle([LARGHEZZA // 2 - 190, campo[1], LARGHEZZA // 2 + 190, campo[1] + 130],
-                              4, outline=(38, 34, 32), width=3)
-
-    _spaziato(disegno, (80, 74), "FORMAZIONE", _font(34), TESTO, 6)
-    modulo = testo_sicuro(dati.get('modulo', '3-4-3'))
-    lm = disegno.textlength(modulo, font=_font(48))
-    disegno.text((LARGHEZZA - 80 - lm, 62), modulo, font=_font(48), fill=ARANCIO)
-
-    reparti = dati.get('reparti', {})
-    altezze = {'P': campo[3] - 90, 'D': campo[3] - 300, 'C': mezzo - 40, 'A': campo[1] + 150}
-    for ruolo in ('P', 'D', 'C', 'A'):
-        giocatori = reparti.get(ruolo, [])
-        if not giocatori:
-            continue
-        y = altezze[ruolo]
-        passo = (LARGHEZZA - 200) / (len(giocatori) + 1)
-        for indice, nome in enumerate(giocatori):
-            x = 100 + passo * (indice + 1)
-            disegno.ellipse([x - 42, y - 42, x + 42, y + 42], fill=(30, 26, 24),
-                            outline=ARANCIO, width=3)
-            iniziale = testo_sicuro(nome[:1].upper())
-            li = disegno.textlength(iniziale, font=_font(44))
-            disegno.text((x - li / 2, y - 30), iniziale, font=_font(44), fill=ARANCIO)
-            nome_corto = testo_sicuro(nome.upper()[:11])
-            ln = disegno.textlength(nome_corto, font=_font(26))
-            disegno.text((x - ln / 2, y + 50), nome_corto, font=_font(26), fill=TESTO_MEDIO)
-
-    buffer = io.BytesIO()
-    immagine.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 # ----------------------------------------------------------------------
 # CONFRONTO A DUE COLONNE
 # ----------------------------------------------------------------------
-def disegna_confronto(dati):
-    immagine = Image.new("RGB", (LARGHEZZA, ALTEZZA), NERO)
-    disegno = ImageDraw.Draw(immagine)
-    disegno.rectangle([0, 0, LARGHEZZA, ALTEZZA], fill=(14, 12, 12))
-
-    meta = LARGHEZZA // 2
-    disegno.line([(meta, 210), (meta, ALTEZZA - 190)], fill=(40, 36, 34), width=2)
-
-    for lato, chiave in ((0, 'sinistra'), (1, 'destra')):
-        g = dati[chiave]
-        centro = meta // 2 + lato * meta
-        nome = testo_sicuro(g['nome'].upper())
-        ln = disegno.textlength(nome, font=_font(60))
-        disegno.text((centro - ln / 2, 74), nome, font=_font(60), fill=TESTO)
-        squadra = testo_sicuro(g['squadra'].upper())
-        ls = _larghezza_spaziata(disegno, squadra, _font(24), 5)
-        _spaziato(disegno, (centro - ls / 2, 148), squadra, _font(24), TESTO_MEDIO, 5)
-
-    y = 236
-    for voce in dati.get('voci', []):
-        etichetta = testo_sicuro(voce['etichetta'])
-        le = _larghezza_spaziata(disegno, etichetta, _font(24), 4)
-        _spaziato(disegno, (meta - le / 2, y), etichetta, _font(24), TESTO_DEBOLE, 4)
-
-        for lato, chiave in ((0, 'v1'), (1, 'v2')):
-            valore = testo_sicuro(voce[chiave])
-            vince = voce.get('vincitore') == (lato + 1)
-            colore = ARANCIO if vince else TESTO_MEDIO
-            font_valore = _font(46 if vince else 40)
-            lv = disegno.textlength(valore, font=font_valore)
-            x = meta // 2 + lato * meta - lv / 2
-            disegno.text((x, y + 34), valore, font=font_valore, fill=colore)
-
-        # barrette proporzionali affiancate
-        q1, q2 = voce.get('q1', 0), voce.get('q2', 0)
-        _barra(disegno, meta - 40 - 300 * q1, y + 96, max(6, 300 * q1), 12, 1.0,
-               ARANCIO if voce.get('vincitore') == 1 else (70, 62, 58))
-        _barra(disegno, meta + 40, y + 96, max(6, 300 * q2), 12, 1.0,
-               ARANCIO if voce.get('vincitore') == 2 else (70, 62, 58))
-        y += 150
-
-    verdetto = testo_sicuro(dati.get('verdetto', ''))
-    _scheda(disegno, [56, ALTEZZA - 170, LARGHEZZA - 56, ALTEZZA - 56], 26,
-            riempimento=(32, 20, 10), bordo=BORDO_ACCESO)
-    _spaziato(disegno, (96, ALTEZZA - 152), "VERDETTO", _font(24), TESTO_DEBOLE, 5)
-    disegno.text((96, ALTEZZA - 122), verdetto, font=_font(36), fill=ARANCIO_CHIARO)
-
-    buffer = io.BytesIO()
-    immagine.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 # ----------------------------------------------------------------------
 # RIEPILOGO FINE ASTA (da condividere nel gruppo della lega)
 # ----------------------------------------------------------------------
-def disegna_riepilogo(dati):
-    immagine = Image.new("RGB", (LARGHEZZA, ALTEZZA), NERO)
-    base = ImageDraw.Draw(immagine)
-    for y in range(ALTEZZA):
-        q = y / ALTEZZA
-        base.line([(0, y), (LARGHEZZA, y)],
-                  fill=tuple(int(NERO_CALDO[i] + (NERO[i] - NERO_CALDO[i]) * q) for i in range(3)))
-    alone = Image.new("RGB", (LARGHEZZA, ALTEZZA), (0, 0, 0))
-    ImageDraw.Draw(alone).ellipse([-200, 700, 900, 1400], fill=(96, 46, 0))
-    immagine = Image.blend(immagine, alone.filter(ImageFilter.GaussianBlur(190)), 0.5)
-    disegno = ImageDraw.Draw(immagine)
-
-    _spaziato(disegno, (60, 66), "ASTA COMPLETATA", _font(30), TESTO_DEBOLE, 6)
-    disegno.text((56, 104), testo_sicuro(dati.get('squadra', '').upper()),
-                 font=_font(78), fill=TESTO)
-
-    # spesa per reparto
-    y = 232
-    _spaziato(disegno, (62, y), "SPESA PER REPARTO", _font(24), TESTO_DEBOLE, 5)
-    y += 46
-    spesa = dati.get('spesa', {})
-    massimo = max(spesa.values()) if spesa else 1
-    for ruolo in ('P', 'D', 'C', 'A'):
-        valore = spesa.get(ruolo, 0)
-        disegno.text((62, y), ruolo, font=_font(40), fill=INTENSITA_RUOLO[ruolo])
-        _barra(disegno, 120, y + 16, 700, 18, valore / massimo if massimo else 0,
-               INTENSITA_RUOLO[ruolo])
-        testo = f"{valore} cr"
-        lt = disegno.textlength(testo, font=_font(34))
-        disegno.text((LARGHEZZA - 62 - lt, y + 4), testo, font=_font(34), fill=TESTO)
-        y += 64
-
-    # i colpi migliori
-    y += 24
-    _spaziato(disegno, (62, y), "I TRE COLPI", _font(24), TESTO_DEBOLE, 5)
-    y += 46
-    for indice, colpo in enumerate(dati.get('colpi', [])[:3]):
-        _scheda(disegno, [56, y, LARGHEZZA - 56, y + 108], 24, riempimento=(26, 23, 22))
-        disegno.text((92, y + 24), str(indice + 1), font=_font(52), fill=ARANCIO_SCURO)
-        disegno.text((156, y + 20), testo_sicuro(colpo['nome'].upper()), font=_font(46), fill=TESTO)
-        _spaziato(disegno, (160, y + 72), testo_sicuro(colpo['nota'].upper()),
-                  _font(22), TESTO_MEDIO, 4)
-        prezzo = f"{colpo['prezzo']} cr"
-        lp = disegno.textlength(prezzo, font=_font(44))
-        disegno.text((LARGHEZZA - 92 - lp, y + 30), prezzo, font=_font(44), fill=ARANCIO)
-        y += 120
-
-    _spaziato(disegno, (62, ALTEZZA - 74), "GENERATO CON FANTAHUB", _font(22), TESTO_DEBOLE, 5)
-
-    buffer = io.BytesIO()
-    immagine.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 # ----------------------------------------------------------------------
 # ANTEPRIMA INLINE (formato largo, per i gruppi)
 # ----------------------------------------------------------------------
-def disegna_inline(g):
-    larghezza, altezza = 1080, 420
-    immagine = Image.new("RGB", (larghezza, altezza), (14, 12, 12))
-    disegno = ImageDraw.Draw(immagine)
-    alone = Image.new("RGB", (larghezza, altezza), (0, 0, 0))
-    ImageDraw.Draw(alone).ellipse([700, -200, 1400, 400], fill=(90, 44, 0))
-    immagine = Image.blend(immagine, alone.filter(ImageFilter.GaussianBlur(120)), 0.5)
-    disegno = ImageDraw.Draw(immagine)
-
-    disegno.rounded_rectangle([44, 46, 108, 110], 18, fill=ARANCIO)
-    ruolo = g.get('ruolo', 'A')
-    lr = disegno.textlength(ruolo, font=_font(46))
-    disegno.text((76 - lr / 2, 56), ruolo, font=_font(46), fill=NERO)
-
-    disegno.text((132, 44), testo_sicuro(g.get('nome', '').upper()), font=_font(62), fill=TESTO)
-    _spaziato(disegno, (136, 116), testo_sicuro(f"{g.get('squadra','')} · {g.get('fascia','')}".upper()),
-              _font(24), TESTO_MEDIO, 4)
-
-    y = 190
-    for etichetta, quota, valore in g.get('barre', [])[:3]:
-        _spaziato(disegno, (48, y), testo_sicuro(etichetta), _font(22), TESTO_DEBOLE, 4)
-        _barra(disegno, 48, y + 32, 560, 12, quota, ARANCIO)
-        disegno.text((624, y + 12), testo_sicuro(valore), font=_font(30), fill=TESTO)
-        y += 74
-
-    _scheda(disegno, [760, 180, larghezza - 44, 380], 26, riempimento=(30, 20, 12),
-            bordo=BORDO_ACCESO)
-    _spaziato(disegno, (792, 206), "PREZZO", _font(22), TESTO_DEBOLE, 5)
-    disegno.text((790, 234), str(g.get('prezzo', 0)), font=_font(86), fill=ARANCIO)
-    disegno.text((790, 330), f"max {g.get('max', 0)}  ·  stop {g.get('stop', 0)}",
-                 font=_font(28), fill=TESTO_MEDIO)
-
-    buffer = io.BytesIO()
-    immagine.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 # ----------------------------------------------------------------------
@@ -549,57 +155,6 @@ def _linea(disegno, y, x1=72, x2=LARGHEZZA - 72, colore=(38, 34, 32)):
     disegno.line([(x1, y), (x2, y)], fill=colore, width=2)
 
 
-def disegna_card_v2(g):
-    immagine = _tela()
-    disegno = ImageDraw.Draw(immagine)
-
-    # --- Identita': nome grande, tutto il resto in una riga sola ---
-    disegno.text((72, 96), testo_sicuro(g.get('nome', '').upper()), font=_font(96), fill=TESTO)
-    sottotitolo = testo_sicuro(f"{g.get('ruolo','')}  ·  {g.get('squadra','')}  ·  {g.get('fascia','')}".upper())
-    _spaziato(disegno, (76, 206), sottotitolo, _font(26), TESTO_MEDIO, 5)
-
-    # --- IL numero: e' il motivo per cui apri la scheda ---
-    prezzo = str(g.get('prezzo', 0))
-    font_prezzo = _font(300)
-    lp = disegno.textlength(prezzo, font=font_prezzo)
-    disegno.text((72, 300), prezzo, font=font_prezzo, fill=ARANCIO)
-    disegno.text((84 + lp, 470), "cr", font=_font(76), fill=ARANCIO_SCURO)
-
-    _spaziato(disegno, (76, 596), f"MAX {g.get('max', 0)}   ·   STOP {g.get('stop', 0)}",
-              _font(30), TESTO_MEDIO, 5)
-
-    _linea(disegno, 668)
-
-    # --- Tre numeri secondari, senza scatole ---
-    y = 712
-    colonne = g.get('numeri', [])
-    passo = (LARGHEZZA - 144) / max(1, len(colonne))
-    for indice, (etichetta, valore, evidenzia) in enumerate(colonne):
-        x = 72 + passo * indice
-        disegno.text((x, y), testo_sicuro(valore), font=_font(64),
-                     fill=ARANCIO if evidenzia else TESTO)
-        _spaziato(disegno, (x + 2, y + 76), testo_sicuro(etichetta), _font(22), TESTO_DEBOLE, 4)
-
-    # --- Avviso: una riga, non un elenco ---
-    avviso = g.get('avviso')
-    if avviso:
-        livello, testo = avviso
-        colore = ROSSO if livello == 'evita' else ARANCIO
-        y = 880
-        disegno.rounded_rectangle([72, y, 78, y + 76], 3, fill=colore)
-        disegno.text((104, y + 2), testo_sicuro(testo.upper()), font=_font(34), fill=colore)
-        if g.get('avviso_extra'):
-            disegno.text((104, y + 44), testo_sicuro(g['avviso_extra']),
-                         font=_font(28), fill=TESTO_DEBOLE)
-
-    # --- Piede discreto ---
-    _spaziato(disegno, (72, ALTEZZA - 66),
-              testo_sicuro(f"CASSA {g.get('cassa', 0)} CR  ·  OFFERTA MAX {g.get('max_bid', 0)}"),
-              _font(24), TESTO_DEBOLE, 5)
-
-    buffer = io.BytesIO()
-    immagine.save(buffer, format="PNG")
-    return buffer.getvalue()
 
 
 def disegna_dashboard_v2(dati):

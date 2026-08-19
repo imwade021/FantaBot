@@ -1,12 +1,8 @@
 pyTelegramBotAPI
 pandas
-numpy
 requests
-beautifulsoup4
 APScheduler
 Pillow
+openpyxl
 SpeechRecognition
 pydub
-duckduckgo-search
-curl_cffi
-openpyxl

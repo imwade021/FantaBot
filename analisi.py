@@ -13,18 +13,6 @@ import pandas as pd
 
 PARTITE_STAGIONE = 38
 
-# Valori bonus/malus del fantacalcio classico. L'assist "soft" vale meno nelle
-# leghe con assist quality: si puo' cambiare qui senza toccare il resto.
-PESI = {
-    'gol': 3.0,
-    'assist': 1.0,
-    'assist_soft': 0.5,
-    'ammonizione': -0.5,
-    'espulsione': -1.0,
-    'rigore_sbagliato': -3.0,
-    'rigore_parato': 3.0,
-}
-
 SOGLIE_TITOLARITA = [(0.80, "inamovibile"), (0.60, "titolare"),
                      (0.35, "alternanza"), (0.0, "riserva")]
 
@@ -239,7 +227,12 @@ def profilo(riga, contesto_squadre=None, baseline=None):
 
     # Gare saltate per infortunio nella stagione passata: e' il dato che
     # distingue chi si e' rotto da chi non veniva schierato.
+    # Se il motore ha separato le cause, GareSaltate contiene SOLO gli infortuni
+    # e GareSaltateAltro le squalifiche, le nazionali e i turni di riposo.
+    # Sui file vecchi la seconda colonna non c'e' e vale 0: il comportamento
+    # resta quello di prima.
     gare_saltate = int(_num(riga.get('GareSaltate')))
+    gare_altre = int(_num(riga.get('GareSaltateAltro')))
     motivo_stop = traduci_causa(riga.get('MotivoStop'))
     fragile = gare_saltate >= 8
 
@@ -313,6 +306,7 @@ def profilo(riga, contesto_squadre=None, baseline=None):
         'squadre_stagione': squadre_stagione,
         'stagione_piena': stagione_piena,
         'gare_saltate': gare_saltate,
+        'gare_altre': gare_altre,
         'motivo_stop': motivo_stop,
         'fragile': fragile,
         'da_titolare': int(da_titolare),
@@ -551,9 +545,9 @@ def fascia_giocatore(nome, df, squadre=8):
 
     soglie = soglie_fasce(ruolo, squadre)
     chiave = 'scommessa'
-    for nome in ('top', 'semitop', 'seconda', 'terza', 'quarta'):
-        if posizione <= soglie[nome]:
-            chiave = nome
+    for nome_fascia in ('top', 'semitop', 'seconda', 'terza', 'quarta'):
+        if posizione <= soglie[nome_fascia]:
+            chiave = nome_fascia
             break
 
     return chiave, FASCE[chiave], posizione, len(nomi)
@@ -670,11 +664,18 @@ def candidati_modificatore(df, limite=15, presenze_minime=20):
     return lavoro.sort_values('_score', ascending=False).head(limite)
 
 
-def scommesse(df, limite=12):
-    """Poco costosi ma con rendimento sopra la media del ruolo: la fascia 'gemme'."""
+def scommesse(df, limite=12, squadre=8):
+    """
+    Poco costosi ma con rendimento sopra la media del ruolo.
+    Pesca dalle due fasce basse: 'quarta' e 'scommessa'. (La vecchia fascia
+    'gemme' non esiste piu' da quando le fasce sono sei: chiederla restituiva
+    sempre zero giocatori e il pulsante SCOMMESSE non rispondeva mai.)
+    """
     if df is None or df.empty:
         return df
-    pezzi = [fascia(df, ruolo, 'gemme') for ruolo in ('P', 'D', 'C', 'A')]
+    pezzi = [fascia(df, ruolo, nome_fascia, squadre)
+             for ruolo in ('P', 'D', 'C', 'A')
+             for nome_fascia in ('quarta', 'scommessa')]
     pezzi = [p for p in pezzi if p is not None and not p.empty]
     if not pezzi:
         return df.iloc[0:0]
@@ -779,12 +780,16 @@ def valuta_rischio(riga, df, squadre=8):
 
             motivi.append(f"ha saltato {prof['gare_saltate']} gare {dettaglio}: {conclusione}")
         elif prof['stagione_piena']:
-            # Ha giocato tanto, ma non in Serie A: trasferimento o rientro
+            # Ha giocato tanto, ma non in Serie A: trasferimento o rientro.
+            # ATTENZIONE: qui NON si puo' usare il nome 'squadre', che e' il
+            # parametro con i partecipanti della lega e serve piu' sotto per
+            # calcolare la fascia. Sovrascriverlo faceva calcolare le soglie
+            # su 2-3 squadre invece che su 8, falsando fascia e peso.
+            club_in_stagione = prof['squadre_stagione']
             punteggio += 0.8
-            squadre = prof['squadre_stagione']
             motivi.append(f"solo {prof['presenze']} gare in Serie A, "
                           f"{prof['presenze_totali']} in stagione"
-                          + (f" con {squadre} squadre" if squadre > 1 else ""))
+                          + (f" con {club_in_stagione} squadre" if club_in_stagione > 1 else ""))
         elif prof['titolare_quando_disponibile'] and prof['titolarita_reale'] < 0.75:
             # Titolare vero, ma assente a lungo: rischio fisico, non gerarchia
             punteggio += 1.2
@@ -858,6 +863,11 @@ def valuta_rischio(riga, df, squadre=8):
         if prof['fantamedia_ponderata'] < fm_rif and prof['presenze'] >= 10:
             punteggio += 2.0
             motivi.append(f"prezzo da {nome_fascia}, rendimento sotto la media di ruolo")
+
+    # Assenze non fisiche: e' un fatto da dire, non una fragilita' da pesare.
+    if prof['gare_altre'] >= 4 and not prof['fragile']:
+        motivi.append(f"{prof['gare_altre']} gare saltate per squalifiche, "
+                      f"nazionale o turnover")
 
     if prof['rigorista']:
         forze.append(f"rigorista ({prof['rigori_calciati']} calciati)")

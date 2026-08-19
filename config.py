@@ -20,6 +20,9 @@ LISTONE_URL = os.getenv(
 FILE_MASTER = "Lista_Finale_Master.csv"
 FILE_BACKUP = FILE_MASTER + ".bak"
 
+# Rose, cassa e scartati sopravvivono a un riavvio del servizio
+FILE_SESSIONI = os.getenv("FILE_SESSIONI", "sessioni.json")
+
 # Il bot scarica alle 5:00, dopo che la GitHub Action delle 4:00 ha committato
 ORA_DOWNLOAD = int(os.getenv("ORA_DOWNLOAD", "5"))
 
@@ -64,5 +67,7 @@ TEAM_COLORS = {
 
 ICONA_SQUADRA_DEFAULT = '🛡️'
 
-# Colonne minime perche' un file caricato a mano sia accettato
-COLONNE_OBBLIGATORIE = ('Nome', 'R', 'Squadra')
+# Colonne minime perche' un file caricato a mano sia accettato.
+# 'Prezzo' e' nell'elenco apposta: il listone quotazioni di Fantacalcio ha
+# Nome/R/Squadra ma non i prezzi, e veniva accettato al posto del Master.
+COLONNE_OBBLIGATORIE = ('Nome', 'R', 'Squadra', 'Prezzo')

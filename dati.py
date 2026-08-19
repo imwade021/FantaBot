@@ -20,7 +20,8 @@ _cache = None
 _lock = threading.Lock()
 
 COLONNE_ATTESE = ['Nome', 'R', 'Squadra', 'Qt.A', 'FVM', 'Prezzo',
-                  'Pv', 'Mv', 'Fm', 'Gf', 'Ass', 'Amm', 'Esp', 'Rc']
+                  'Pv', 'Mv', 'Fm', 'Gf', 'Ass', 'Amm', 'Esp', 'Rc',
+                  'PvTot', 'Tit', 'Min', 'GareSaltate', 'Infortunio']
 
 
 def num(valore, default=0.0):
@@ -49,6 +50,18 @@ def scarica_master():
             timeout=15
         )
         if risposta.status_code == 200 and risposta.content:
+            # GitHub in errore risponde 200 con una pagina HTML: senza questo
+            # controllo la pagina finiva scritta sopra il listone buono.
+            prima_riga = risposta.content[:400].decode('utf-8', 'ignore').splitlines()[0]
+            if 'Nome' not in prima_riga or ';' not in prima_riga:
+                print("❌ Il file scaricato non sembra il Master: listone precedente intatto.")
+                return False
+
+            if os.path.exists(config.FILE_MASTER):
+                try:
+                    os.replace(config.FILE_MASTER, config.FILE_BACKUP)
+                except Exception:
+                    pass
             with open(config.FILE_MASTER, "wb") as f:
                 f.write(risposta.content)
             print("✅ Listone Master scaricato.")
