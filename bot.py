@@ -478,6 +478,27 @@ def invia_immagine(chat_id, immagine, message_id=None, markup=None, didascalia=N
     bot.send_photo(chat_id, foto, caption=didascalia, parse_mode="HTML", reply_markup=markup)
 
 
+def taglia_didascalia(testo, limite=1024):
+    """
+    Telegram rifiuta le didascalie oltre 1024 caratteri e il messaggio non parte
+    affatto. Si tagliano le righe dal fondo del blocco rischio, che e' l'unico
+    di lunghezza imprevedibile, tenendo prezzo e cassa che stanno in fondo.
+    """
+    if len(testo) <= limite:
+        return testo
+
+    righe = testo.split("\n")
+    # Le righe di dettaglio del rischio iniziano con l'indentazione a "└"
+    while len(("\n".join(righe))) > limite and any("└" in r for r in righe):
+        for indice in range(len(righe) - 1, -1, -1):
+            if "└" in righe[indice]:
+                righe.pop(indice)
+                break
+
+    testo = "\n".join(righe)
+    return testo if len(testo) <= limite else testo[:limite - 1] + "…"
+
+
 def barra(valore, totale, caselle=6):
     """Barra proporzionale: la lunghezza si legge prima della cifra."""
     try:
@@ -638,10 +659,13 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
 
     # Fascia = posizione nel proprio ruolo, non soglia in crediti: cosi' resta
     # valida anche cambiando budget o numero di partecipanti.
-    esito_fascia = analisi.fascia_giocatore(player_name, df, lega_part)
-    if esito_fascia:
-        _, etichetta, posizione, totale = esito_fascia
-        fascia = f"{etichetta} <i>(#{posizione} fra i {ruolo})</i>"
+    # Il rango da solo non basta: "TOP" non dice se ne restano cinque o uno.
+    disponibili = get_available_players(df, session)
+    nomi_liberi = set(disponibili['Nome'].astype(str)) if disponibili is not None else None
+    contesto = analisi.contesto_asta(player_name, df, nomi_liberi, lega_part)
+    if contesto:
+        fascia = (f"{contesto['etichetta']} <i>(#{contesto['posizione']} "
+                  f"fra {contesto['totale_ruolo']} {ruolo})</i>")
     else:
         fascia = "—"
 
@@ -664,17 +688,67 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     macellaio = get_macellaio_info(player_name, df).strip()
     mostra_macellaio = macellaio and 'ALLARME' in macellaio
 
+    # Quanti ne restano in fascia e quanto il modello si scosta dal mercato:
+    # sono le due cose che fanno alzare o mollare, e non stanno nelle barre.
+    contesto_riga = analisi.riga_contesto(contesto, prof)
+
+    # Da dove viene il bonus, e se tira i rigori.
+    riga_gol = analisi.riga_bonus(prof)
+
+    # Dove sta dentro il suo ruolo: un numero assoluto non si giudica da solo.
+    riga_confronto = analisi.righe_percentili(analisi.percentili_ruolo(p_data, df))
+
+    # Su difensori e portieri la fantamedia inganna: il modificatore si calcola
+    # sui VOTI, e i gol subiti dalla squadra li abbassano. Si mostrano solo a
+    # chi servono, e solo quando ci sono davvero.
+    riga_difesa = ""
+    if ruolo in ('P', 'D') and prof['voto_puro'] > 0:
+        pezzi_difesa = [f"voto puro <b>{prof['voto_puro']:.2f}</b>"]
+        subiti = prof.get('gol_subiti_partita')
+        if subiti:
+            pezzi_difesa.append(f"{html.escape(str(sq_name))} subisce "
+                                f"<b>{subiti:.2f}</b> gol a partita")
+        riga_difesa = "🛡️ " + "  ·  ".join(pezzi_difesa)
+
+    # Il portiere si compra in coppia: il vice della stessa squadra e' il
+    # paracadute, e il suo prezzo va saputo PRIMA di aprire l'asta sul titolare.
+    riga_partner = ""
+    if ruolo == 'P':
+        partner = trova_partner_portiere(player_name, df)
+        if partner:
+            riga_altro = get_player_stats(partner, df)
+            costo = fair_price(riga_altro, session) if riga_altro is not None else 1
+            riga_partner = f"🧤 in coppia con <b>{html.escape(partner)}</b> ({costo} cr)"
+
+    # Ti serve davvero? E' la domanda che viene prima del prezzo.
+    slot_ruolo = SLOT_PER_RUOLO.get(ruolo, 0)
+    presi = stats['counts'].get(ruolo, 0)
+    mancanti = slot_ruolo - presi
+    riga_slot = ""
+    if slot_ruolo and mancanti > 0:
+        media_slot = max(1, int(stats['max_bid'] / max(1, stats['slot_liberi'])))
+        quanti = (f"<b>{mancanti} {ruolo}</b> da prendere" if presi == 0
+                  else f"ne mancano <b>{mancanti}</b> su {slot_ruolo} {ruolo}")
+        riga_slot = f"🎯 {quanti}  ·  ~{media_slot} cr a slot"
+    elif slot_ruolo:
+        riga_slot = f"🎯 reparto <b>{ruolo}</b> già completo"
+
     info_text = (
         f"{photo_embed}<b>{html.escape(player_name.upper())}</b>  ·  "
         f"{get_team_icon(sq_name)} {html.escape(sq_name)}  ·  <code>{html.escape(ruolo)}</code>\n"
         f"{fascia}\n"
+        + (f"<i>{contesto_riga.lower()}</i>\n" if contesto_riga else "")
         + (f"\n{banner}\n" if banner else "")
         + (f"\n{barre}\n" if barre else "")
+        + (f"{riga_gol}\n" if riga_gol else "")
+        + (f"{riga_difesa}\n" if riga_difesa else "")
+        + (f"{riga_partner}\n" if riga_partner else "")
+        + (f"\n{riga_confronto}\n" if riga_confronto else "")
         + f"\n{avvisi}\n"
         + (f"{macellaio}\n" if mostra_macellaio else "")
         + f"\n💰 <b>{fair_price_val} cr</b>  ·  max <b>{max_rilancio}</b>  ·  stop <b>{asta_stop}</b>\n"
-        f"<i>lega da {lega_part} · {lega_bud} cr</i>\n"
-        f"💼 cassa <b>{session['budget']}</b> cr  ·  offerta max <b>{stats['max_bid']}</b>\n"
+        + (f"{riga_slot}\n" if riga_slot else "")
+        + f"💼 cassa <b>{session['budget']}</b> cr  ·  offerta max <b>{stats['max_bid']}</b>\n"
     )
 
     is_asta = session.get('fase_asta') is not None
@@ -704,41 +778,25 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
         else:
             markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
     
-    # Card grafica: nome, prezzo, numeri e foto in una sola immagine
-    prof = analisi.profilo(p_data, analisi.statistiche_squadre(df), analisi.baseline_ruoli(df))
-    esito_rischio = analisi.valuta_rischio(p_data, df, lega_part)
-    esito_fascia = analisi.fascia_giocatore(player_name, df, lega_part)
-
-    livello = esito_rischio['livello']
-    avviso = None
-    if livello != 'nessuno' and esito_rischio['motivi']:
-        avviso = ('evita' if livello == 'evita' else 'attenzione', esito_rischio['motivi'][0])
-    elif esito_rischio['forze']:
-        avviso = ('ok', esito_rischio['forze'][0])
-
-    dati_card = {
+    # Immagine piccola + testo: l'immagine fa solo la faccia e il prezzo,
+    # i numeri stanno nella didascalia dove si possono leggere e copiare.
+    dati_striscia = {
         'nome': player_name,
         'squadra': str(sq_name),
         'ruolo': ruolo,
-        'fascia': esito_fascia[1].split(maxsplit=1)[1] if esito_fascia else '',
+        'fascia': (f"{contesto['etichetta'].split(maxsplit=1)[-1]}  #{contesto['posizione']} "
+                   f"di {contesto['totale_ruolo']}" if contesto else ''),
         'prezzo': fair_price_val, 'max': max_rilancio, 'stop': asta_stop,
-        'numeri': [
-            ('PRESENZE', f"{prof['presenze']}/38", False),
-            ('BONUS/PARTITA', f"{prof['bonus_partita']:+.2f}", True),
-            ('GARE SALTATE', str(prof.get('gare_saltate', 0)), False),
-        ],
-        'avviso': avviso,
-        'avviso_extra': esito_rischio['motivi'][1] if len(esito_rischio['motivi']) > 1 else '',
-        'cassa': session['budget'], 'max_bid': stats['max_bid'],
         'foto_api': str(p_data.get('FotoAPI', '') or ''),
         'foto': str(p_data.get('PhotoURL', '') or ''),
     }
 
     try:
-        invia_immagine(chat_id, interfaccia.disegna_card_foto(dati_card), message_id, markup)
+        invia_immagine(chat_id, interfaccia.disegna_striscia(dati_striscia),
+                       message_id, markup, didascalia=taglia_didascalia(info_text))
         return
     except Exception as e:
-        print(f"⚠️ Card grafica non disponibile ({e}): uso il testo.")
+        print(f"⚠️ Striscia grafica non disponibile ({e}): uso il solo testo.")
 
     try:
         bot.edit_message_text(info_text, chat_id, message_id, parse_mode="HTML",
