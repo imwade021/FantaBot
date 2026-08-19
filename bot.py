@@ -1116,28 +1116,37 @@ def testo_libero(message):
 
 
 def segna_vendita(message, nome, prezzo, acquirente, df, session):
-    """Scrive nel taccuino e risponde con una riga sola piu' il tasto annulla."""
+    """
+    Scrive nel taccuino e risponde con quello che serve SU QUEL GIOCATORE.
+
+    Prima il pulsante portava al piano del primo reparto ancora scoperto:
+    segnavi un centrocampista e ti usciva la lista dei portieri. Ma la domanda
+    dopo una vendita non e' "come sto messo in generale", e' "quello li' chi me
+    lo sostituisce": stesso ruolo, stessa fascia di prezzo, ancora libero.
+    """
     riga = dati.cerca_giocatore(nome, df)
     if riga is None:
         return bot.reply_to(message, f"❌ <b>{html.escape(nome)}</b> non e' nel listone.",
                             parse_mode="HTML")
 
     nome_vero = str(riga['Nome'])
+    ruolo = str(riga.get('R', 'C')).upper()[:1]
     registro_asta = get_registro(session)
     mio = acquirente == reg.IO
 
     if mio:
-        stato = dati.stato_rosa(session)
-        if prezzo > stato['max_bid']:
+        stato_prima = dati.stato_rosa(session)
+        if prezzo > stato_prima['max_bid']:
             return bot.reply_to(
                 message,
                 f"⚠️ <b>{prezzo} cr</b> supera la tua offerta massima "
-                f"(<b>{stato['max_bid']}</b>): con {stato['slot_liberi']} slot da "
-                f"riempire non ti resterebbe un credito a casella.",
+                f"(<b>{stato_prima['max_bid']}</b>): con {stato_prima['slot_liberi']} slot "
+                f"da riempire non ti resterebbe un credito a casella.",
                 parse_mode="HTML")
 
-    registro_asta.segna(nome_vero, prezzo, str(riga.get('R', 'C')),
-                        str(riga.get('Squadra', '')), reg.IO if mio else "altri")
+    era_in_wishlist = nome_vero in session.get('wishlist', [])
+    registro_asta.segna(nome_vero, prezzo, ruolo, str(riga.get('Squadra', '')),
+                        reg.IO if mio else "altri")
     salva_registro(registro_asta, session)
 
     destinazione = "🟢 <b>preso da te</b>" if mio else "⚪ agli altri"
@@ -1148,15 +1157,35 @@ def segna_vendita(message, nome, prezzo, acquirente, df, session):
         if abs(scarto) >= 15:
             confronto = f"  ·  {scarto:+d}% sul listino ({listino})"
 
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("↩︎ Annulla", callback_data="reg_annulla"),
-               InlineKeyboardButton("🔨 Piano", callback_data="menu_panic_start"))
-    bot.reply_to(message,
-                 f"✓ <b>{html.escape(nome_vero)}</b> {prezzo} cr → {destinazione}{confronto}\n"
-                 f"💰 cassa <b>{session['budget']}</b>  ·  "
-                 f"{dati.stato_rosa(session)['slot_liberi']} slot da fare",
-                 parse_mode="HTML", reply_markup=markup)
+    stato = dati.stato_rosa(session)
+    righe = [f"✓ <b>{html.escape(nome_vero)}</b> {prezzo} cr → {destinazione}{confronto}",
+             f"💰 cassa <b>{session['budget']}</b>  ·  {stato['slot_liberi']} slot da fare"]
 
+    markup = InlineKeyboardMarkup(row_width=1)
+    mancanti = SLOT_PER_RUOLO.get(ruolo, 0) - stato['counts'].get(ruolo, 0)
+
+    # Se te l'hanno soffiato e quel ruolo ti serve ancora, i sostituti si
+    # vedono adesso: e' il momento in cui la risposta conta, non tre menu dopo.
+    if not mio and mancanti > 0:
+        alternative = analisi.sostituti(get_available_players(df, session), riga, limite=3)
+        if alternative is not None and not alternative.empty:
+            righe.append("⭐ <i>era in wishlist</i> — al suo posto:" if era_in_wishlist
+                         else "<i>ancora liberi come lui:</i>")
+            for _, alt in alternative.iterrows():
+                markup.add(InlineKeyboardButton(
+                    f"🔍 {alt['Nome']} ({alt.get('Squadra', '-')})  "
+                    f"{int(_num(alt.get('Prezzo'), 1))}cr · {int(_num(alt.get('Pv')))}pres",
+                    callback_data=f"sq_pl_{alt['Nome']}"))
+        else:
+            righe.append(f"<i>nessun {ruolo} simile ancora libero a quella cifra</i>")
+
+    coda = [InlineKeyboardButton("↩︎ Annulla", callback_data="reg_annulla")]
+    if mancanti > 0:
+        coda.append(InlineKeyboardButton(f"🔨 Piano {ruolo}",
+                                         callback_data=f"panic_ru_{ruolo}"))
+    markup.row(*coda)
+
+    bot.reply_to(message, "\n".join(righe), parse_mode="HTML", reply_markup=markup)
 
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
