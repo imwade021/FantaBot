@@ -1167,17 +1167,30 @@ def segna_vendita(message, nome, prezzo, acquirente, df, session):
     # Se te l'hanno soffiato e quel ruolo ti serve ancora, i sostituti si
     # vedono adesso: e' il momento in cui la risposta conta, non tre menu dopo.
     if not mio and mancanti > 0:
-        alternative = analisi.sostituti(get_available_players(df, session), riga, limite=3)
+        # Il tetto e' quanto posso spendere davvero per quella casella, non il
+        # prezzo del venduto: quello che conta e' chi porta piu' bonus fra
+        # quelli alla mia portata.
+        tetto = max(1, int(stato['max_bid'] / max(1, stato['slot_liberi']) * 1.6))
+        alternative = analisi.sostituti(get_available_players(df, session), riga,
+                                        tetto=tetto, limite=3)
         if alternative is not None and not alternative.empty:
-            righe.append("⭐ <i>era in wishlist</i> — al suo posto:" if era_in_wishlist
-                         else "<i>ancora liberi come lui:</i>")
+            righe.append(f"⭐ <i>era in wishlist</i> — chi rende come lui entro {tetto} cr:"
+                         if era_in_wishlist
+                         else f"<i>chi porta piu' bonus entro {tetto} cr:</i>")
             for _, alt in alternative.iterrows():
+                bonus = alt.get('_bonus', 0)
+                # Su un portiere "0g 0a" non dice niente: al suo posto il voto,
+                # che e' quello che gli fa fare punti.
+                if ruolo == 'P':
+                    dettaglio = f"Mv {_num(alt.get('Mv')):.2f} · {int(_num(alt.get('Pv')))}pres"
+                else:
+                    dettaglio = f"{int(_num(alt.get('Gf')))}g {int(_num(alt.get('Ass')))}a"
                 markup.add(InlineKeyboardButton(
                     f"🔍 {alt['Nome']} ({alt.get('Squadra', '-')})  "
-                    f"{int(_num(alt.get('Prezzo'), 1))}cr · {int(_num(alt.get('Pv')))}pres",
+                    f"{int(_num(alt.get('Prezzo'), 1))}cr · {bonus:+.0f} bonus · {dettaglio}",
                     callback_data=f"sq_pl_{alt['Nome']}"))
         else:
-            righe.append(f"<i>nessun {ruolo} simile ancora libero a quella cifra</i>")
+            righe.append(f"<i>nessun {ruolo} alla tua portata ancora libero</i>")
 
     coda = [InlineKeyboardButton("↩︎ Annulla", callback_data="reg_annulla")]
     if mancanti > 0:
