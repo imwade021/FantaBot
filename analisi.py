@@ -335,6 +335,15 @@ def profilo(riga, contesto_squadre=None, baseline=None):
         dati['gol_subiti_squadra'] = squadra.get('gol_subiti')
         dati['gol_subiti_partita'] = squadra.get('gol_subiti_partita')
 
+    # Quanto il modello interno si discosta dal valore ufficiale di mercato.
+    # Sopra 1 il giocatore vale piu' di quanto lo paghi la lega: e' li' che
+    # stanno le occasioni, non nella classifica dei piu' cari.
+    dati['fvm_stima'] = _num(riga.get('FVM_Stima'))
+    scarto = _num(riga.get('Scarto'))
+    if scarto <= 0 and dati['fvm'] > 0 and dati['fvm_stima'] > 0:
+        scarto = dati['fvm_stima'] / dati['fvm']
+    dati['scarto'] = round(scarto, 2) if scarto > 0 else 0.0
+
     # Rendimento per credito speso: il bonus conta piu' del voto secco
     dati['resa_per_credito'] = round(
         ((fm_pond - 5.5) * (pv / PARTITE_STAGIONE)) / dati['prezzo'] * 100, 2
@@ -551,6 +560,181 @@ def fascia_giocatore(nome, df, squadre=8):
             break
 
     return chiave, FASCE[chiave], posizione, len(nomi)
+
+
+PRESENZE_CONFRONTO = 15
+
+
+def _metriche_ruolo(gruppo, ruolo):
+    """
+    Le metriche su cui ha senso confrontare due giocatori dello stesso ruolo.
+    (etichetta, serie di valori, piu_e_meglio). Su un portiere il gol non
+    significa niente e i gol subiti si': non e' lo stesso elenco per tutti.
+    """
+    # L'ultimo campo dice se la metrica puo' finire fra i DIFETTI. Non tutte
+    # possono: quasi ogni portiere ha zero rigori parati e quasi ogni difensore
+    # zero assist, quindi segnalarli come punti deboli e' solo rumore. Un
+    # primato invece resta un primato.
+    pv = gruppo['_pv'].replace(0, pd.NA)
+    if ruolo == 'P':
+        return [
+            ("gol subiti/gara", gruppo['_gs'] / pv, False, True),
+            ("voto puro", gruppo['_mv'], True, True),
+            ("fantamedia", gruppo['_fm'], True, True),
+            ("rigori parati", gruppo['_rp'], True, False),
+        ]
+    return [
+        ("gol", gruppo['_gf'], True, False),
+        ("assist", gruppo['_ass'], True, False),
+        ("fantamedia", gruppo['_fm'], True, True),
+        ("bonus/gara", gruppo['_fm'] - gruppo['_mv'], True, True),
+        ("ammonizioni/gara", gruppo['_amm'] / pv, False, True),
+    ]
+
+
+def percentili_ruolo(riga, df, presenze_minime=PRESENZE_CONFRONTO):
+    """
+    In che posizione sta, dentro il suo ruolo, su ogni metrica.
+
+    "Fantamedia 6.62" non dice niente; "4a fra 97 difensori" dice tutto. E' lo
+    stesso principio delle fasce - contano la scarsita' e il confronto, non il
+    valore assoluto - applicato al rendimento invece che al prezzo.
+
+    Il confronto e' solo fra chi ha almeno 15 presenze: una media su 3 partite
+    non e' paragonabile a una su 34.
+    """
+    if df is None or df.empty:
+        return None
+    ruolo = str(riga.get('R', '')).strip().upper()
+    nome = str(riga.get('Nome', '')).strip()
+
+    gruppo = df[df['R'].astype(str).str.upper() == ruolo].copy()
+    for chiave, colonna in (('_pv', 'Pv'), ('_mv', 'Mv'), ('_fm', 'Fm'), ('_gf', 'Gf'),
+                            ('_gs', 'Gs'), ('_ass', 'Ass'), ('_amm', 'Amm'), ('_rp', 'Rp')):
+        gruppo[chiave] = _colonna(gruppo, colonna)
+    gruppo = gruppo[(gruppo['_pv'] >= presenze_minime) & (gruppo['_fm'] > 0)]
+
+    totale = len(gruppo)
+    if totale < 12 or nome not in set(gruppo['Nome'].astype(str)):
+        return None      # troppo pochi per un confronto onesto
+
+    posizione_riga = gruppo['Nome'].astype(str) == nome
+    forze, debolezze = [], []
+
+    for etichetta, valori, piu_e_meglio, vale_come_difetto in _metriche_ruolo(gruppo, ruolo):
+        valori = pd.to_numeric(valori, errors='coerce').fillna(0.0)
+        mio = float(valori[posizione_riga].iloc[0])
+        migliori = int((valori > mio).sum() if piu_e_meglio else (valori < mio).sum())
+        rango = migliori + 1
+
+        if rango <= max(3, totale / 3):
+            forze.append((etichetta, rango, mio))
+        elif vale_come_difetto and rango > totale * 2 / 3:
+            debolezze.append((etichetta, rango, mio))
+
+    forze.sort(key=lambda x: x[1])
+    debolezze.sort(key=lambda x: -x[1])
+    return {'totale': totale, 'ruolo': ruolo,
+            'forze': forze[:2], 'debolezze': debolezze[:1]}
+
+
+def righe_percentili(esito):
+    """Due righe al massimo: i primati veri e l'unico difetto che pesa."""
+    if not esito:
+        return ""
+    nome_ruolo = {'P': 'portieri', 'D': 'difensori',
+                  'C': 'centrocampisti', 'A': 'attaccanti'}.get(esito['ruolo'], 'giocatori')
+    righe = []
+    if esito['forze']:
+        voci = " · ".join(f"{et} {rango}°" for et, rango, _ in esito['forze'])
+        righe.append(f"📊 fra {esito['totale']} {nome_ruolo}: {voci}")
+    if esito['debolezze']:
+        et, rango, _ = esito['debolezze'][0]
+        righe.append(f"📉 {et} {rango}° su {esito['totale']}")
+    return "\n".join(righe)
+
+
+def riga_bonus(prof):
+    """
+    Da dove arriva il bonus. "+0.43 a partita" e' identico per Barella
+    (3 gol, 9 assist) e per Kone I. (6 gol, 0 assist), che sono due giocatori
+    opposti: la media da sola nasconde la differenza.
+
+    Il rigorista va scritto sempre: all'asta vale dieci crediti in piu' e
+    prima finiva sepolto fra i punti di forza, quindi quasi mai visibile.
+    """
+    pezzi = []
+    if prof['gol'] or prof['assist']:
+        pezzi.append(f"<b>{prof['gol']}</b> gol")
+        pezzi.append(f"<b>{prof['assist']}</b> assist")
+    if prof['rigorista']:
+        calciati = prof['rigori_calciati']
+        pezzi.append(f"⚽ <b>rigorista</b> ({calciati} calciat{'o' if calciati == 1 else 'i'})")
+    return "  ·  ".join(pezzi)
+
+
+def contesto_asta(nome, df, nomi_disponibili=None, squadre=8):
+    """
+    Le due domande vere di un'asta: quanto e' raro, e quanti ne restano.
+
+    La fascia da sola non basta: "TOP" non dice se ne sono liberi cinque o uno.
+    Il rango si calcola SEMPRE sul listone intero (altrimenti cambierebbe a ogni
+    acquisto altrui), mentre i rimasti si contano fra i disponibili.
+
+    Restituisce None se il giocatore non e' nel listone.
+    """
+    esito = fascia_giocatore(nome, df, squadre)
+    if not esito:
+        return None
+    chiave, etichetta, posizione, totale = esito
+
+    ruolo = str(df[df['Nome'].astype(str) == str(nome).strip()].iloc[0].get('R', '')).upper()
+    in_fascia = fascia(df, ruolo, chiave, squadre)
+    totale_fascia = 0 if in_fascia is None else len(in_fascia)
+
+    if nomi_disponibili is None:
+        rimasti = totale_fascia
+    else:
+        disponibili = set(nomi_disponibili)
+        rimasti = 0 if in_fascia is None else int(
+            in_fascia['Nome'].astype(str).isin(disponibili).sum())
+
+    return {
+        'chiave': chiave,
+        'etichetta': etichetta,
+        'posizione': posizione,
+        'totale_ruolo': totale,
+        'ruolo': ruolo,
+        'totale_fascia': totale_fascia,
+        'rimasti_fascia': rimasti,
+    }
+
+
+def riga_contesto(contesto, prof):
+    """
+    La riga compatta sotto il prezzo. Tiene insieme scarsita' e valore, che
+    sono le due cose che fanno alzare o mollare: 'RESTANO 2 SU 6 · STIMA 61 CR (+27%)'.
+    """
+    pezzi = []
+    if contesto:
+        rimasti, totale = contesto['rimasti_fascia'], contesto['totale_fascia']
+        if totale:
+            if rimasti <= 0:
+                pezzi.append("NESSUN ALTRO IN FASCIA")
+            elif rimasti == 1:
+                pezzi.append(f"ULTIMO DEI {totale} IN FASCIA")
+            elif rimasti == totale:
+                pezzi.append(f"{totale} IN QUESTA FASCIA")
+            else:
+                pezzi.append(f"RESTANO {rimasti} SU {totale} IN FASCIA")
+
+    stima, scarto = prof.get('fvm_stima', 0), prof.get('scarto', 0)
+    if stima > 0 and scarto > 0:
+        differenza = round((scarto - 1) * 100)
+        if abs(differenza) >= 10:
+            pezzi.append(f"STIMA {differenza:+d}% SUL MERCATO")
+
+    return "   ·   ".join(pezzi)
 
 
 def fascia(df, ruolo, nome_fascia, squadre=8, solo_con_dati=True):
