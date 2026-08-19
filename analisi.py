@@ -730,6 +730,45 @@ def riga_bonus(prof, rigori=None):
     return "  ·  ".join(pezzi)
 
 
+def sostituti(disponibili, riga_venduta, limite=3, tolleranza=0.45, presenze_minime=15):
+    """
+    Chi puo' prendere il posto di un giocatore appena venduto.
+
+    Stesso ruolo, prezzo vicino a quello di listino del venduto, ancora libero,
+    ordinati per solidita' - non per convenienza. La tolleranza e' larga sotto
+    e stretta sopra: se te l'hanno soffiato, il ripiego costa meno, non di piu'.
+    """
+    if disponibili is None or disponibili.empty or riga_venduta is None:
+        return None
+
+    ruolo = str(riga_venduta.get('R', '')).strip().upper()
+    prezzo_riferimento = max(1, _num(riga_venduta.get('Prezzo'), 1))
+
+    gruppo = disponibili[disponibili['R'].astype(str).str.upper() == ruolo].copy()
+    if gruppo.empty:
+        return None
+
+    gruppo['_prezzo'] = _colonna(gruppo, 'Prezzo').clip(lower=1)
+    gruppo['_fm'] = _colonna(gruppo, 'Fm')
+    gruppo['_pv'] = _colonna(gruppo, 'Pv')
+    gruppo['_fermo'] = (gruppo['Infortunio'].apply(lambda v: bool(_testo(v)))
+                        if 'Infortunio' in gruppo.columns else False)
+
+    base = (baseline_ruoli(disponibili).get(ruolo) or (6.0, 0.0))[0]
+    gruppo['_punteggio'] = _punteggio_affidabilita(gruppo, base)
+
+    tetto = prezzo_riferimento * (1 + tolleranza)
+    pavimento = prezzo_riferimento * (1 - tolleranza * 1.6)
+    vicini = gruppo[(~gruppo['_fermo']) & (gruppo['_fm'] > 0)
+                    & (gruppo['_prezzo'] <= tetto) & (gruppo['_prezzo'] >= pavimento)]
+
+    solidi = vicini[vicini['_pv'] >= presenze_minime]
+    scelta = solidi if not solidi.empty else vicini
+    if scelta.empty:
+        return None
+    return scelta.nlargest(limite, '_punteggio')
+
+
 def contesto_asta(nome, df, nomi_disponibili=None, squadre=8):
     """
     Le due domande vere di un'asta: quanto e' raro, e quanti ne restano.
