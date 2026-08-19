@@ -11,6 +11,8 @@ import analisi
 import config
 import dati
 import interfaccia
+import piano
+import registro as reg
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from telebot.apihelper import ApiTelegramException
@@ -168,9 +170,28 @@ def get_session(user_id):
             'lega_budget_iniziale': 500,  
             'lega_partecipanti': 8,
             'modificatore_attivo': False,
-            'fase_asta': None
+            'fase_asta': None,
+            'registro': {'voci': [], 'avversari': [],
+                         'budget_iniziale': 500, 'partecipanti': 8},
+            'strategia': 'equilibrata',
         }
     return user_sessions[user_id]
+
+
+def get_registro(session):
+    """Il taccuino della sessione. Si ricostruisce dal dizionario ogni volta:
+    e' poca roba e cosi' non esistono due copie che possono divergere."""
+    dati_registro = session.setdefault('registro', {})
+    dati_registro.setdefault('budget_iniziale', session.get('lega_budget_iniziale', 500))
+    dati_registro.setdefault('partecipanti', session.get('lega_partecipanti', 8))
+    return reg.Registro(dati_registro)
+
+
+def salva_registro(registro_asta, session):
+    """Scrive il registro e riallinea le chiavi che il resto del bot legge."""
+    reg.sincronizza(registro_asta, session)
+    salva_sessioni()
+    return session
 
 def get_roster_stats(session):
     return dati.stato_rosa(session)
@@ -401,6 +422,70 @@ def main_menu_keyboard(session):
     markup.add(InlineKeyboardButton("⚙️  Lega", callback_data="menu_impostazioni_lega"),
                InlineKeyboardButton("🧰  Sistema", callback_data="menu_sistema"))
     return markup
+
+
+def mostra_panic(chat_id, message_id, df, session, ruolo_forzato=None):
+    """
+    Come spartire i crediti che restano fra le caselle che mancano.
+
+    I giocatori stanno SOLO nei pulsanti: elencarli anche nel testo faceva
+    scorrere mezzo schermo prima di arrivare a qualcosa di cliccabile, e
+    all'asta il tempo per scorrere non c'e'.
+    """
+    stato = dati.stato_rosa(session)
+    avail = get_available_players(df, session)
+    mancanti = {r: SLOT_PER_RUOLO[r] - stato['counts'].get(r, 0) for r in SLOT_PER_RUOLO}
+
+    piano = analisi.piano_emergenza(
+        df, avail, mancanti, session.get('budget', 0), SLOT_PER_RUOLO,
+        ordine=config.ORDINE_ASTA, quote=config.QUOTE_REPARTO,
+        ruolo_forzato=ruolo_forzato)
+
+    markup = InlineKeyboardMarkup(row_width=1)
+
+    if not piano or piano.get('reparti_finiti'):
+        bot.edit_message_text(
+            "🚨 <b>PANIC BUTTON</b>\n\nRosa completa: non ti serve nessuno.",
+            chat_id, message_id, parse_mode="HTML",
+            reply_markup=markup.add(
+                InlineKeyboardButton("🏠 Home", callback_data="go_home")))
+        return
+
+    ruolo = piano['ruolo']
+    tetti = "  ".join(str(b['tetto']) for b in piano['fasce'])
+
+    righe = [f"🚨 <b>PANIC BUTTON</b>  ·  {ROLE_ICONS[ruolo]} reparto <b>{ruolo}</b>",
+             f"💼 <b>{piano['disponibile']} cr</b> per <b>{piano['mancanti']}</b> slot"]
+    if piano['riserva'] > 0:
+        dopo = "".join(ROLE_ICONS[r] for r in piano['scoperti'] if r != ruolo)
+        righe.append(f"🔒 <b>{piano['riserva']}</b> da tenere per {dopo}")
+    righe.append(f"📉 come dividerli:  <b>{tetti}</b>")
+
+    vuote = 0
+    for blocco in piano['fasce']:
+        if blocco['candidati'] is None:
+            vuote += 1
+            continue
+        for _, riga in blocco['candidati'].iterrows():
+            prezzo = int(_num(riga.get('Prezzo'), 1))
+            presenze = int(_num(riga.get('Pv')))
+            segno = "⚠️" if presenze < blocco['presenze_minime'] else "·"
+            markup.add(InlineKeyboardButton(
+                f"{blocco['posto']}º ≤{blocco['tetto']}  {riga['Nome']}  "
+                f"{prezzo}cr {segno} {presenze}pres",
+                callback_data=f"sq_pl_{riga['Nome']}"))
+    if vuote:
+        righe.append(f"<i>{vuote} caselle senza candidati entro la cifra</i>")
+
+    altri = [r for r in piano['scoperti'] if r != ruolo]
+    if altri:
+        markup.row(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}",
+                                          callback_data=f"panic_ru_{r}")
+                     for r in altri])
+    markup.add(InlineKeyboardButton("🔙 Scouting", callback_data="menu_scouting"),
+               InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+    bot.edit_message_text("\n".join(righe), chat_id, message_id,
+                          parse_mode="HTML", reply_markup=markup)
 
 
 def scouting_menu_keyboard():
@@ -852,8 +937,9 @@ def process_buy_price(message, player_name, user_id):
     
     is_asta = session.get('fase_asta') is not None
     if is_asta:
-        session['rosa'].append({'nome': player_name, 'prezzo': costo, 'ruolo': ruolo, 'squadra': squadra, 'fvm': fvm_raw})
-        session['budget'] -= costo
+        registro_asta = get_registro(session)
+        registro_asta.segna(player_name, costo, str(ruolo), str(squadra), reg.IO)
+        salva_registro(registro_asta, session)
         titolo_acquisto = f"✅ <b>{html.escape(player_name.upper())}</b> acquistato per <code>{costo} cr.</code>!"
     else:
         titolo_acquisto = f"🧪 <b>SIMULAZIONE: {html.escape(player_name.upper())} a {costo} cr.</b>\n<i>(Non salvato in Rosa)</i>"
@@ -991,19 +1077,86 @@ def modalita_cecchino(message):
         send_asta_dashboard(message.chat.id, message.from_user.id) if is_asta else send_dashboard(message.chat.id, message.from_user.id)
     except Exception: bot.reply_to(message, "❌ Errore acquisto rapido.")
 
-@bot.message_handler(func=lambda m: not m.text.startswith('/') and not m.text.startswith('+') and not m.text.isdigit())
-def search_player(message):
-    query, df, session = message.text.strip().lower(), load_data(), get_session(message.from_user.id)
-    if df is None or len(query) < 2: return
-    matches = df[df['Nome'].astype(str).str.lower().str.contains(query, na=False)]
-    if matches.empty: return bot.reply_to(message, "❌ Nessun giocatore trovato.")
-    
+@bot.message_handler(func=lambda m: m.text and not m.text.startswith('/'))
+def testo_libero(message):
+    """
+    Una riga di testo puo' voler dire due cose: "segna questo acquisto" oppure
+    "cercami questo giocatore". Le si distingue dal prezzo.
+
+        dimarco 90       -> venduto agli altri a 90
+        dimarco 90 io    -> l'ho preso io a 90
+        dimarco          -> cercalo
+
+    Il marcatore sta solo sul MIO acquisto perche' in una lega da 8 squadre
+    nove vendite su dieci non sono mie: il caso frequente non deve costare
+    neanche un carattere.
+    """
+    testo = (message.text or "").strip()
+    df, session = load_data(), get_session(message.from_user.id)
+    if df is None or len(testo) < 2:
+        return
+
+    nome, prezzo, acquirente = reg.interpreta(testo)
+    if nome and prezzo is not None:
+        return segna_vendita(message, nome, prezzo, acquirente, df, session)
+
+    matches = df[df['Nome'].astype(str).str.lower().str.contains(testo.lower(), na=False)]
+    if matches.empty:
+        return bot.reply_to(message, "❌ Nessun giocatore trovato.")
     if len(matches) == 1:
         return send_player_card_view(message.chat.id, matches.iloc[0]['Nome'], None, df, session)
 
     markup = InlineKeyboardMarkup(row_width=1)
-    for _, row in matches.head(10).iterrows(): markup.add(InlineKeyboardButton(f"{ROLE_ICONS.get(str(row.get('R','C')),'')} {row['Nome']} ({row.get('Squadra','-')})", callback_data=f"sq_pl_{row['Nome']}"))
-    bot.reply_to(message, f"🔍 Scegli il giocatore esatto per <b>{html.escape(query)}</b>:", parse_mode="HTML", reply_markup=markup)
+    for _, row in matches.head(10).iterrows():
+        markup.add(InlineKeyboardButton(
+            f"{ROLE_ICONS.get(str(row.get('R','C')),'')} {row['Nome']} ({row.get('Squadra','-')})",
+            callback_data=f"sq_pl_{row['Nome']}"))
+    bot.reply_to(message, f"🔍 Scegli il giocatore esatto per <b>{html.escape(testo)}</b>:",
+                 parse_mode="HTML", reply_markup=markup)
+
+
+def segna_vendita(message, nome, prezzo, acquirente, df, session):
+    """Scrive nel taccuino e risponde con una riga sola piu' il tasto annulla."""
+    riga = dati.cerca_giocatore(nome, df)
+    if riga is None:
+        return bot.reply_to(message, f"❌ <b>{html.escape(nome)}</b> non e' nel listone.",
+                            parse_mode="HTML")
+
+    nome_vero = str(riga['Nome'])
+    registro_asta = get_registro(session)
+    mio = acquirente == reg.IO
+
+    if mio:
+        stato = dati.stato_rosa(session)
+        if prezzo > stato['max_bid']:
+            return bot.reply_to(
+                message,
+                f"⚠️ <b>{prezzo} cr</b> supera la tua offerta massima "
+                f"(<b>{stato['max_bid']}</b>): con {stato['slot_liberi']} slot da "
+                f"riempire non ti resterebbe un credito a casella.",
+                parse_mode="HTML")
+
+    registro_asta.segna(nome_vero, prezzo, str(riga.get('R', 'C')),
+                        str(riga.get('Squadra', '')), reg.IO if mio else "altri")
+    salva_registro(registro_asta, session)
+
+    destinazione = "🟢 <b>preso da te</b>" if mio else "⚪ agli altri"
+    listino = int(_num(riga.get('Prezzo'), 1))
+    confronto = ""
+    if listino >= 5 and prezzo:
+        scarto = round((prezzo / listino - 1) * 100)
+        if abs(scarto) >= 15:
+            confronto = f"  ·  {scarto:+d}% sul listino ({listino})"
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(InlineKeyboardButton("↩︎ Annulla", callback_data="reg_annulla"),
+               InlineKeyboardButton("🔨 Piano", callback_data="menu_panic_start"))
+    bot.reply_to(message,
+                 f"✓ <b>{html.escape(nome_vero)}</b> {prezzo} cr → {destinazione}{confronto}\n"
+                 f"💰 cassa <b>{session['budget']}</b>  ·  "
+                 f"{dati.stato_rosa(session)['slot_liberi']} slot da fare",
+                 parse_mode="HTML", reply_markup=markup)
+
 
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
@@ -1072,7 +1225,7 @@ def handle_callbacks(call):
     # Le schermate-elenco diventano il punto di ritorno della card giocatore:
     # cosi' "Indietro" riporta alla lista giusta invece che alla Home.
     if (call.data.startswith(("sq_ru_", "rig_sq_", "menu_top_ru_", "menu_gemme_ru_",
-                              "menu_panic_ru_", "menu_modificatore"))
+                              "menu_modificatore"))
             or call.data in ("pro_spiccioli", "pro_stakanov", "pro_griglia",
                              "menu_wishlist", "menu_rosa", "menu_rigoristi",
                              "sq_start", "menu_power")):
@@ -1324,13 +1477,20 @@ def handle_callbacks(call):
              InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.edit_message_text(f"Giocatori ({sq} - {ru}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
-    elif call.data == "menu_top_start" or call.data == "menu_gemme_start" or call.data == "menu_panic_start":
+    elif call.data == "menu_panic_start":
+        mostra_panic(chat_id, call.message.message_id, df, session)
+
+    elif call.data.startswith("panic_ru_"):
+        mostra_panic(chat_id, call.message.message_id, df, session,
+                     ruolo_forzato=call.data.split("_")[-1])
+
+    elif call.data == "menu_top_start" or call.data == "menu_gemme_start":
         pfx = call.data.split("_")[1]
-        t = {"top": "👑 TOP LIBERI", "gemme": "🔧 4ª/5ª FASCIA", "panic": "🎲 SCOMMESSE"}[pfx]
+        t = {"top": "👑 TOP LIBERI", "gemme": "🔧 4ª/5ª FASCIA"}[pfx]
         bot.edit_message_text(f"{t} - Scegli ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=4).add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_{pfx}_ru_{r}") for r in ['P', 'D', 'C', 'A']]).add(InlineKeyboardButton("🔙 Scouting", callback_data="menu_scouting"),
      InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
-    elif call.data.startswith("menu_top_ru_") or call.data.startswith("menu_gemme_ru_") or call.data.startswith("menu_panic_ru_"):
+    elif call.data.startswith("menu_top_ru_") or call.data.startswith("menu_gemme_ru_"):
         pfx, raw = call.data.split("_")[1], call.data.split("_ru_")[1]
         r, p = (raw.split("_page_")[0], int(raw.split("_page_")[1])) if "_page_" in raw else (raw, 1)
         avail = get_available_players(df, session)
@@ -1338,7 +1498,7 @@ def handle_callbacks(call):
         # giocatore risulta TOP nella sua card e di un'altra fascia nell'elenco,
         # perche' i compagni gia' comprati sparivano dalla classifica di ruolo.
         # Chi e' gia' stato preso lo si toglie dopo, solo dalla visualizzazione.
-        mappa_fasce = {'gemme': 'quarta', 'panic': 'scommessa', 'top': 'top'}
+        mappa_fasce = {'gemme': 'quarta', 'top': 'top'}
         lst = analisi.fascia(df, r, mappa_fasce.get(pfx, 'top'),
                              session.get('lega_partecipanti', 8))
         if lst is not None and not lst.empty:
@@ -1377,14 +1537,39 @@ def handle_callbacks(call):
     elif call.data.startswith("buy_"): bot.register_next_step_handler(bot.send_message(chat_id, f"💰 Crediti spesi per <b>{html.escape(call.data.replace('buy_', ''))}</b>?:", parse_mode="HTML"), process_buy_price, call.data.replace("buy_", ""), user_id)
     
     elif call.data.startswith("taken_"):
-        if call.data.replace("taken_", "") not in session['scartati']: session['scartati'].append(call.data.replace("taken_", ""))
-        safe_answer_callback(call.id, text=f"🚫 Rimosso (preso da altri)!", show_alert=False)
+        # Passa dal registro: cosi' esiste una sola fonte di verita' e
+        # l'annulla funziona anche su quello che segni coi pulsanti.
+        nome_venduto = call.data.replace("taken_", "")
+        riga_venduta = get_player_stats(nome_venduto, df)
+        registro_asta = get_registro(session)
+        registro_asta.segna(nome_venduto, 0,
+                            str(riga_venduta.get('R', 'C')) if riga_venduta is not None else 'C',
+                            str(riga_venduta.get('Squadra', '')) if riga_venduta is not None else '',
+                            "altri")
+        salva_registro(registro_asta, session)
+        safe_answer_callback(call.id, text="🚫 Segnato: preso dagli altri", show_alert=False)
         send_asta_dashboard(chat_id, user_id, call.message.message_id) if session.get('fase_asta') else send_dashboard(chat_id, user_id, call.message.message_id)
 
     elif call.data.startswith("wl_toggle_"):
         if call.data.replace("wl_toggle_", "") in session.get('wishlist', []): session['wishlist'].remove(call.data.replace("wl_toggle_", ""))
         else: session.setdefault('wishlist', []).append(call.data.replace("wl_toggle_", ""))
         send_player_card_view(chat_id, call.data.replace("wl_toggle_", ""), call.message.message_id, df, session)
+
+    elif call.data == "reg_annulla":
+        registro_asta = get_registro(session)
+        tolta = registro_asta.annulla_ultima()
+        if tolta is None:
+            safe_answer_callback(call.id, "Niente da annullare.", True)
+        else:
+            salva_registro(registro_asta, session)
+            safe_answer_callback(call.id, f"↩︎ Annullato: {tolta['nome']}", False)
+            try:
+                bot.edit_message_text(
+                    f"↩︎ <b>Annullato</b>: {html.escape(tolta['nome'])} "
+                    f"({tolta['prezzo']} cr)\n💰 cassa <b>{session['budget']}</b>",
+                    chat_id, call.message.message_id, parse_mode="HTML")
+            except Exception:
+                pass
 
     elif call.data == "menu_wishlist": bot.edit_message_text("⭐ <b>WISHLIST:</b>\n" if session.get('wishlist') else "⭐ <b>VUOTA</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=1).add(*[InlineKeyboardButton(f"🔍 {n}", callback_data=f"sq_pl_{n}") for n in session.get('wishlist', [])]).add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 

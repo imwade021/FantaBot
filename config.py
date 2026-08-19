@@ -35,6 +35,16 @@ PARTECIPANTI_DEFAULT = 8
 SLOT_PER_RUOLO = {'P': 3, 'D': 8, 'C': 8, 'A': 6}
 ROSA_COMPLETA = sum(SLOT_PER_RUOLO.values())      # 25
 
+# L'asta si svolge per reparti, in quest'ordine. Serve al Panic button per
+# capire a che punto sei: quando compri difensori, i crediti per centrocampo
+# e attacco vanno tenuti da parte, non sono disponibili.
+ORDINE_ASTA = ('P', 'D', 'C', 'A')
+
+# Come si spartisce il budget fra i reparti. Sono le stesse proporzioni che il
+# motore usa per calcolare i prezzi: se cambi qui, cambia anche in
+# fanta-master-ai (QUOTE_RUOLO in build_master.py).
+QUOTE_REPARTO = {'P': 0.08, 'D': 0.14, 'C': 0.28, 'A': 0.50}
+
 # Il Prezzo nel Master e' tarato su questa lega di riferimento
 LEGA_RIFERIMENTO_BUDGET = 500
 LEGA_RIFERIMENTO_SQUADRE = 8

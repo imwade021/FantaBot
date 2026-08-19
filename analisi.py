@@ -807,6 +807,105 @@ def nota_valore(prof, soglia_alta=1.45, soglia_bassa=0.70, valore_minimo=30):
     return ""
 
 
+def _punteggio_affidabilita(gruppo, base, k=8):
+    """
+    Quanto e' solido, non quanto costa poco.
+
+    La fantamedia va ponderata sulle presenze: 6.00 su 2 partite non vale
+    quanto 6.00 su 30. Chi ha giocato poco viene tirato verso la media del
+    ruolo, esattamente come fa il motore quando calcola i valori.
+    """
+    pv = gruppo['_pv'].clip(lower=0)
+    fm_pond = (pv * gruppo['_fm'] + k * base) / (pv + k)
+    # La titolarita' pesa: in emergenza serve uno che scenda in campo.
+    return (fm_pond + 0.6 * (pv / PARTITE_STAGIONE)).round(3)
+
+
+def piano_emergenza(df, disponibili, mancanti, budget, slot_per_ruolo,
+                    ordine=('P', 'D', 'C', 'A'), quote=None, ruolo_forzato=None,
+                    decadimento=0.55, presenze_minime=15, per_fascia=2):
+    """
+    Quanto spendere per ogni casella che ti manca, e chi prendere in ognuna.
+
+    La prima versione ordinava per "resa per credito": dividendo per il prezzo
+    vinceva sempre il piu' economico, quindi usciva solo il fondo del reparto -
+    scommesse, riserve, gente con 2 presenze. Ma con 43 crediti e 5 difensori
+    da fare non ti servono cinque giocatori da 1: te ne serve uno buono e poi
+    dei tappabuchi.
+
+    Quindi prima si divide il budget in fasce di spesa decrescenti, poi dentro
+    ogni fascia si sceglie per QUALITA', non per convenienza.
+    """
+    if df is None or df.empty or disponibili is None or disponibili.empty:
+        return None
+
+    quote = quote or {'P': 0.08, 'D': 0.14, 'C': 0.28, 'A': 0.50}
+    mancanti = {r: max(0, int(n)) for r, n in mancanti.items()}
+    if sum(mancanti.values()) <= 0:
+        return {'reparti_finiti': True}
+
+    scoperti = [r for r in ordine if mancanti.get(r, 0) > 0]
+    ruolo = ruolo_forzato if ruolo_forzato in scoperti else scoperti[0]
+    da_fare = mancanti[ruolo]
+
+    # --- quanto e' davvero mio, adesso ---
+    def peso(r):
+        return quote.get(r, 0.25) * (mancanti.get(r, 0) / max(1, slot_per_ruolo.get(r, 1)))
+
+    peso_ora = peso(ruolo)
+    peso_dopo = sum(peso(r) for r in scoperti if r != ruolo)
+    slot_dopo = sum(mancanti[r] for r in scoperti if r != ruolo)
+    disponibile = budget * peso_ora / (peso_ora + peso_dopo) if (peso_ora + peso_dopo) else budget
+    disponibile = int(max(da_fare, min(disponibile, budget - slot_dopo)))
+
+    # --- il piano di spesa: fasce decrescenti, non parti uguali ---
+    pesi = [decadimento ** i for i in range(da_fare)]
+    grezzi = [disponibile * p / sum(pesi) for p in pesi]
+    fasce = [max(1, int(v)) for v in grezzi]
+    avanzo = disponibile - sum(fasce)
+    if avanzo > 0:
+        fasce[0] += avanzo          # l'eccedenza va sul pezzo pregiato
+
+    # --- i candidati, ordinati per solidita' ---
+    gruppo = disponibili[disponibili['R'].astype(str).str.upper() == ruolo].copy()
+    base = (baseline_ruoli(df).get(ruolo) or (6.0, 0.0))[0]
+    if not gruppo.empty:
+        gruppo['_prezzo'] = _colonna(gruppo, 'Prezzo').clip(lower=1)
+        gruppo['_fm'] = _colonna(gruppo, 'Fm')
+        gruppo['_pv'] = _colonna(gruppo, 'Pv')
+        gruppo['_fermo'] = (gruppo['Infortunio'].apply(lambda v: bool(_testo(v)))
+                            if 'Infortunio' in gruppo.columns else False)
+        gruppo['_punteggio'] = _punteggio_affidabilita(gruppo, base)
+        gruppo = gruppo[(~gruppo['_fermo']) & (gruppo['_fm'] > 0)]
+
+    sicuri = gruppo[gruppo['_pv'] >= presenze_minime] if not gruppo.empty else gruppo
+    riserva_pool = gruppo[gruppo['_pv'] < presenze_minime] if not gruppo.empty else gruppo
+
+    presi, blocchi = set(), []
+    for posto, tetto in enumerate(fasce, start=1):
+        scelti = None
+        for pool in (sicuri, riserva_pool):
+            if pool is None or pool.empty:
+                continue
+            # Il tetto e' un tetto: mostrare un giocatore da 13 sotto la
+            # dicitura "fino a 11" faceva sembrare il piano sbagliato.
+            libera = pool[(~pool['Nome'].astype(str).isin(presi))
+                          & (pool['_prezzo'] <= tetto)]
+            if libera.empty:
+                continue
+            scelti = libera.nlargest(per_fascia, '_punteggio')
+            break
+        if scelti is not None and not scelti.empty:
+            presi.update(scelti['Nome'].astype(str))
+        blocchi.append({'posto': posto, 'tetto': int(tetto),
+                        'candidati': scelti if scelti is not None and not scelti.empty else None,
+                        'presenze_minime': presenze_minime})
+
+    return {'ruolo': ruolo, 'mancanti': da_fare, 'disponibile': disponibile,
+            'riserva': budget - disponibile, 'scoperti': scoperti,
+            'fasce': blocchi, 'reparti_finiti': False}
+
+
 def fascia(df, ruolo, nome_fascia, squadre=8, solo_con_dati=True):
     """Tutti i giocatori di una fascia, dal piu' caro."""
     if df is None or df.empty or nome_fascia not in FASCE:
