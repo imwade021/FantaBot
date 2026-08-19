@@ -319,6 +319,52 @@ def _silhouette(lato=520):
     return tela
 
 
+def disegna_striscia(g):
+    """
+    Intestazione compatta: foto, nome, prezzo. Nient'altro.
+
+    La card grande da 1080x1080 occupava mezzo schermo del telefono e i numeri
+    dentro un'immagine non si possono copiare ne' cercare. Qui l'immagine fa
+    solo quello che il testo non sa fare - la faccia e il prezzo a colpo
+    d'occhio - e tutto il resto torna nella didascalia.
+    """
+    altezza = 330
+    immagine = Image.new("RGB", (LARGHEZZA, altezza), NERO)
+
+    alone = Image.new("RGB", (LARGHEZZA, altezza), (0, 0, 0))
+    ImageDraw.Draw(alone).ellipse([700, -140, 1180, 450], fill=(104, 50, 0))
+    immagine = Image.blend(immagine, alone.filter(ImageFilter.GaussianBlur(90)), 0.55)
+
+    foto = carica_foto(g.get('foto_api'), 300) or _silhouette(300)
+    immagine.paste(foto, (LARGHEZZA - foto.width - 24, altezza - foto.height), foto)
+
+    disegno = ImageDraw.Draw(immagine)
+
+    disegno.text((56, 24), testo_sicuro(g.get('nome', '').upper()), font=_font(72), fill=TESTO)
+    _spaziato(disegno, (60, 110),
+              testo_sicuro(f"{g.get('ruolo','')}  ·  {g.get('squadra','')}  ·  "
+                           f"{g.get('fascia','')}".upper()),
+              _font(24), TESTO_MEDIO, 4)
+
+    prezzo = str(g.get('prezzo', 0))
+    font_prezzo = _font(140)
+    disegno.text((52, 158), prezzo, font=font_prezzo, fill=ARANCIO)
+    larghezza_prezzo = disegno.textlength(prezzo, font=font_prezzo)
+    fondo = _fondo_testo(disegno, (52, 158), prezzo, font_prezzo)
+
+    font_cr = _font(44)
+    disegno.text((66 + larghezza_prezzo, fondo - _fondo_testo(disegno, (0, 0), "cr", font_cr)),
+                 "cr", font=font_cr, fill=ARANCIO_SCURO)
+
+    _spaziato(disegno, (68 + larghezza_prezzo, 176),
+              testo_sicuro(f"MAX {g.get('max', 0)}  ·  STOP {g.get('stop', 0)}"),
+              _font(24), TESTO_DEBOLE, 4)
+
+    buffer = io.BytesIO()
+    immagine.convert("RGB").save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def disegna_card_foto(g):
     """Card alleggerita con il campioncino del giocatore sulla destra."""
     immagine = _tela()
