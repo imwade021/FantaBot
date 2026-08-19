@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import re
 import sys
 import html
@@ -1323,27 +1324,42 @@ def handle_callbacks(call):
 
     elif call.data == "menu_wishlist": bot.edit_message_text("⭐ <b>WISHLIST:</b>\n" if session.get('wishlist') else "⭐ <b>VUOTA</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=1).add(*[InlineKeyboardButton(f"🔍 {n}", callback_data=f"sq_pl_{n}") for n in session.get('wishlist', [])]).add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
-def verifica_istanza_unica():
+def verifica_istanza_unica(tentativi=6, attesa=10):
     """
-    Una chiamata a getUpdates prima di partire. Se un'altra istanza sta gia'
-    leggendo, Telegram risponde 409 subito e si esce con un messaggio chiaro.
-    Serve perche' infinity_polling intercetta gli errori e ritenta all'infinito:
-    il 409 finiva nei log come rumore, senza mai fermare il processo.
+    Una chiamata a getUpdates prima di partire: se un'altra istanza sta gia'
+    leggendo, Telegram risponde 409. Serve perche' infinity_polling intercetta
+    gli errori e ritenta all'infinito, lasciando il bot muto senza spiegazioni.
+
+    Si riprova per un minuto prima di arrendersi: durante un deploy il processo
+    precedente puo' impiegare qualche secondo a mollare il token, e uscire
+    subito farebbe ripartire Render in un ciclo di riavvii.
     """
-    try:
-        bot.get_updates(offset=-1, timeout=1)
-        return True
-    except ApiTelegramException as e:
-        if getattr(e, 'error_code', None) == 409:
-            print("🛑 HTTP 409: un'altra istanza del bot è già in ascolto.\n"
-                  "   Su Render: un solo Background Worker, 1 istanza, nessun "
-                  "deploy vecchio ancora vivo, nessuna copia in locale.")
-            return False
-        print(f"⚠️ Telegram ha risposto {getattr(e, 'error_code', '?')}: proseguo comunque.")
-        return True
-    except Exception as e:
-        print(f"⚠️ Controllo istanza non riuscito ({e}): proseguo comunque.")
-        return True
+    for numero in range(1, tentativi + 1):
+        try:
+            bot.get_updates(offset=-1, timeout=1)
+            if numero > 1:
+                print(f"✅ Token libero al tentativo {numero}.")
+            return True
+        except ApiTelegramException as e:
+            if getattr(e, 'error_code', None) != 409:
+                print(f"⚠️ Telegram ha risposto {getattr(e, 'error_code', '?')}: proseguo comunque.")
+                return True
+            if numero < tentativi:
+                print(f"⏳ Token occupato (409), tentativo {numero}/{tentativi}: "
+                      f"riprovo fra {attesa}s...")
+                time.sleep(attesa)
+        except Exception as e:
+            print(f"⚠️ Controllo istanza non riuscito ({e}): proseguo comunque.")
+            return True
+
+    print("🛑 HTTP 409 dopo {} tentativi: un'altra istanza del bot è in ascolto.\n"
+          "   Da controllare: un solo servizio su Render con questo BOT_TOKEN,\n"
+          "   Instances = 1, nessun deploy vecchio ancora vivo, nessuna copia in locale.\n"
+          "   Verifica dall'esterno: apri nel browser\n"
+          "   https://api.telegram.org/bot<TOKEN>/getUpdates\n"
+          "   con il servizio Render sospeso. Se risponde 409, il fantasma è altrove."
+          .format(tentativi))
+    return False
 
 
 def avvia_pianificatore():
