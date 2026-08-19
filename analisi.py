@@ -204,14 +204,14 @@ def _pondera(valore, presenze, riferimento):
     return (presenze * valore + K_PRESENZE * riferimento) / (presenze + K_PRESENZE)
 
 
-def profilo(riga, contesto_squadre=None, baseline=None):
+def profilo(riga, contesto_squadre=None, baseline=None, rigori=None):
     """Trasforma una riga del Master nei numeri che servono a decidere."""
     pv = _num(riga.get('Pv'))
     mv = _num(riga.get('Mv'))
     fm = _num(riga.get('Fm'))
     gol = _num(riga.get('Gf'))
     assist = _num(riga.get('Ass'))
-    rigori = _num(riga.get('Rc'))
+    rigori_calciati = _num(riga.get('Rc'))
     ammonizioni = _num(riga.get('Amm'))
     espulsioni = _num(riga.get('Esp'))
 
@@ -284,6 +284,17 @@ def profilo(riga, contesto_squadre=None, baseline=None):
     fm_pond = round(_pondera(fm, peso_presenze, fm_rif), 2) if fm > 0 else 0.0
     bonus_pond = round(_pondera(bonus_partita, peso_presenze, bonus_rif), 2) if fm > 0 else 0.0
 
+    # Rigorista = primo della sua squadra, non "ha calciato un rigore".
+    # Senza la gerarchia si resta prudenti: sotto i 3 non e' un incarico.
+    nome_giocatore = str(riga.get('Nome', '')).strip()
+    if rigori is not None:
+        livello = (rigori.get(nome_giocatore) or {}).get('livello')
+        _e_rigorista = livello == 'titolare'
+        _e_vice_rigorista = livello == 'vice'
+    else:
+        _e_rigorista = rigori_calciati >= 3
+        _e_vice_rigorista = False
+
     infortunio = traduci_causa(riga.get('Infortunio'))
     tipo_infortunio = _testo(riga.get('InfortunioTipo'))
 
@@ -324,8 +335,9 @@ def profilo(riga, contesto_squadre=None, baseline=None):
         'bonus_ponderati': bonus_pond,
         'gol': int(gol),
         'assist': int(assist),
-        'rigorista': rigori > 0,
-        'rigori_calciati': int(rigori),
+        'rigorista': _e_rigorista,
+        'vice_rigorista': _e_vice_rigorista,
+        'rigori_calciati': int(rigori_calciati),
         'ammonizioni': int(ammonizioni),
         'espulsioni': int(espulsioni),
     }
@@ -362,7 +374,9 @@ def confronta(riga1, riga2, df=None, modificatore_difesa=False):
     """
     contesto = statistiche_squadre(df) if df is not None else None
     baseline = baseline_ruoli(df)
-    p1, p2 = profilo(riga1, contesto, baseline), profilo(riga2, contesto, baseline)
+    rigori = gerarchia_rigori(df) if df is not None else None
+    p1, p2 = (profilo(riga1, contesto, baseline, rigori),
+              profilo(riga2, contesto, baseline, rigori))
 
     voci = []          # (etichetta, valore1, valore2, chi_vince, peso)
 
@@ -654,7 +668,47 @@ def righe_percentili(esito):
     return "\n".join(righe)
 
 
-def riga_bonus(prof):
+def gerarchia_rigori(df, minimo=2, quota_titolare=0.40):
+    """
+    Chi calcia davvero i rigori, squadra per squadra.
+
+    Un rigore calciato in tutta la stagione non fa di uno il rigorista: Camarda
+    ne ha tirato 1 dei 9 del Milan, il rigorista rossonero e' Nkunku con 5.
+    Serve essere il primo della propria squadra, con almeno {minimo} rigori e
+    una quota significativa: chi sta dietro e' al massimo il vice.
+    """
+    if df is None or df.empty or 'Rc' not in df.columns:
+        return {}
+
+    lavoro = df.copy()
+    lavoro['_rc'] = _colonna(lavoro, 'Rc')
+    lavoro = lavoro[lavoro['_rc'] > 0]
+    if lavoro.empty:
+        return {}
+
+    gerarchia = {}
+    for squadra, gruppo in lavoro.groupby(lavoro['Squadra'].astype(str)):
+        gruppo = gruppo.sort_values('_rc', ascending=False)
+        totale = float(gruppo['_rc'].sum())
+        if totale <= 0:
+            continue
+        for posto, (_, riga) in enumerate(gruppo.iterrows()):
+            calciati = int(riga['_rc'])
+            quota = calciati / totale
+            if posto == 0 and calciati >= minimo and quota >= quota_titolare:
+                livello = 'titolare'
+            elif calciati >= minimo:
+                livello = 'vice'
+            else:
+                continue          # un rigore isolato non e' una gerarchia
+            gerarchia[str(riga['Nome'])] = {
+                'livello': livello, 'calciati': calciati,
+                'squadra': squadra, 'totale_squadra': int(totale),
+            }
+    return gerarchia
+
+
+def riga_bonus(prof, rigori=None):
     """
     Da dove arriva il bonus. "+0.43 a partita" e' identico per Barella
     (3 gol, 9 assist) e per Kone I. (6 gol, 0 assist), che sono due giocatori
@@ -667,9 +721,12 @@ def riga_bonus(prof):
     if prof['gol'] or prof['assist']:
         pezzi.append(f"<b>{prof['gol']}</b> gol")
         pezzi.append(f"<b>{prof['assist']}</b> assist")
-    if prof['rigorista']:
-        calciati = prof['rigori_calciati']
-        pezzi.append(f"⚽ <b>rigorista</b> ({calciati} calciat{'o' if calciati == 1 else 'i'})")
+
+    info = (rigori or {}).get(prof['nome'])
+    if info:
+        etichetta = "rigorista" if info['livello'] == 'titolare' else "vice-rigorista"
+        pezzi.append(f"⚽ <b>{etichetta}</b> ({info['calciati']} su "
+                     f"{info['totale_squadra']} del {info['squadra']})")
     return "  ·  ".join(pezzi)
 
 
@@ -728,13 +785,26 @@ def riga_contesto(contesto, prof):
             else:
                 pezzi.append(f"RESTANO {rimasti} SU {totale} IN FASCIA")
 
-    stima, scarto = prof.get('fvm_stima', 0), prof.get('scarto', 0)
-    if stima > 0 and scarto > 0:
-        differenza = round((scarto - 1) * 100)
-        if abs(differenza) >= 10:
-            pezzi.append(f"STIMA {differenza:+d}% SUL MERCATO")
-
     return "   ·   ".join(pezzi)
+
+
+def nota_valore(prof, soglia_alta=1.45, soglia_bassa=0.70, valore_minimo=30):
+    """
+    Se il modello e il listino non sono d'accordo, e vale la pena dirlo.
+
+    In percentuale il dato ingannava: su Camarda, che il listino valuta pochi
+    crediti, uno scarto minimo diventava "+164%" e sembrava l'affare del
+    secolo. Quindi niente numero, solo un avviso, e solo dove il valore in
+    gioco e' abbastanza grande da rendere lo scarto significativo.
+    """
+    scarto, ufficiale = prof.get('scarto', 0), prof.get('fvm', 0)
+    if not scarto or ufficiale < valore_minimo:
+        return ""
+    if scarto >= soglia_alta:
+        return "💡 il modello lo valuta <b>sopra</b> il listino: margine di rilancio"
+    if scarto <= soglia_bassa:
+        return "💡 il modello lo valuta <b>sotto</b> il listino: occhio a non pagarlo"
+    return ""
 
 
 def fascia(df, ruolo, nome_fascia, squadre=8, solo_con_dati=True):
@@ -897,7 +967,7 @@ def valuta_rischio(riga, df, squadre=8):
     """
     baseline = baseline_ruoli(df)
     contesto = statistiche_squadre(df)
-    prof = profilo(riga, contesto, baseline)
+    prof = profilo(riga, contesto, baseline, gerarchia_rigori(df))
     ruolo = prof['ruolo']
     fm_rif, bonus_rif = baseline.get(ruolo, (6.0, 0.3))
 
@@ -1054,7 +1124,7 @@ def valuta_rischio(riga, df, squadre=8):
                       f"nazionale o turnover")
 
     if prof['rigorista']:
-        forze.append(f"rigorista ({prof['rigori_calciati']} calciati)")
+        forze.append(f"rigorista della squadra ({prof['rigori_calciati']} calciati)")
 
     # Il rischio si misura su quanto costa: si scala per la fascia
     peso = PESO_FASCIA.get(esito[0], 1.0) if esito else 1.0
