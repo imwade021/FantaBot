@@ -730,44 +730,70 @@ def riga_bonus(prof, rigori=None):
     return "  ·  ".join(pezzi)
 
 
-def sostituti(disponibili, riga_venduta, limite=3, tolleranza=0.45, presenze_minime=15):
+def bonus_stagione(gruppo, ruolo, baseline):
+    """
+    Quanto ha PORTATO in una stagione, non quanto vale in media.
+
+    Il fantacalcio si vince coi bonus, e i bonus si accumulano: 0.60 a partita
+    su 34 giornate valgono piu' di 0.90 su 12. Moltiplicare per le presenze
+    penalizza da solo chi non gioca, senza bisogno di soglie arbitrarie.
+
+    Il criterio cambia col ruolo, perche' cambia cosa ti fa punti:
+      A e C  -> i bonus, e basta
+      D      -> bonus piu' voto, che e' quello che muove il modificatore
+      P      -> il voto, che dipende dai gol subiti, piu' i rigori parati
+    """
+    fm, mv, pv = gruppo['_fm'], gruppo['_mv'], gruppo['_pv']
+    base_fm, base_bonus = baseline.get(ruolo, (6.0, 0.0))
+    base_mv = base_fm - base_bonus
+
+    bonus_totali = (fm - mv) * pv
+    voto_sopra_media = (mv - base_mv) * pv
+
+    if ruolo == 'P':
+        return (voto_sopra_media * 2 + gruppo.get('_rp', 0) * 3).round(1)
+    if ruolo == 'D':
+        return (bonus_totali + voto_sopra_media * 1.5).round(1)
+    return bonus_totali.round(1)
+
+
+def sostituti(disponibili, riga_venduta, tetto=None, limite=3, margine=1.3):
     """
     Chi puo' prendere il posto di un giocatore appena venduto.
 
-    Stesso ruolo, prezzo vicino a quello di listino del venduto, ancora libero,
-    ordinati per solidita' - non per convenienza. La tolleranza e' larga sotto
-    e stretta sopra: se te l'hanno soffiato, il ripiego costa meno, non di piu'.
+    Il prezzo e' un VINCOLO, non il criterio: fra tutti quelli che posso
+    permettermi, si cercano quelli che portano piu' bonus. Ordinare per fascia
+    di prezzo nascondeva i veri affari - Mandragora a 8 crediti produce piu'
+    bonus di Rabiot a 38, e con l'ordinamento per prezzo non compariva mai.
+
+    {tetto} e' quanto posso spendere davvero per questa casella. Se non viene
+    passato si usa il prezzo del venduto con un margine: senza un limite si
+    finirebbe per consigliare gente fuori portata.
     """
     if disponibili is None or disponibili.empty or riga_venduta is None:
         return None
 
     ruolo = str(riga_venduta.get('R', '')).strip().upper()
-    prezzo_riferimento = max(1, _num(riga_venduta.get('Prezzo'), 1))
+    if tetto is None:
+        tetto = max(1, _num(riga_venduta.get('Prezzo'), 1)) * margine
 
     gruppo = disponibili[disponibili['R'].astype(str).str.upper() == ruolo].copy()
     if gruppo.empty:
         return None
 
-    gruppo['_prezzo'] = _colonna(gruppo, 'Prezzo').clip(lower=1)
-    gruppo['_fm'] = _colonna(gruppo, 'Fm')
-    gruppo['_pv'] = _colonna(gruppo, 'Pv')
+    for chiave, colonna in (('_prezzo', 'Prezzo'), ('_fm', 'Fm'), ('_mv', 'Mv'),
+                            ('_pv', 'Pv'), ('_gf', 'Gf'), ('_ass', 'Ass'), ('_rp', 'Rp')):
+        gruppo[chiave] = _colonna(gruppo, colonna)
+    gruppo['_prezzo'] = gruppo['_prezzo'].clip(lower=1)
     gruppo['_fermo'] = (gruppo['Infortunio'].apply(lambda v: bool(_testo(v)))
                         if 'Infortunio' in gruppo.columns else False)
+    gruppo['_bonus'] = bonus_stagione(gruppo, ruolo, baseline_ruoli(disponibili))
 
-    base = (baseline_ruoli(disponibili).get(ruolo) or (6.0, 0.0))[0]
-    gruppo['_punteggio'] = _punteggio_affidabilita(gruppo, base)
-
-    tetto = prezzo_riferimento * (1 + tolleranza)
-    pavimento = prezzo_riferimento * (1 - tolleranza * 1.6)
-    vicini = gruppo[(~gruppo['_fermo']) & (gruppo['_fm'] > 0)
-                    & (gruppo['_prezzo'] <= tetto) & (gruppo['_prezzo'] >= pavimento)]
-
-    solidi = vicini[vicini['_pv'] >= presenze_minime]
-    scelta = solidi if not solidi.empty else vicini
-    if scelta.empty:
+    candidati = gruppo[(~gruppo['_fermo']) & (gruppo['_fm'] > 0)
+                       & (gruppo['_prezzo'] <= tetto)]
+    if candidati.empty:
         return None
-    return scelta.nlargest(limite, '_punteggio')
-
+    return candidati.nlargest(limite, '_bonus')
 
 def contesto_asta(nome, df, nomi_disponibili=None, squadre=8):
     """
