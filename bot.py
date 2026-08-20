@@ -14,6 +14,7 @@ import interfaccia
 import modificatore
 import consiglio
 import piano
+import pronostici
 import registro as reg
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -441,6 +442,68 @@ def _quadro_piano(df, session):
     quadro = piano.stato(registro_asta, disponibili, SLOT_PER_RUOLO,
                          config.QUOTE_REPARTO, inflazione)
     return registro_asta, disponibili, quadro, inflazione, campione
+
+
+ETICHETTE_PRONOSTICI = [
+    ('entrava', '🎲 SE GIOCANO, ESPLODONO',
+     'pochi minuti ma tanti bonus dentro quei minuti'),
+    ('rotti', '🚑 STAGIONE PERSA PER INFORTUNIO',
+     'titolari quando stavano bene: il prezzo lo sconta, il rendimento no'),
+    ('garantiti', '🧱 NON LI TOGLIE NESSUNO',
+     'minuti garantiti a prezzo di saldo'),
+]
+
+
+def mostra_pronostici(chat_id, message_id, df, session):
+    """
+    Le scommesse, con il fatto che le giustifica.
+
+    Prima questo pulsante pescava un giocatore a caso da una lista e ne
+    mostrava la figurina: una lotteria, non un consiglio. Adesso sono tre
+    categorie separate, perche' rispondono a tre situazioni diverse - chi puo'
+    esplodere, chi torna da un infortunio, chi ti garantisce i minuti - e
+    mescolarle le renderebbe di nuovo un elenco.
+    """
+    disponibili = get_available_players(df, session)
+    registro_asta = get_registro(session)
+
+    # Quanto si puo' spendere per una scommessa: una frazione di quello che
+    # resta per casella, non un numero fisso.
+    slot_liberi = max(1, sum(SLOT_PER_RUOLO.values()) - len(registro_asta.rosa()))
+    tetto = max(4, min(15, round(registro_asta.budget() / slot_liberi)))
+
+    gruppi = pronostici.pronostici(disponibili, prezzo_massimo=tetto, limite=2)
+    copertura = pronostici.copertura(disponibili) if hasattr(pronostici, 'copertura') else None
+
+    righe = [f"🎯 <b>PRONOSTICI</b>  ·  fino a <b>{tetto} cr</b>", ""]
+    markup = InlineKeyboardMarkup(row_width=1)
+    trovati = 0
+
+    for chiave, titolo, sottotitolo in ETICHETTE_PRONOSTICI:
+        elenco = gruppi.get(chiave) or []
+        if not elenco:
+            continue
+        trovati += len(elenco)
+        righe.append(f"<b>{titolo}</b>\n<i>{sottotitolo}</i>")
+        for g in elenco:
+            righe.append(f"<b>{html.escape(g['nome'])}</b> "
+                         f"({html.escape(g['squadra'])}) · {g['prezzo']} cr\n"
+                         # quote=False: il motivo lo scriviamo noi e contiene
+                         # apostrofi, che altrimenti escono come &#x27;
+                         f"<i>{html.escape(g['motivo'], quote=False)}</i>")
+            markup.add(InlineKeyboardButton(
+                f"🔍 {g['nome']}  ·  {g['prezzo']} cr",
+                callback_data=f"sq_pl_{g['nome']}"))
+        righe.append("")
+
+    if not trovati:
+        righe.append("Nessun nome regge il confronto entro questo tetto: "
+                     "meglio un titolare qualsiasi che una scommessa cara.")
+
+    markup.row(InlineKeyboardButton("🚨 Panic", callback_data="menu_panic_start"),
+               InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+    bot.edit_message_text("\n".join(righe).strip(), chat_id, message_id,
+                          parse_mode="HTML", reply_markup=markup)
 
 
 def mostra_andamento(chat_id, message_id, df, session):
@@ -1768,9 +1831,7 @@ def handle_callbacks(call):
         bot.edit_message_text(f"{pfx.upper()} - {ROLE_ICONS[r]} {r} (Pag. {p}):", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data == "menu_scommessa_start":
-        avail = get_available_players(df, session)
-        sl = analisi.scommesse(avail, squadre=session.get('lega_partecipanti', 8))
-        send_player_card_view(chat_id, sl.sample(1).iloc[0]['Nome'], call.message.message_id, df, session, True) if sl is not None and not sl.empty else safe_answer_callback(call.id, "Nessuna scommessa!", True)
+        mostra_pronostici(chat_id, call.message.message_id, df, session)
 
     elif call.data == "menu_studio_start":
         session['compare_p1'] = None
