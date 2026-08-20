@@ -11,6 +11,9 @@ import analisi
 import config
 import dati
 import interfaccia
+import modificatore
+import consiglio
+import piano
 import piano
 import registro as reg
 import telebot
@@ -170,6 +173,7 @@ def get_session(user_id):
             'lega_budget_iniziale': 500,  
             'lega_partecipanti': 8,
             'modificatore_attivo': False,
+            'tabella_modificatore': None,
             'fase_asta': None,
             'registro': {'voci': [], 'avversari': [],
                          'budget_iniziale': 500, 'partecipanti': 8},
@@ -413,6 +417,10 @@ def main_menu_keyboard(session):
     else:
         markup.add(InlineKeyboardButton("🔨  AVVIA ASTA LIVE", callback_data="asta_setup_start"))
 
+    # Le due domande che ci si fa piu' spesso durante un'asta stanno in alto:
+    # "chi prendo adesso" e "come sto andando".
+    markup.add(InlineKeyboardButton("🚨  Chi prendo adesso", callback_data="menu_panic_start"),
+               InlineKeyboardButton("📊  Come sto andando", callback_data="menu_andamento"))
     markup.add(InlineKeyboardButton("👕  Esplora", callback_data="sq_start"),
                InlineKeyboardButton("📋  La mia rosa", callback_data="menu_rosa"))
     markup.add(InlineKeyboardButton("🔎  Scouting", callback_data="menu_scouting"),
@@ -424,68 +432,214 @@ def main_menu_keyboard(session):
     return markup
 
 
-def mostra_panic(chat_id, message_id, df, session, ruolo_forzato=None):
+def _quadro_piano(df, session):
+    """Il piano di spesa, calcolato in un posto solo e usato da tutte le
+    schermate: Panic, suggerimenti dopo una vendita, Come sto andando."""
+    registro_asta = get_registro(session)
+    disponibili = get_available_players(df, session)
+    listino = {str(r['Nome']): _num(r.get('Prezzo'), 1) for _, r in df.iterrows()}
+    inflazione, campione = registro_asta.inflazione(listino)
+    quadro = piano.stato(registro_asta, disponibili, SLOT_PER_RUOLO,
+                         config.QUOTE_REPARTO, inflazione)
+    return registro_asta, disponibili, quadro, inflazione, campione
+
+
+def mostra_andamento(chat_id, message_id, df, session):
     """
-    Come spartire i crediti che restano fra le caselle che mancano.
-
-    I giocatori stanno SOLO nei pulsanti: elencarli anche nel testo faceva
-    scorrere mezzo schermo prima di arrivare a qualcosa di cliccabile, e
-    all'asta il tempo per scorrere non c'e'.
+    Non una tabella: un giudizio. Il Panic risponde in dieci secondi mentre
+    qualcuno rilancia; questo lo guardi nella pausa fra un reparto e l'altro,
+    e vuoi sapere una cosa sola - se stai andando bene.
     """
-    stato = dati.stato_rosa(session)
-    avail = get_available_players(df, session)
-    mancanti = {r: SLOT_PER_RUOLO[r] - stato['counts'].get(r, 0) for r in SLOT_PER_RUOLO}
+    registro_asta, disponibili, quadro, inflazione, campione = _quadro_piano(df, session)
+    contesto = contesto_valori(df, session)
+    indice = {str(r['Nome']): r for _, r in df.iterrows()}
 
-    piano = analisi.piano_emergenza(
-        df, avail, mancanti, session.get('budget', 0), SLOT_PER_RUOLO,
-        ordine=config.ORDINE_ASTA, quote=config.QUOTE_REPARTO,
-        ruolo_forzato=ruolo_forzato)
-
-    markup = InlineKeyboardMarkup(row_width=1)
-
-    if not piano or piano.get('reparti_finiti'):
-        bot.edit_message_text(
-            "🚨 <b>PANIC BUTTON</b>\n\nRosa completa: non ti serve nessuno.",
-            chat_id, message_id, parse_mode="HTML",
-            reply_markup=markup.add(
-                InlineKeyboardButton("🏠 Home", callback_data="go_home")))
-        return
-
-    ruolo = piano['ruolo']
-    tetti = "  ".join(str(b['tetto']) for b in piano['fasce'])
-
-    righe = [f"🚨 <b>PANIC BUTTON</b>  ·  {ROLE_ICONS[ruolo]} reparto <b>{ruolo}</b>",
-             f"💼 <b>{piano['disponibile']} cr</b> per <b>{piano['mancanti']}</b> slot"]
-    if piano['riserva'] > 0:
-        dopo = "".join(ROLE_ICONS[r] for r in piano['scoperti'] if r != ruolo)
-        righe.append(f"🔒 <b>{piano['riserva']}</b> da tenere per {dopo}")
-    righe.append(f"📉 come dividerli:  <b>{tetti}</b>")
-
-    vuote = 0
-    for blocco in piano['fasce']:
-        if blocco['candidati'] is None:
-            vuote += 1
+    punti_rosa, voti_p, voti_d, spesa_ruolo = 0.0, [], [], {'P': 0, 'D': 0, 'C': 0, 'A': 0}
+    for voce in registro_asta.rosa():
+        riga = indice.get(voce['nome'])
+        spesa_ruolo[voce['ruolo']] = spesa_ruolo.get(voce['ruolo'], 0) + voce['prezzo']
+        if riga is None:
             continue
-        for _, riga in blocco['candidati'].iterrows():
-            prezzo = int(_num(riga.get('Prezzo'), 1))
-            presenze = int(_num(riga.get('Pv')))
-            segno = "⚠️" if presenze < blocco['presenze_minime'] else "·"
-            markup.add(InlineKeyboardButton(
-                f"{blocco['posto']}º ≤{blocco['tetto']}  {riga['Nome']}  "
-                f"{prezzo}cr {segno} {presenze}pres",
-                callback_data=f"sq_pl_{riga['Nome']}"))
-    if vuote:
-        righe.append(f"<i>{vuote} caselle senza candidati entro la cifra</i>")
+        punti_rosa += consiglio.valuta(riga, contesto)['totale']
+        if voce['ruolo'] == 'P':
+            voti_p.append(_num(riga.get('Mv')))
+        elif voce['ruolo'] == 'D':
+            voti_d.append(_num(riga.get('Mv')))
 
-    altri = [r for r in piano['scoperti'] if r != ruolo]
-    if altri:
-        markup.row(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}",
-                                          callback_data=f"panic_ru_{r}")
-                     for r in altri])
-    markup.add(InlineKeyboardButton("🔙 Scouting", callback_data="menu_scouting"),
+    righe = ["📊 <b>COME STO ANDANDO</b>", ""]
+
+    # 1. i reparti, uno per riga, col confronto sul previsto
+    for ruolo in config.ORDINE_ASTA:
+        dati_reparto = quadro['reparti'][ruolo]
+        icona = ROLE_ICONS[ruolo]
+        if dati_reparto['mancanti'] == 0:
+            differenza = dati_reparto['speso'] - dati_reparto['previsto']
+            giudizio = ("in linea" if abs(differenza) <= dati_reparto['previsto'] * 0.15
+                        else (f"<b>{differenza:+d}</b> sul previsto"))
+            righe.append(f"{icona} chiuso a <b>{dati_reparto['speso']}</b> cr · {giudizio}")
+        elif dati_reparto['presi']:
+            righe.append(f"{icona} {dati_reparto['presi']}/{dati_reparto['slot']} presi · "
+                         f"<b>{dati_reparto['speso']}</b> cr spesi · "
+                         f"finirlo costa ~<b>{dati_reparto['mercato']}</b>")
+        else:
+            righe.append(f"{icona} da fare · costa ~<b>{dati_reparto['mercato']}</b> cr")
+
+    # 2. quanto rende quello che hai comprato
+    righe.append("")
+    if punti_rosa > 0:
+        righe.append(f"⚽ la tua rosa vale <b>{punti_rosa:+.2f} punti a partita</b> "
+                     f"in piu' di una rosa qualsiasi")
+    if voti_p or voti_d:
+        reparto = modificatore.valuta_reparto(voti_p, voti_d,
+                                              session.get('tabella_modificatore'))
+        if session.get('modificatore_attivo'):
+            stato_reparto = ("completo" if reparto['completo']
+                             else f"su {reparto['voti_contati']} voti su 4")
+            righe.append(f"🛡️ modificatore: media <b>{reparto['media']:.2f}</b> → "
+                         f"<b>+{reparto['punti']:g}</b> a partita <i>({stato_reparto})</i>")
+            manca = modificatore.quanto_manca(reparto['media'],
+                                              session.get('tabella_modificatore'))
+            if manca and manca['guadagno'] > 0:
+                righe.append(f"   └ con <b>{manca['distanza']:.2f}</b> di media in piu' "
+                             f"guadagni <b>+{manca['guadagno']:g}</b> a partita")
+
+    # 3. cosa mi aspetta
+    righe.append("")
+    da_finire = sum(quadro['reparti'][r]['mercato'] for r in quadro['scoperti'])
+    cassa = registro_asta.budget()
+    if not quadro['scoperti']:
+        righe.append("✅ <b>rosa completa</b>: hai finito.")
+    elif da_finire > cassa:
+        righe.append(f"⚠️ finire costa ~<b>{da_finire}</b> cr e ne hai <b>{cassa}</b>: "
+                     f"da qui in avanti tocca risparmiare.")
+    else:
+        margine = cassa - da_finire
+        righe.append(f"✅ finire costa ~<b>{da_finire}</b> cr, ne hai <b>{cassa}</b>: "
+                     f"<b>{margine}</b> di margine per alzare su chi ti serve.")
+    if campione >= 8 and abs(inflazione - 1) >= 0.08:
+        verso = "sopra" if inflazione > 1 else "sotto"
+        righe.append(f"📈 stasera si paga il <b>{abs(round((inflazione-1)*100))}% {verso}</b> "
+                     f"il listino, su {campione} vendite.")
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.row(InlineKeyboardButton("🚨 Panic", callback_data="menu_panic_start"),
                InlineKeyboardButton("🏠 Home", callback_data="go_home"))
     bot.edit_message_text("\n".join(righe), chat_id, message_id,
                           parse_mode="HTML", reply_markup=markup)
+
+
+def mostra_panic(chat_id, message_id, df, session, ruolo_forzato=None):
+    """
+    Il Panic e' un verdetto, non un catalogo.
+
+    Lo premi mentre qualcuno rilancia e hai dieci secondi: quello che serve e'
+    un nome, un tetto e il motivo. Le alternative ci sono - per quando te lo
+    soffiano o quando i crediti finiscono - ma sono risposte a situazioni
+    diverse, non tre opzioni fra cui rimettersi a scegliere.
+    """
+    registro_asta, disponibili, quadro, inflazione, campione = _quadro_piano(df, session)
+    markup = InlineKeyboardMarkup(row_width=1)
+
+    if not quadro['scoperti']:
+        markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        return bot.edit_message_text(
+            "🚨 <b>PANIC BUTTON</b>\n\nRosa completa: non ti serve nessuno.",
+            chat_id, message_id, parse_mode="HTML", reply_markup=markup)
+
+    ruolo = ruolo_forzato if ruolo_forzato in quadro['scoperti'] else quadro['scoperti'][0]
+    conti = piano.disponibile(quadro, ruolo)
+    fasce = piano.fasce_di_spesa(conti['disponibile'], conti['mancanti'],
+                                 session.get('strategia', 'equilibrata'))
+    tetto = fasce[0] if fasce else conti['disponibile']
+
+    contesto = contesto_valori(df, session)
+    scelte = consiglio.consiglia(disponibili, ruolo, contesto, tetto, conti['mancanti'])
+
+    intestazione = [
+        f"🚨 <b>PANIC BUTTON</b>  ·  {ROLE_ICONS[ruolo]} {consiglio.PLURALE_RUOLO[ruolo]}",
+        f"te ne mancano <b>{conti['mancanti']}</b>  ·  hai <b>{conti['disponibile']} cr</b> "
+        f"per questo reparto",
+    ]
+    if conti['riserva'] > 0:
+        dopo = "".join(ROLE_ICONS[r] for r in conti['successivi'])
+        intestazione.append(f"🔒 <b>{conti['riserva']}</b> servono per {dopo}")
+    if conti['in_rosso']:
+        intestazione.append("⚠️ <b>sei in ritardo</b>: ai prezzi di adesso non basta "
+                            "per finire, taglia su questo reparto")
+    if campione >= 8 and abs(inflazione - 1) >= 0.08:
+        verso = "sopra" if inflazione > 1 else "sotto"
+        intestazione.append(f"📈 stasera si paga il <b>{abs(round((inflazione-1)*100))}% "
+                            f"{verso}</b> il listino ({campione} vendite)")
+
+    if not scelte:
+        intestazione.append("\nNessuno disponibile entro il tetto: tocca prendere "
+                            "a un credito quello che passa.")
+    else:
+        for scelta in scelte:
+            intestazione.append(
+                f"\n<b>{ETICHETTE_CONSIGLIO.get(scelta['etichetta'], scelta['etichetta'].upper())}</b>  "
+                f"→  <b>{html.escape(scelta['nome'])}</b> "
+                f"<i>({html.escape(scelta['squadra'])})</i>\n"
+                f"vale <b>{scelta['prezzo']}</b>, spingiti fino a <b>{scelta['tetto']}</b>  ·  "
+                f"{scelta['valore']:+.2f} punti a partita\n"
+                f"<i>{scelta['motivo']}</i>")
+            markup.add(InlineKeyboardButton(
+                f"🔍 {scelta['nome']}  ·  {scelta['prezzo']} cr",
+                callback_data=f"sq_pl_{scelta['nome']}"))
+
+    altri = [r for r in quadro['scoperti'] if r != ruolo]
+    if altri:
+        markup.row(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}",
+                                          callback_data=f"panic_ru_{r}") for r in altri])
+    markup.row(InlineKeyboardButton("📊 Come sto andando", callback_data="menu_andamento"),
+               InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+    bot.edit_message_text("\n".join(intestazione), chat_id, message_id,
+                          parse_mode="HTML", reply_markup=markup)
+
+ETICHETTE_CONSIGLIO = {
+    'prendi': '✅ PRENDI',
+    'se lo perdi': '🔁 SE LO PERDI',
+    'se resti a secco': '🪙 SE RESTI A SECCO',
+}
+
+
+def process_tabella_modificatore(message):
+    """
+    Legge la tabella scritta a mano: "6=1 6.5=3 7=6". Formato libero, perche'
+    una tabella si imposta una volta e non deve richiedere un manuale.
+    """
+    session = get_session(message.from_user.id)
+    coppie = []
+    for pezzo in re.split(r"[\s,;]+", (message.text or "").replace(",", ".")):
+        if "=" not in pezzo:
+            continue
+        media, _, punti = pezzo.partition("=")
+        try:
+            coppie.append((float(media), float(punti)))
+        except ValueError:
+            continue
+
+    if not coppie:
+        return bot.reply_to(
+            message, "❌ Non ho capito. Serve <b>media=punti</b>, per esempio:\n"
+            "<code>6=1  6.5=3  7=6  7.5=8</code>", parse_mode="HTML")
+
+    session['tabella_modificatore'] = modificatore.normalizza_tabella(coppie)
+    session['modificatore_attivo'] = True
+    salva_sessioni()
+    bot.reply_to(message,
+                 "✅ <b>Tabella salvata</b>\n"
+                 f"{modificatore.descrivi_tabella(session['tabella_modificatore'])}",
+                 parse_mode="HTML")
+
+
+def contesto_valori(df, session):
+    """Il contesto di valutazione della lega: un solo posto, per tutte le
+    schermate. Prima ogni pulsante si calcolava i riferimenti per conto suo e
+    i numeri non coincidevano mai."""
+    return consiglio.contesto_valutazione(
+        df, session.get('modificatore_attivo', False),
+        session.get('tabella_modificatore'))
 
 
 def scouting_menu_keyboard():
@@ -1167,28 +1321,27 @@ def segna_vendita(message, nome, prezzo, acquirente, df, session):
     # Se te l'hanno soffiato e quel ruolo ti serve ancora, i sostituti si
     # vedono adesso: e' il momento in cui la risposta conta, non tre menu dopo.
     if not mio and mancanti > 0:
-        # Il tetto e' quanto posso spendere davvero per quella casella, non il
-        # prezzo del venduto: quello che conta e' chi porta piu' bonus fra
-        # quelli alla mia portata.
-        tetto = max(1, int(stato['max_bid'] / max(1, stato['slot_liberi']) * 1.6))
-        alternative = analisi.sostituti(get_available_players(df, session), riga,
-                                        tetto=tetto, limite=3)
-        if alternative is not None and not alternative.empty:
-            righe.append(f"⭐ <i>era in wishlist</i> — chi rende come lui entro {tetto} cr:"
-                         if era_in_wishlist
-                         else f"<i>chi porta piu' bonus entro {tetto} cr:</i>")
-            for _, alt in alternative.iterrows():
-                bonus = alt.get('_bonus', 0)
-                # Su un portiere "0g 0a" non dice niente: al suo posto il voto,
-                # che e' quello che gli fa fare punti.
-                if ruolo == 'P':
-                    dettaglio = f"Mv {_num(alt.get('Mv')):.2f} · {int(_num(alt.get('Pv')))}pres"
-                else:
-                    dettaglio = f"{int(_num(alt.get('Gf')))}g {int(_num(alt.get('Ass')))}a"
+        # Stesso identico calcolo del Panic: il tetto viene dal piano, non da
+        # una formula locale. Prima qui usciva 30 e nel Panic 34, ed erano due
+        # conti diversi sullo stesso momento dell'asta.
+        _, disponibili, quadro, _, _ = _quadro_piano(df, session)
+        conti = piano.disponibile(quadro, ruolo)
+        fasce = piano.fasce_di_spesa(conti['disponibile'], conti['mancanti'],
+                                     session.get('strategia', 'equilibrata'))
+        tetto = fasce[0] if fasce else conti['disponibile']
+        scelte = consiglio.consiglia(disponibili, ruolo, contesto_valori(df, session),
+                                     tetto, conti['mancanti'])
+        if scelte:
+            righe.append("⭐ <i>era in wishlist</i> — al suo posto:" if era_in_wishlist
+                         else f"<i>chi prendere adesso, fino a {tetto} cr:</i>")
+            for scelta in scelte[:2]:
+                righe.append(f"<b>{html.escape(scelta['nome'])}</b> "
+                             f"({html.escape(scelta['squadra'])}) · vale "
+                             f"<b>{scelta['prezzo']}</b> · {scelta['valore']:+.2f} pt/partita\n"
+                             f"<i>{scelta['motivo']}</i>")
                 markup.add(InlineKeyboardButton(
-                    f"🔍 {alt['Nome']} ({alt.get('Squadra', '-')})  "
-                    f"{int(_num(alt.get('Prezzo'), 1))}cr · {bonus:+.0f} bonus · {dettaglio}",
-                    callback_data=f"sq_pl_{alt['Nome']}"))
+                    f"🔍 {scelta['nome']}  ·  {scelta['prezzo']} cr",
+                    callback_data=f"sq_pl_{scelta['nome']}"))
         else:
             righe.append(f"<i>nessun {ruolo} alla tua portata ancora libero</i>")
 
@@ -1322,11 +1475,66 @@ def handle_callbacks(call):
         bot.edit_message_text("✅ <b>LISTONE AGGIORNATO CON SUCCESSO!</b>" if auto_download_listone() else "❌ <b>Download fallito.</b>", chat_id, msg.message_id, parse_mode="HTML")
 
     elif call.data == "menu_impostazioni_lega":
+        attivo = session.get('modificatore_attivo', False)
+        tabella = session.get('tabella_modificatore') or modificatore.TABELLA_STANDARD
         markup = InlineKeyboardMarkup(row_width=3)
-        markup.row(InlineKeyboardButton("💰 Bud: 300", callback_data="imposta_bud_300"), InlineKeyboardButton("💰 500", callback_data="imposta_bud_500"), InlineKeyboardButton("💰 1000", callback_data="imposta_bud_1000"))
-        markup.row(InlineKeyboardButton("👥 Lega: 8", callback_data="imposta_part_8"), InlineKeyboardButton("👥 a 10", callback_data="imposta_part_10"), InlineKeyboardButton("👥 a 12", callback_data="imposta_part_12"))
-        markup.add(InlineKeyboardButton("🔄 Reset (500 cr - 8 sq)", callback_data="imposta_reset"), InlineKeyboardButton("🏠 Home", callback_data="go_home"))
-        bot.edit_message_text(f"⚙️ <b>IMPOSTAZIONI</b>\n💰 Budget: <code>{session.get('lega_budget_iniziale', 500)} cr.</code>\n👥 Partecipanti: <code>{session.get('lega_partecipanti', 8)} squadre</code>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        markup.row(InlineKeyboardButton("💰 300", callback_data="imposta_bud_300"),
+                   InlineKeyboardButton("💰 500", callback_data="imposta_bud_500"),
+                   InlineKeyboardButton("💰 1000", callback_data="imposta_bud_1000"))
+        markup.row(InlineKeyboardButton("👥 8", callback_data="imposta_part_8"),
+                   InlineKeyboardButton("👥 10", callback_data="imposta_part_10"),
+                   InlineKeyboardButton("👥 12", callback_data="imposta_part_12"))
+        markup.add(InlineKeyboardButton(
+            f"🛡️ Modificatore difesa: {'ATTIVO' if attivo else 'spento'}",
+            callback_data="imposta_modif"))
+        if attivo:
+            markup.add(InlineKeyboardButton("✏️ Cambia la tabella",
+                                            callback_data="imposta_tabella"))
+        markup.add(InlineKeyboardButton("🔄 Reset", callback_data="imposta_reset"),
+                   InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+
+        righe = ["⚙️ <b>LA MIA LEGA</b>",
+                 f"💰 Budget: <code>{session.get('lega_budget_iniziale', 500)} cr</code>",
+                 f"👥 Partecipanti: <code>{session.get('lega_partecipanti', 8)}</code>",
+                 f"🛡️ Modificatore: <code>{'attivo' if attivo else 'spento'}</code>"]
+        if attivo:
+            righe += [f"<i>{modificatore.descrivi_tabella(tabella)}</i>",
+                      "",
+                      "<i>Col modificatore il valore di portieri e difensori sta "
+                      "nella media voto, non nei bonus: il bot ne tiene conto in "
+                      "ogni consiglio.</i>"]
+        bot.edit_message_text("\n".join(righe), chat_id, call.message.message_id,
+                              parse_mode="HTML", reply_markup=markup)
+
+    elif call.data == "imposta_modif":
+        session['modificatore_attivo'] = not session.get('modificatore_attivo', False)
+        salva_sessioni()
+        safe_answer_callback(call.id, "🛡️ Modificatore " +
+                             ("attivato" if session['modificatore_attivo'] else "spento"), False)
+        call.data = "menu_impostazioni_lega"
+        handle_callbacks(call)
+
+    elif call.data == "imposta_tabella":
+        tabella = session.get('tabella_modificatore') or modificatore.TABELLA_STANDARD
+        esempio = "  ".join(f"{s:g}={p:g}" for s, p in modificatore.normalizza_tabella(tabella))
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton("↩︎ Torna allo standard",
+                                        callback_data="tabella_standard"),
+                   InlineKeyboardButton("🔙 Lega", callback_data="menu_impostazioni_lega"))
+        avviso = bot.edit_message_text(
+            "✏️ <b>TABELLA DEL MODIFICATORE</b>\n\n"
+            f"Adesso: <code>{esempio}</code>\n\n"
+            "Scrivimi la tua nella stessa forma, <b>media=punti</b> separati da "
+            "spazio. Per esempio:\n<code>6=1  6.5=3  7=6  7.5=8</code>",
+            chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
+        bot.register_next_step_handler(avviso, process_tabella_modificatore)
+
+    elif call.data == "tabella_standard":
+        session['tabella_modificatore'] = None
+        salva_sessioni()
+        safe_answer_callback(call.id, "✅ Tabella standard ripristinata", False)
+        call.data = "menu_impostazioni_lega"
+        handle_callbacks(call)
 
     elif call.data.startswith("imposta_bud_"):
         # Si sposta il tetto, non la cassa: se hai gia' comprato, quello che hai
@@ -1596,6 +1804,9 @@ def handle_callbacks(call):
         if call.data.replace("wl_toggle_", "") in session.get('wishlist', []): session['wishlist'].remove(call.data.replace("wl_toggle_", ""))
         else: session.setdefault('wishlist', []).append(call.data.replace("wl_toggle_", ""))
         send_player_card_view(chat_id, call.data.replace("wl_toggle_", ""), call.message.message_id, df, session)
+
+    elif call.data == "menu_andamento":
+        mostra_andamento(chat_id, call.message.message_id, df, session)
 
     elif call.data == "reg_annulla":
         registro_asta = get_registro(session)
