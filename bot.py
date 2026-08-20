@@ -14,7 +14,6 @@ import interfaccia
 import modificatore
 import consiglio
 import piano
-import piano
 import registro as reg
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -553,7 +552,8 @@ def mostra_panic(chat_id, message_id, df, session, ruolo_forzato=None):
     tetto = fasce[0] if fasce else conti['disponibile']
 
     contesto = contesto_valori(df, session)
-    scelte = consiglio.consiglia(disponibili, ruolo, contesto, tetto, conti['mancanti'])
+    scelte = consiglio.consiglia(disponibili, ruolo, contesto, tetto, conti['mancanti'],
+                                 inflazione, session.get('lega_partecipanti', 8))
 
     intestazione = [
         f"🚨 <b>PANIC BUTTON</b>  ·  {ROLE_ICONS[ruolo]} {consiglio.PLURALE_RUOLO[ruolo]}",
@@ -584,7 +584,8 @@ def mostra_panic(chat_id, message_id, df, session, ruolo_forzato=None):
                 f"{scelta['valore']:+.2f} punti a partita\n"
                 f"<i>{scelta['motivo']}</i>")
             markup.add(InlineKeyboardButton(
-                f"🔍 {scelta['nome']}  ·  {scelta['prezzo']} cr",
+                f"🔍 {scelta['nome']}  ·  vale {scelta['prezzo']}, "
+                f"fino a {scelta['tetto']}" + (" ⚠️" if scelta['ballottaggio'] else ""),
                 callback_data=f"sq_pl_{scelta['nome']}"))
 
     altri = [r for r in quadro['scoperti'] if r != ruolo]
@@ -1329,8 +1330,10 @@ def segna_vendita(message, nome, prezzo, acquirente, df, session):
         fasce = piano.fasce_di_spesa(conti['disponibile'], conti['mancanti'],
                                      session.get('strategia', 'equilibrata'))
         tetto = fasce[0] if fasce else conti['disponibile']
+        _, _, _, inflazione_ora, _ = _quadro_piano(df, session)
         scelte = consiglio.consiglia(disponibili, ruolo, contesto_valori(df, session),
-                                     tetto, conti['mancanti'])
+                                     tetto, conti['mancanti'], inflazione_ora,
+                                     session.get('lega_partecipanti', 8))
         if scelte:
             righe.append("⭐ <i>era in wishlist</i> — al suo posto:" if era_in_wishlist
                          else f"<i>chi prendere adesso, fino a {tetto} cr:</i>")

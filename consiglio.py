@@ -16,7 +16,12 @@ import pandas as pd
 import modificatore as mod
 
 PARTITE = 38
-PRESENZE_TITOLARE = 30      # sopra questa soglia si considera un titolare pieno
+# Sopra questa soglia si e' titolari pieni. Il portiere ha un'asticella piu'
+# alta di tutti: chi ne gioca 27 su 38 non e' un titolare che ha saltato
+# qualche gara, e' uno in ballottaggio - e per giunta non sai in quali
+# domeniche giochera'.
+PRESENZE_TITOLARE = {'P': 34, 'D': 30, 'C': 30, 'A': 30}
+PRESENZE_BALLOTTAGGIO_P = 32
 K_PONDERAZIONE = 8          # quanto pesa la media di ruolo su chi ha giocato poco
 
 NOMI_RUOLO = {'P': 'portiere', 'D': 'difensore', 'C': 'centrocampista', 'A': 'attaccante'}
@@ -70,12 +75,13 @@ def valuta(riga, contesto):
     base = contesto['fantamedia'].get(ruolo, 6.0)
 
     if fantamedia <= 0:
-        return {'totale': 0.0, 'rendimento': 0.0, 'modificatore': 0.0,
+        return {'totale': 0.0, 'produzione': 0.0, 'rendimento': 0.0, 'modificatore': 0.0,
                 'quota_gioco': 0.0, 'presenze': int(presenze), 'ruolo': ruolo,
                 'senza_dati': True}
 
     ponderata = (presenze * fantamedia + K_PONDERAZIONE * base) / (presenze + K_PONDERAZIONE)
-    quota_gioco = min(1.0, presenze / PRESENZE_TITOLARE) if presenze else 0.0
+    soglia = PRESENZE_TITOLARE.get(ruolo, 30)
+    quota_gioco = min(1.0, presenze / soglia) if presenze else 0.0
 
     rendimento = (ponderata - base) * quota_gioco
     contributo_modificatore = 0.0
@@ -85,9 +91,21 @@ def valuta(riga, contesto):
 
     return {
         'totale': round(rendimento + contributo_modificatore, 2),
+        # La produzione GREZZA: punti a partita in assoluto, senza togliere la
+        # media di ruolo. Serve ai prezzi, dove il confronto non e' con un
+        # giocatore medio ma col sostituto vero - e quello dipende da quante
+        # squadre sono in asta. Sottrarre due volte azzererebbe meta' listone.
+        #
+        # Nelle domeniche in cui non gioca non schieri il vuoto: schieri un
+        # altro. Quindi le giornate mancanti valgono quanto un giocatore
+        # qualsiasi del ruolo, non zero. Senza questa riga un difensore da 26
+        # presenze finiva sotto la soglia e usciva a un credito.
+        'produzione': round(ponderata * quota_gioco + base * (1 - quota_gioco)
+                            + contributo_modificatore, 3),
         'rendimento': round(rendimento, 2),
         'modificatore': round(contributo_modificatore, 2),
         'quota_gioco': round(quota_gioco, 2),
+        'ballottaggio': ruolo == 'P' and 0 < presenze < PRESENZE_BALLOTTAGGIO_P,
         'presenze': int(presenze), 'voto': voto, 'ruolo': ruolo,
         'gol': int(_num(riga.get('Gf'))), 'assist': int(_num(riga.get('Ass'))),
         'senza_dati': False,
@@ -104,6 +122,10 @@ def motivo(riga, punteggio, prezzo, contesto, liberi_simili=None):
 
     pezzi = []
     ruolo = punteggio['ruolo']
+
+    if punteggio.get('ballottaggio'):
+        return (f"⚠️ ballottaggio: solo {punteggio['presenze']} presenze su 38, "
+                f"non sai in quali domeniche gioca")
 
     if punteggio['modificatore'] >= punteggio['rendimento'] and punteggio['modificatore'] > 0:
         pezzi.append(f"vale per il voto ({punteggio['voto']:.2f}): "
@@ -155,20 +177,62 @@ def classifica(disponibili, ruolo, contesto, tetto=None):
     return gruppo.sort_values('_valore', ascending=False) if not gruppo.empty else None
 
 
-def consiglia(disponibili, ruolo, contesto, tetto, mancanti=1):
+def tetto_personale(valore, prezzo, valore_migliore, valore_sostituto,
+                    prezzo_sostituto, tetto_reparto, inflazione=1.0,
+                    ballottaggio=False, moltiplicatore_massimo=2.2):
+    """
+    Fin dove spingersi su QUESTO giocatore.
+
+    Non e' il tetto della fascia di spesa: quello dice quanto PUOI permetterti,
+    e applicato a tutti dava lo stesso "fino a 28" su un portiere da 24 e su
+    uno da 2. Qui si ragiona sul costo dell'alternativa: se perdendolo prendi
+    comunque un sostituto, l'unica cosa per cui vale pagare di piu' e' il
+    vantaggio fra i due.
+
+    Tre limiti, imparati sbagliando:
+      - il cambio crediti/punto si ricava dal budget del reparto, non dal
+        sostituto: se quello vale quasi zero il rapporto esplode e il tetto
+        finisce al massimo per chiunque;
+      - non si paga mai piu' del doppio abbondante del listino, che e' gia'
+        calibrato sul monte crediti della lega;
+      - su un portiere in ballottaggio si taglia: non stai comprando 38
+        partite, ne stai comprando forse venti, e non sai quali.
+    """
+    prezzo = max(1, prezzo)
+    cambio = tetto_reparto / max(0.15, valore_migliore)
+    equo = max(1, prezzo_sostituto) + max(0.0, valore - valore_sostituto) * cambio
+
+    tetto = max(equo, prezzo) * max(0.9, inflazione)
+    tetto = min(tetto, prezzo * moltiplicatore_massimo)
+    if ballottaggio:
+        tetto *= 0.7
+    return int(max(1, min(round(tetto), tetto_reparto)))
+
+
+def consiglia(disponibili, ruolo, contesto, tetto, mancanti=1, inflazione=1.0,
+              partecipanti=8):
     """
     Tre risposte a tre situazioni diverse, non tre alternative equivalenti:
 
       1. IL MIGLIORE   chi prendere, punto
       2. L'ALTERNATIVA chi prendere se te lo soffiano, a meno di due terzi
-      3. IL RIPIEGO    chi prendere se i crediti sono finiti, entro il minimo
+      3. IL RIPIEGO    chi prendere se i crediti sono finiti
 
-    Ognuno con il suo motivo. Tre nomi senza spiegazione tornano a essere una
-    lista, e una lista non decide niente.
+    Ognuno col suo motivo e col suo tetto. Tre nomi senza spiegazione tornano
+    a essere una lista, e una lista non decide niente.
     """
     ordinati = classifica(disponibili, ruolo, contesto, tetto)
     if ordinati is None or ordinati.empty:
         return []
+
+    # Il sostituto di riferimento: non il secondo in classifica, ma quello che
+    # ti resterebbe davvero. Gli avversari comprano prima di te, quindi in una
+    # lega da {partecipanti} squadre realisticamente ti tocca uno ogni tanti.
+    valore_migliore = float(ordinati.iloc[0]['_valore'])
+    posizione = min(len(ordinati) - 1, max(1, partecipanti - 1))
+    riferimento = ordinati.iloc[posizione]
+    valore_rif = float(riferimento['_valore'])
+    prezzo_rif = int(riferimento['_prezzo'])
 
     scelte, presi = [], set()
 
@@ -177,33 +241,33 @@ def consiglia(disponibili, ruolo, contesto, tetto, mancanti=1):
             if str(riga['Nome']) in presi:
                 continue
             punteggio = riga['_dettaglio']
-            liberi = int((ordinati['_valore'] >= punteggio['totale'] * 0.85).sum())
+            simili = int((ordinati['_valore'] >= punteggio['totale'] * 0.85).sum())
+            prezzo = int(riga['_prezzo'])
             scelte.append({
                 'etichetta': etichetta,
                 'nome': str(riga['Nome']),
                 'squadra': str(riga.get('Squadra', '')),
-                'prezzo': int(riga['_prezzo']),
-                'tetto': int(tetto),
+                'prezzo': prezzo,
+                'tetto': tetto_personale(
+                    punteggio['totale'], prezzo, valore_migliore, valore_rif,
+                    prezzo_rif, tetto, inflazione,
+                    punteggio.get('ballottaggio', False)),
                 'valore': punteggio['totale'],
-                'motivo': motivo(riga, punteggio, int(riga['_prezzo']), contesto, liberi),
-                'simili_liberi': liberi,
+                'motivo': motivo(riga, punteggio, prezzo, contesto, simili),
+                'simili_liberi': simili,
+                'ballottaggio': punteggio.get('ballottaggio', False),
             })
             presi.add(str(riga['Nome']))
             return True
         return False
 
     aggiungi(ordinati, "prendi")
-
     if scelte:
-        prezzo_primo = scelte[0]['prezzo']
-        piu_economici = ordinati[ordinati['_prezzo'] <= max(1, prezzo_primo * 0.66)]
+        piu_economici = ordinati[ordinati['_prezzo'] <= max(1, scelte[0]['prezzo'] * 0.66)]
         if not aggiungi(piu_economici, "se lo perdi"):
             aggiungi(ordinati, "se lo perdi")
-
-    minimo = max(1, int(tetto * 0.15))
-    aggiungi(ordinati[ordinati['_prezzo'] <= minimo], "se resti a secco")
+    aggiungi(ordinati[ordinati['_prezzo'] <= max(1, int(tetto * 0.15))], "se resti a secco")
     return scelte
-
 
 # ----------------------------------------------------------------------
 # COME STO ANDANDO
