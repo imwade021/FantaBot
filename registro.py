@@ -241,3 +241,82 @@ def sincronizza(registro, session):
     # ci finisce tutto il venduto, mio compreso.
     session['scartati'] = sorted(registro.venduti())
     return session
+
+
+# ----------------------------------------------------------------------
+# IL TACCUINO DENTRO TELEGRAM
+#
+# sessioni.json vive sul disco di Render, che si azzera a ogni deploy: perdere
+# il registro a meta' asta e' l'unico errore davvero irreparabile di tutto il
+# progetto. Qui il registro si scrive anche in un messaggio fissato in cima
+# alla chat. Telegram quel messaggio non lo perde, e come effetto secondario
+# il taccuino diventa leggibile a colpo d'occhio senza premere niente.
+#
+# Si salvano solo nome, prezzo e chi ha comprato: ruolo e squadra si
+# ritrovano dal listone, e ogni carattere risparmiato e' spazio guadagnato
+# sotto il tetto dei 4096 caratteri di un messaggio.
+# ----------------------------------------------------------------------
+INTESTAZIONE = "📓 TACCUINO ASTA"
+LIMITE_MESSAGGIO = 3800
+
+
+def serializza(registro):
+    """Il registro come testo compatto, leggibile anche da un umano."""
+    righe = [INTESTAZIONE,
+             f"budget {registro.budget_iniziale} · squadre {registro.partecipanti}",
+             f"cassa {registro.budget()} · presi {len(registro.rosa())}",
+             "———"]
+    for voce in registro.voci:
+        # La chiave e' 'a', non 'acquirente': sbagliandola ogni acquisto
+        # tornava indietro come venduto agli altri, e la rosa si svuotava.
+        segno = "io" if voce.get('a') == IO else "-"
+        righe.append(f"{voce['nome']}|{voce['prezzo']}|{segno}")
+
+    testo = "\n".join(righe)
+    if len(testo) > LIMITE_MESSAGGIO:
+        # Meglio un taccuino tagliato in coda che un salvataggio fallito: le
+        # voci piu' vecchie sono anche le meno utili da recuperare.
+        testo = testo[:LIMITE_MESSAGGIO].rsplit("\n", 1)[0] + "\n… (troppo lungo)"
+    return testo
+
+
+def deserializza(testo, cerca_giocatore=None, budget=500, partecipanti=8):
+    """
+    Ricostruisce il registro dal messaggio fissato.
+
+    cerca_giocatore(nome) deve restituire (ruolo, squadra): ruolo e squadra
+    non si salvano, si ritrovano dal listone. Se un nome non si trova piu'
+    (listone aggiornato nel frattempo) la voce si tiene lo stesso, perche'
+    perdere un acquisto e' peggio che tenerlo senza ruolo.
+    """
+    if not testo or INTESTAZIONE not in testo:
+        return None
+
+    registro = Registro({'budget_iniziale': budget, 'partecipanti': partecipanti})
+    for riga in testo.splitlines():
+        if riga.startswith("budget "):
+            pezzi = riga.replace("·", " ").split()
+            try:
+                registro.budget_iniziale = int(pezzi[1])
+                registro.partecipanti = int(pezzi[3])
+            except (IndexError, ValueError):
+                pass
+            continue
+        if "|" not in riga:
+            continue
+        parti = riga.split("|")
+        if len(parti) < 3:
+            continue
+        nome, prezzo, segno = parti[0].strip(), parti[1].strip(), parti[2].strip()
+        try:
+            prezzo = int(prezzo)
+        except ValueError:
+            continue
+        ruolo, squadra = ("", "")
+        if cerca_giocatore:
+            trovato = cerca_giocatore(nome)
+            if trovato:
+                ruolo, squadra = trovato
+        registro.segna(nome, prezzo, ruolo, squadra,
+                       acquirente=IO if segno == "io" else ALTRI)
+    return registro if registro.voci else None

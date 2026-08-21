@@ -191,11 +191,86 @@ def get_registro(session):
     return reg.Registro(dati_registro)
 
 
-def salva_registro(registro_asta, session):
-    """Scrive il registro e riallinea le chiavi che il resto del bot legge."""
+def salva_registro(registro_asta, session, chat_id=None):
+    """
+    Scrive il registro, riallinea le chiavi del bot e lo copia su Telegram.
+
+    Il file su disco non basta: Render lo azzera a ogni deploy. La copia
+    fissata in cima alla chat sopravvive a tutto, e ricostruire da li' e'
+    questione di un secondo.
+    """
     reg.sincronizza(registro_asta, session)
     salva_sessioni()
+    if chat_id is not None:
+        copia_su_telegram(chat_id, registro_asta, session)
     return session
+
+
+def copia_su_telegram(chat_id, registro_asta, session):
+    """
+    Riscrive il messaggio fissato col taccuino aggiornato.
+
+    Non deve MAI far fallire una registrazione: se Telegram non risponde, la
+    vendita resta comunque segnata su disco e si riprovera' alla prossima.
+    """
+    testo = reg.serializza(registro_asta)
+    id_messaggio = session.get('id_taccuino')
+    try:
+        if id_messaggio:
+            bot.edit_message_text(testo, chat_id, id_messaggio)
+            return
+        messaggio = bot.send_message(chat_id, testo)
+        session['id_taccuino'] = messaggio.message_id
+        try:
+            bot.pin_chat_message(chat_id, messaggio.message_id,
+                                 disable_notification=True)
+        except Exception:
+            pass          # se non si puo' fissare, il messaggio resta comunque
+        salva_sessioni()
+    except Exception as errore:
+        testo_errore = str(errore)
+        if "message is not modified" in testo_errore:
+            return
+        # Il messaggio potrebbe essere stato cancellato a mano: si riparte.
+        if "message to edit not found" in testo_errore:
+            session['id_taccuino'] = None
+            return copia_su_telegram(chat_id, registro_asta, session)
+        print(f"⚠️ Taccuino non copiato su Telegram: {errore}")
+
+
+def recupera_taccuino(chat_id, session, df):
+    """
+    Rimette in piedi il registro dal messaggio fissato, dopo un riavvio.
+
+    Si prova solo quando il registro in memoria e' vuoto: se c'e' gia'
+    qualcosa, quella e' piu' recente e non va toccata.
+    """
+    registro_attuale = get_registro(session)
+    if registro_attuale.voci:
+        return None
+    try:
+        fissato = getattr(bot.get_chat(chat_id), 'pinned_message', None)
+        testo = getattr(fissato, 'text', None) if fissato else None
+    except Exception:
+        return None
+    if not testo:
+        return None
+
+    def cerca(nome):
+        riga = df[df['Nome'].astype(str).str.lower() == str(nome).lower()]
+        if riga.empty:
+            return None
+        return (str(riga.iloc[0].get('R', 'C'))[:1].upper(),
+                str(riga.iloc[0].get('Squadra', '')))
+
+    recuperato = reg.deserializza(testo, cerca,
+                                  session.get('lega_budget_iniziale', 500),
+                                  session.get('lega_partecipanti', 8))
+    if not recuperato:
+        return None
+    session['id_taccuino'] = getattr(fissato, 'message_id', None)
+    salva_registro(recuperato, session)
+    return recuperato
 
 def get_roster_stats(session):
     return dati.stato_rosa(session)
@@ -1157,7 +1232,7 @@ def process_buy_price(message, player_name, user_id):
     if is_asta:
         registro_asta = get_registro(session)
         registro_asta.segna(player_name, costo, str(ruolo), str(squadra), reg.IO)
-        salva_registro(registro_asta, session)
+        salva_registro(registro_asta, session, chat_id)
         titolo_acquisto = f"✅ <b>{html.escape(player_name.upper())}</b> acquistato per <code>{costo} cr.</code>!"
     else:
         titolo_acquisto = f"🧪 <b>SIMULAZIONE: {html.escape(player_name.upper())} a {costo} cr.</b>\n<i>(Non salvato in Rosa)</i>"
@@ -1240,6 +1315,22 @@ def cmd_start(m):
     try: bot.delete_message(m.chat.id, m.message_id)
     except Exception: pass
     session = get_session(m.from_user.id)
+
+    # Dopo un riavvio di Render il file delle sessioni e' sparito, ma il
+    # taccuino fissato in chat no: si rimette in piedi da li' prima di
+    # mostrare qualunque cosa, altrimenti la dashboard direbbe 500 crediti
+    # e rosa vuota a chi ne ha gia' comprati dieci.
+    listone = load_data()
+    if listone is not None:
+        recuperato = recupera_taccuino(m.chat.id, session, listone)
+        if recuperato:
+            bot.send_message(
+                m.chat.id,
+                f"\U0001F4D3 <b>Taccuino ritrovato</b>\n"
+                f"{len(recuperato.voci)} vendite, {len(recuperato.rosa())} tuoi, "
+                f"cassa <b>{recuperato.budget()}</b> cr.",
+                parse_mode="HTML")
+
     send_asta_dashboard(m.chat.id, m.from_user.id) if session.get('fase_asta') else send_dashboard(m.chat.id, m.from_user.id)
 
 @bot.message_handler(content_types=['voice'])
@@ -1314,6 +1405,21 @@ def testo_libero(message):
     if df is None or len(testo) < 2:
         return
 
+    # All'asta si scrive, non si cerca il pulsante giusto: "annulla" deve
+    # funzionare digitato, che e' il modo in cui viene in mente di usarlo
+    # quando hai sbagliato una cifra e stanno gia' chiamando il prossimo.
+    if testo.lower() in ("annulla", "annullo", "indietro", "undo", "cancella"):
+        registro_asta = get_registro(session)
+        tolta = registro_asta.annulla_ultima()
+        if not tolta:
+            return bot.reply_to(message, "Non c'e' niente da annullare.")
+        salva_registro(registro_asta, session, message.chat.id)
+        return bot.reply_to(
+            message,
+            f"\u21a9\ufe0e Tolto <b>{html.escape(str(tolta['nome']))}</b> "
+            f"({tolta['prezzo']} cr) \u00b7 cassa <b>{registro_asta.budget()}</b>",
+            parse_mode="HTML")
+
     nome, prezzo, acquirente = reg.interpreta(testo)
     if nome and prezzo is not None:
         return segna_vendita(message, nome, prezzo, acquirente, df, session)
@@ -1365,7 +1471,7 @@ def segna_vendita(message, nome, prezzo, acquirente, df, session):
     era_in_wishlist = nome_vero in session.get('wishlist', [])
     registro_asta.segna(nome_vero, prezzo, ruolo, str(riga.get('Squadra', '')),
                         reg.IO if mio else "altri")
-    salva_registro(registro_asta, session)
+    salva_registro(registro_asta, session, message.chat.id)
 
     destinazione = "🟢 <b>preso da te</b>" if mio else "⚪ agli altri"
     listino = int(_num(riga.get('Prezzo'), 1))
@@ -1860,7 +1966,7 @@ def handle_callbacks(call):
                             str(riga_venduta.get('R', 'C')) if riga_venduta is not None else 'C',
                             str(riga_venduta.get('Squadra', '')) if riga_venduta is not None else '',
                             "altri")
-        salva_registro(registro_asta, session)
+        salva_registro(registro_asta, session, chat_id)
         safe_answer_callback(call.id, text="🚫 Segnato: preso dagli altri", show_alert=False)
         send_asta_dashboard(chat_id, user_id, call.message.message_id) if session.get('fase_asta') else send_dashboard(chat_id, user_id, call.message.message_id)
 
@@ -1878,7 +1984,7 @@ def handle_callbacks(call):
         if tolta is None:
             safe_answer_callback(call.id, "Niente da annullare.", True)
         else:
-            salva_registro(registro_asta, session)
+            salva_registro(registro_asta, session, chat_id)
             safe_answer_callback(call.id, f"↩︎ Annullato: {tolta['nome']}", False)
             try:
                 bot.edit_message_text(
