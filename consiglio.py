@@ -14,6 +14,7 @@ non e' una risposta: e' la domanda spostata piu' avanti.
 import pandas as pd
 
 import modificatore as mod
+import proiezione
 
 PARTITE = 38
 # Sopra questa soglia si e' titolari pieni. Il portiere ha un'asticella piu'
@@ -54,7 +55,10 @@ def contesto_valutazione(df, modificatore_attivo=False, tabella=None):
     riferimento_voto = round(arretrati['_mv'].median(), 2) if len(arretrati) >= 10 else 6.0
 
     return {'fantamedia': riferimenti, 'voto_arretrato': riferimento_voto,
-            'modificatore': bool(modificatore_attivo), 'tabella': tabella}
+            'modificatore': bool(modificatore_attivo), 'tabella': tabella,
+            # Quanto e' ripetibile il rendimento di ogni ruolo: si misura una
+            # volta sul listone e serve a non pagare le stagioni fortunate.
+            'ripetibilita': proiezione.ripetibilita(df)}
 
 
 def valuta(riga, contesto):
@@ -78,6 +82,16 @@ def valuta(riga, contesto):
         return {'totale': 0.0, 'produzione': 0.0, 'rendimento': 0.0, 'modificatore': 0.0,
                 'quota_gioco': 0.0, 'presenze': int(presenze), 'ruolo': ruolo,
                 'senza_dati': True}
+
+    # Non quanto ha reso: quanto rendera'. Sette gol e diciassette assist da
+    # difensore sono per tre quarti fortuna, e pagarli come se fossero bravura
+    # e' il modo piu' rapido di buttare crediti. La quota di fortuna non la
+    # decide nessuno a mano: si misura dal listone, ruolo per ruolo.
+    misure = contesto.get('ripetibilita')
+    if misure:
+        previsione = proiezione.attesa(riga, misure)
+        if not previsione['senza_dati']:
+            fantamedia = fantamedia - previsione['bonus_grezzo'] + previsione['bonus_atteso']
 
     ponderata = (presenze * fantamedia + K_PONDERAZIONE * base) / (presenze + K_PONDERAZIONE)
     soglia = PRESENZE_TITOLARE.get(ruolo, 30)
