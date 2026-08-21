@@ -492,16 +492,18 @@ def main_menu_keyboard(session):
     else:
         markup.add(InlineKeyboardButton("🔨  AVVIA ASTA LIVE", callback_data="asta_setup_start"))
 
-    # Le due domande che ci si fa piu' spesso durante un'asta stanno in alto:
-    # "chi prendo adesso" e "come sto andando".
-    markup.add(InlineKeyboardButton("🚨  Chi prendo adesso", callback_data="menu_panic_start"),
-               InlineKeyboardButton("📊  Come sto andando", callback_data="menu_andamento"))
+    # Le tre domande che ci si fa davvero durante un'asta, in cima e da sole.
+    # Sotto, gli attrezzi. Piu' in basso, le impostazioni che si toccano una
+    # volta e mai piu'. La regola e' che scendendo cala l'urgenza: chi apre il
+    # bot mentre qualcuno rilancia trova subito la risposta, non un catalogo.
+    markup.add(InlineKeyboardButton("🚨  Chi prendo adesso", callback_data="menu_panic_start"))
+    markup.add(InlineKeyboardButton("📊  Come sto andando", callback_data="menu_andamento"),
+               InlineKeyboardButton("🎯  Pronostici", callback_data="menu_scommessa_start"))
+    markup.add(InlineKeyboardButton("📋  La mia rosa", callback_data="menu_rosa"),
+               InlineKeyboardButton("⭐  Wishlist", callback_data="menu_wishlist"))
     markup.add(InlineKeyboardButton("👕  Esplora", callback_data="sq_start"),
-               InlineKeyboardButton("📋  La mia rosa", callback_data="menu_rosa"))
-    markup.add(InlineKeyboardButton("🔎  Scouting", callback_data="menu_scouting"),
                InlineKeyboardButton("⚖️  Confronta", callback_data="menu_studio_start"))
-    markup.add(InlineKeyboardButton("⭐  Wishlist", callback_data="menu_wishlist"),
-               InlineKeyboardButton("⚽  Formazione", callback_data="menu_formazione"))
+    markup.add(InlineKeyboardButton("🔎  Altri strumenti", callback_data="menu_scouting"))
     markup.add(InlineKeyboardButton("⚙️  Lega", callback_data="menu_impostazioni_lega"),
                InlineKeyboardButton("🧰  Sistema", callback_data="menu_sistema"))
     return markup
@@ -784,16 +786,16 @@ def contesto_valori(df, session):
 def scouting_menu_keyboard():
     """Tutti gli strumenti di ricerca giocatori, in un posto solo."""
     markup = InlineKeyboardMarkup(row_width=2)
+    # Gemme, Stakanovisti e Tappabuchi rispondevano tutti e tre alla stessa
+    # domanda - "chi rende piu' di quanto costa" - con tre criteri diversi e
+    # nessuno scritto da nessuna parte. Ora quella domanda ha una risposta
+    # sola, i Pronostici, e qui restano solo gli attrezzi che cercano
+    # qualcosa di specifico.
     markup.add(InlineKeyboardButton("👑  Top liberi", callback_data="menu_top_start"),
-               InlineKeyboardButton("💎  Gemme", callback_data="menu_gemme_start"))
-    markup.add(InlineKeyboardButton("🎯  Rigoristi", callback_data="menu_rigoristi"),
-               InlineKeyboardButton("🛡️  Modificatore", callback_data="menu_modificatore"))
-    markup.add(InlineKeyboardButton("🔥  Power index", callback_data="menu_power"),
-               InlineKeyboardButton("🧱  Stakanovisti", callback_data="pro_stakanov"))
-    markup.add(InlineKeyboardButton("🎰  Tappabuchi", callback_data="pro_spiccioli"),
-               InlineKeyboardButton("🧤  Griglia difesa", callback_data="pro_griglia"))
-    markup.add(InlineKeyboardButton("🚨  Panic button", callback_data="menu_panic_start"),
-               InlineKeyboardButton("⚖️  Confronta", callback_data="menu_studio_start"))
+               InlineKeyboardButton("🎯  Rigoristi", callback_data="menu_rigoristi"))
+    markup.add(InlineKeyboardButton("🛡️  Griglia difesa", callback_data="pro_griglia"),
+               InlineKeyboardButton("🔥  Power index", callback_data="menu_power"))
+    markup.add(InlineKeyboardButton("⚽  Formazione", callback_data="menu_formazione"))
     markup.add(InlineKeyboardButton("🔙  Indietro", callback_data="go_home"))
     return markup
 
@@ -1148,7 +1150,7 @@ def send_player_card_view(chat_id, player_name, message_id, df, session, is_scom
     
     in_wl = player_name in session.get('wishlist', [])
     if is_scommessa:
-        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎲 Altra Scommessa", callback_data="menu_scommessa_start"))
+        markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"), InlineKeyboardButton("🎯 Pronostici", callback_data="menu_scommessa_start"))
     else:
         markup.add(InlineKeyboardButton("❌ Rimuovi WL" if in_wl else "⭐ Aggiungi WL", callback_data=f"wl_toggle_{player_name}"))
         
@@ -1736,6 +1738,19 @@ def handle_callbacks(call):
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
         bot.send_photo(chat_id, img, caption=t, parse_mode="HTML", reply_markup=markup) if img else bot.send_message(chat_id, t, parse_mode="HTML", reply_markup=markup)
 
+    elif call.data == "menu_top_start":
+        # Gemme e' confluito nei Pronostici, ma Top liberi condivideva con lui
+        # lo stesso blocco: toglierne uno faceva sparire anche l'altro.
+        bot.edit_message_text(
+            "👑 <b>TOP LIBERI</b> - Scegli ruolo:", chat_id, call.message.message_id,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(row_width=4).add(
+                *[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}",
+                                       callback_data=f"menu_top_ru_{r}")
+                  for r in ['P', 'D', 'C', 'A']]).add(
+                InlineKeyboardButton("🔙 Strumenti", callback_data="menu_scouting"),
+                InlineKeyboardButton("🏠 Home", callback_data="go_home")))
+
     elif call.data == "menu_rigoristi":
         gerarchie = gerarchie_rigoristi(df)
         if not gerarchie:
@@ -1798,18 +1813,6 @@ def handle_callbacks(call):
             reply_markup=scouting_menu_keyboard())
 
     elif call.data == "menu_pro": bot.edit_message_text("🛠️ <b>STRUMENTI PRO</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=pro_menu_keyboard())
-    elif call.data == "pro_stakanov":
-        lst = analisi.stakanovisti(get_available_players(df, session), limite=10)
-        markup = InlineKeyboardMarkup(row_width=1)
-        if lst is not None and not lst.empty:
-            for _, r in lst.iterrows():
-                markup.add(InlineKeyboardButton(
-                    f"🧱 {r['Nome']} ({r['Squadra']}) · {int(_num(r.get('Pv')))} pres · {int(_num(r.get('Prezzo'), 1))} cr",
-                    callback_data=f"sq_pl_{r['Nome']}"))
-        markup.add(InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
-        bot.edit_message_text("🧱 <b>STAKANOVISTI</b>\n<i>Chi non salta una partita: ordinati per presenze</i>",
-                              chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
-
     elif call.data == "pro_griglia":
         avail = get_available_players(df, session)
         griglia = analisi.griglia_difensiva(avail)
@@ -1826,18 +1829,6 @@ def handle_callbacks(call):
             f"🛡️ <b>GRIGLIA DIFENSIVA</b>\n<i>Difensori piu' impiegati delle squadre meno battute</i>\n\n"
             f"<b>Gol subiti a partita:</b> {elenco}",
             chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
-
-    elif call.data == "pro_spiccioli":
-        low = analisi.migliori_per_resa(get_available_players(df, session), limite=10, prezzo_massimo=10)
-        markup = InlineKeyboardMarkup(row_width=1)
-        if low is not None and not low.empty:
-            for _, r in low.iterrows():
-                markup.add(InlineKeyboardButton(
-                    f"🎰 {r['Nome']} ({r['R']} - {r['Squadra']}) · {int(_num(r.get('Prezzo'), 1))} cr",
-                    callback_data=f"sq_pl_{r['Nome']}"))
-        markup.add(InlineKeyboardButton("🔙 Menu PRO", callback_data="menu_pro"))
-        bot.edit_message_text("🎰 <b>TAPPABUCHI LOW-COST</b>\n<i>Ordinati per resa per credito speso</i>",
-                              chat_id, call.message.message_id, parse_mode="HTML", reply_markup=markup)
 
     elif call.data.startswith("stats_"):
         p = call.data.replace("stats_", "")
@@ -1905,12 +1896,6 @@ def handle_callbacks(call):
     elif call.data.startswith("panic_ru_"):
         mostra_panic(chat_id, call.message.message_id, df, session,
                      ruolo_forzato=call.data.split("_")[-1])
-
-    elif call.data == "menu_top_start" or call.data == "menu_gemme_start":
-        pfx = call.data.split("_")[1]
-        t = {"top": "👑 TOP LIBERI", "gemme": "🔧 4ª/5ª FASCIA"}[pfx]
-        bot.edit_message_text(f"{t} - Scegli ruolo:", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=4).add(*[InlineKeyboardButton(f"{ROLE_ICONS[r]} {r}", callback_data=f"menu_{pfx}_ru_{r}") for r in ['P', 'D', 'C', 'A']]).add(InlineKeyboardButton("🔙 Scouting", callback_data="menu_scouting"),
-     InlineKeyboardButton("🏠 Home", callback_data="go_home")))
 
     elif call.data.startswith("menu_top_ru_") or call.data.startswith("menu_gemme_ru_"):
         pfx, raw = call.data.split("_")[1], call.data.split("_ru_")[1]
