@@ -531,6 +531,177 @@ ETICHETTE_PRONOSTICI = [
 ]
 
 
+def metti_in_asta(message, riga, df, session):
+    """
+    Il giocatore chiamato finisce sotto il semaforo, col suo tetto personale.
+
+    Il tetto e' lo stesso del Panic, calcolato dallo stesso posto: sarebbe
+    assurdo che il bot dicesse 22 in una schermata e 30 in un'altra sullo
+    stesso giocatore nello stesso istante.
+    """
+    _, disponibili, quadro, inflazione, _ = _quadro_piano(df, session)
+    ruolo = str(riga.get('R', 'C')).upper()[:1]
+    contesto = contesto_valori(df, session)
+
+    conti = piano.disponibile(quadro, ruolo)
+    fasce = piano.fasce_di_spesa(conti['disponibile'], conti['mancanti'],
+                                 session.get('strategia', 'equilibrata'))
+    tetto_reparto = fasce[0] if fasce else conti['disponibile']
+
+    gruppo = consiglio.classifica(disponibili, ruolo, contesto)
+    punteggio = consiglio.valuta(riga, contesto)
+    prezzo = int(_num(riga.get('Prezzo'), 1))
+    if gruppo is not None and not gruppo.empty:
+        migliore = float(gruppo.iloc[0]['_valore'])
+        posizione = min(len(gruppo) - 1, max(1, session.get('lega_partecipanti', 8) - 1))
+        rif = gruppo.iloc[posizione]
+        tetto = consiglio.tetto_personale(
+            punteggio['totale'], prezzo, migliore, float(rif['_valore']),
+            int(rif['_prezzo']), tetto_reparto, inflazione,
+            punteggio.get('ballottaggio', False))
+    else:
+        tetto = min(prezzo, tetto_reparto)
+
+    session['in_asta'] = {
+        'nome': str(riga['Nome']), 'ruolo': ruolo, 'prezzo': prezzo,
+        'squadra': str(riga.get('Squadra', '')), 'tetto': int(tetto), 'offerta': None,
+        'motivo': consiglio.motivo(riga, punteggio, prezzo, contesto),
+    }
+    salva_sessioni()
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+    return mostra_plancia(message.chat.id, session.get('id_plancia'), df, session)
+
+
+def turno_di_chi(session, registro_asta):
+    """
+    Di chi e' il turno di chiamare, e fra quanto tocca a te.
+
+    Si chiama a rotazione e ogni chiamata finisce con una vendita: quindi il
+    numero di vendite E' il numero di turni passati. Non serve segnare niente
+    in piu' - il taccuino che tieni gia' basta a saperlo.
+    """
+    partecipanti = max(2, session.get('lega_partecipanti', 8))
+    scostamento = session.get('turno_offset')
+    if scostamento is None:
+        return {'noto': False, 'mancano': None, 'partecipanti': partecipanti}
+    passati = len(registro_asta.voci)
+    mancano = (scostamento - passati) % partecipanti
+    return {'noto': True, 'mancano': mancano, 'tocca_a_me': mancano == 0,
+            'partecipanti': partecipanti}
+
+
+def scarsita(disponibili, ruolo, session, registro_asta, contesto):
+    """
+    Quanti giocatori validi restano, contro quanti ne servono a tutta la lega.
+
+    E' l'informazione che fa anticipare invece di inseguire: quando i buoni
+    scendono sotto le squadre che li cercano, il prezzo esplode e chi aspetta
+    paga il doppio.
+    """
+    gruppo = consiglio.classifica(disponibili, ruolo, contesto)
+    if gruppo is None or gruppo.empty:
+        return None
+    # "Valido" = sopra la media del ruolo, cioe' con valore positivo.
+    validi = int((gruppo['_valore'] > 0).sum())
+    partecipanti = session.get('lega_partecipanti', 8)
+    presi_da_tutti = sum(1 for v in registro_asta.voci if v.get('ruolo') == ruolo)
+    servono = max(0, partecipanti * SLOT_PER_RUOLO.get(ruolo, 0) - presi_da_tutti)
+    return {'validi': validi, 'servono': servono,
+            'stretta': validi <= partecipanti and servono > 0}
+
+
+def mostra_plancia(chat_id, message_id, df, session):
+    """
+    La plancia dell'asta: un messaggio solo, che si riscrive.
+
+    Prima ogni azione generava un messaggio nuovo e dopo mezz'ora si scorreva
+    all'infinito per ritrovare il proprio budget. Qui la chat serve solo a
+    far entrare i dati; l'unica uscita e' questa, sempre nello stesso posto.
+    """
+    registro_asta, disponibili, quadro, inflazione, campione = _quadro_piano(df, session)
+    contesto = contesto_valori(df, session)
+
+    # La fase non si imposta a mano: e' il primo reparto ancora scoperto.
+    ruolo = quadro['scoperti'][0] if quadro['scoperti'] else None
+    session['fase_asta'] = ruolo or 'A'
+
+    righe = [f"🔨 <b>ASTA LIVE</b>"]
+    if ruolo is None:
+        righe.append("\n✅ Rosa completa. Puoi chiudere.")
+    else:
+        conti = piano.disponibile(quadro, ruolo)
+        righe.append(f"{ROLE_ICONS[ruolo]} <b>{consiglio.PLURALE_RUOLO[ruolo]}</b> · "
+                     f"te ne mancano <b>{conti['mancanti']}</b>")
+        righe.append(f"💰 cassa <b>{registro_asta.budget()}</b> · "
+                     f"per questo reparto <b>{conti['disponibile']}</b>")
+
+    turno = turno_di_chi(session, registro_asta)
+    if turno['noto']:
+        righe.append("🔔 <b>TOCCA A TE: chiama</b>" if turno['tocca_a_me']
+                     else f"⏳ tocca a te fra <b>{turno['mancano']}</b> chiamate")
+
+    # Il giocatore su cui si sta rilanciando adesso
+    in_asta = session.get('in_asta')
+    if in_asta and ruolo:
+        righe.append("")
+        righe.append(_riga_semaforo(in_asta, session))
+
+    if ruolo:
+        stretta = scarsita(disponibili, ruolo, session, registro_asta, contesto)
+        if stretta and stretta['stretta']:
+            righe.append(f"\n⚠️ restano <b>{stretta['validi']}</b> "
+                         f"{consiglio.PLURALE_RUOLO[ruolo]} buoni e ne servono "
+                         f"<b>{stretta['servono']}</b> a tutta la lega: o compri "
+                         f"adesso o paghi il doppio")
+        if campione >= 8 and abs(inflazione - 1) >= 0.08:
+            verso = "sopra" if inflazione > 1 else "sotto"
+            righe.append(f"📈 stasera si paga il <b>"
+                         f"{abs(round((inflazione - 1) * 100))}% {verso}</b> il listino")
+
+    righe.append("\n<i>scrivi il nome per metterlo in asta · "
+                 "poi solo la cifra per sapere se continuare</i>")
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    if in_asta:
+        markup.add(InlineKeyboardButton(f"✅ Preso io", callback_data="asta_preso_io"),
+                   InlineKeyboardButton("🚫 L'ha preso un altro",
+                                        callback_data="asta_preso_altri"))
+    markup.row(InlineKeyboardButton("🚨 Chi chiamo", callback_data="menu_panic_start"),
+               InlineKeyboardButton("🔔 Tocca a me", callback_data="asta_turno_mio"))
+    markup.row(InlineKeyboardButton("📊 Come sto andando", callback_data="menu_andamento"),
+               InlineKeyboardButton("🛑 Chiudi asta", callback_data="asta_end"))
+
+    testo = "\n".join(righe)
+    try:
+        bot.edit_message_text(testo, chat_id, message_id, parse_mode="HTML",
+                              reply_markup=markup)
+    except Exception:
+        messaggio = bot.send_message(chat_id, testo, parse_mode="HTML",
+                                     reply_markup=markup)
+        session['id_plancia'] = messaggio.message_id
+    salva_sessioni()
+
+
+def _riga_semaforo(in_asta, session):
+    """Continua o molla, con il motivo in mezza riga."""
+    nome = in_asta.get('nome', '?')
+    tetto = int(in_asta.get('tetto', 0))
+    offerta = in_asta.get('offerta')
+    testa = (f"🎯 in asta: <b>{html.escape(str(nome))}</b> · "
+             f"vale {in_asta.get('prezzo', '?')}, spingiti fino a <b>{tetto}</b>")
+    if offerta is None:
+        return testa + f"\n<i>{html.escape(str(in_asta.get('motivo', '')), quote=False)}</i>"
+    if offerta < tetto:
+        return testa + f"\n🟢 siamo a {offerta}: <b>CONTINUA</b> (ancora {tetto - offerta})"
+    if offerta == tetto:
+        return testa + f"\n🟡 siamo a {offerta}: <b>ULTIMO RILANCIO</b>"
+    return testa + (f"\n🔴 siamo a {offerta}: <b>MOLLA</b>, "
+                    f"sono {offerta - tetto} sopra quanto vale per te")
+
+
 def mostra_pronostici(chat_id, message_id, df, session):
     """
     Le scommesse, con il fatto che le giustifica.
@@ -1407,6 +1578,20 @@ def testo_libero(message):
     if df is None or len(testo) < 2:
         return
 
+    # ------------------------------------------------------------------
+    # ASTA LIVE: durante una chiamata si hanno dieci secondi, non trenta.
+    # Una cifra da sola vuol dire "siamo arrivati a tanto": non serve
+    # ripetere il nome, il giocatore in asta lo sa gia' il bot.
+    # ------------------------------------------------------------------
+    if session.get('fase_asta') and testo.isdigit() and session.get('in_asta'):
+        session['in_asta']['offerta'] = int(testo)
+        salva_sessioni()
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
+        except Exception:
+            pass
+        return mostra_plancia(message.chat.id, session.get('id_plancia'), df, session)
+
     # All'asta si scrive, non si cerca il pulsante giusto: "annulla" deve
     # funzionare digitato, che e' il modo in cui viene in mente di usarlo
     # quando hai sbagliato una cifra e stanno gia' chiamando il prossimo.
@@ -1430,6 +1615,10 @@ def testo_libero(message):
     if matches.empty:
         return bot.reply_to(message, "❌ Nessun giocatore trovato.")
     if len(matches) == 1:
+        # In asta live il nome non apre la figurina: mette il giocatore sotto
+        # il semaforo. La figurina la si guarda prima, non mentre si rilancia.
+        if session.get('fase_asta'):
+            return metti_in_asta(message, matches.iloc[0], df, session)
         return send_player_card_view(message.chat.id, matches.iloc[0]['Nome'], None, df, session)
 
     markup = InlineKeyboardMarkup(row_width=1)
@@ -1593,11 +1782,11 @@ def handle_callbacks(call):
 
     # Le schermate-elenco diventano il punto di ritorno della card giocatore:
     # cosi' "Indietro" riporta alla lista giusta invece che alla Home.
-    if (call.data.startswith(("sq_ru_", "rig_sq_", "menu_top_ru_", "menu_gemme_ru_",
+    if (call.data.startswith(("sq_ru_", "rig_sq_", "menu_top_ru_",
                               "menu_modificatore"))
-            or call.data in ("pro_spiccioli", "pro_stakanov", "pro_griglia",
-                             "menu_wishlist", "menu_rosa", "menu_rigoristi",
-                             "sq_start", "menu_power")):
+            or call.data in ("pro_griglia", "menu_wishlist", "menu_rosa",
+                             "menu_rigoristi", "sq_start", "menu_power",
+                             "menu_scommessa_start")):
         session['ritorno'] = call.data
     elif call.data == "go_home":
         session['ritorno'] = None
@@ -1959,6 +2148,34 @@ def handle_callbacks(call):
         if call.data.replace("wl_toggle_", "") in session.get('wishlist', []): session['wishlist'].remove(call.data.replace("wl_toggle_", ""))
         else: session.setdefault('wishlist', []).append(call.data.replace("wl_toggle_", ""))
         send_player_card_view(chat_id, call.data.replace("wl_toggle_", ""), call.message.message_id, df, session)
+
+    elif call.data in ("asta_preso_io", "asta_preso_altri"):
+        # Chiusa la chiamata: si segna al prezzo dell'ultimo rilancio e la
+        # plancia riparte pulita, gia' col turno avanzato di uno.
+        in_asta = session.get('in_asta') or {}
+        prezzo = in_asta.get('offerta')
+        if not in_asta.get('nome') or prezzo is None:
+            safe_answer_callback(call.id, "Scrivi prima a quanto e' arrivato.", True)
+        else:
+            registro_asta = get_registro(session)
+            registro_asta.segna(in_asta['nome'], prezzo, in_asta.get('ruolo', 'C'),
+                                in_asta.get('squadra', ''),
+                                acquirente=reg.IO if call.data == "asta_preso_io"
+                                else reg.ALTRI)
+            salva_registro(registro_asta, session, chat_id)
+            session['in_asta'] = None
+            safe_answer_callback(call.id, f"✓ {in_asta['nome']} {prezzo} cr", False)
+        mostra_plancia(chat_id, session.get('id_plancia') or call.message.message_id,
+                       df, session)
+
+    elif call.data == "asta_turno_mio":
+        # Sincronizza il giro: da qui in avanti il bot sa contare da solo,
+        # perche' ogni chiamata finisce con una vendita.
+        session['turno_offset'] = len(get_registro(session).voci)
+        salva_sessioni()
+        safe_answer_callback(call.id, "🔔 Turno sincronizzato", False)
+        mostra_plancia(chat_id, session.get('id_plancia') or call.message.message_id,
+                       df, session)
 
     elif call.data == "menu_andamento":
         mostra_andamento(chat_id, call.message.message_id, df, session)
