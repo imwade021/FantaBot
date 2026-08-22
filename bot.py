@@ -613,6 +613,87 @@ def scarsita(disponibili, ruolo, session, registro_asta, contesto):
             'stretta': validi <= partecipanti and servono > 0}
 
 
+def mostra_wishlist(chat_id, message_id, df, session):
+    """
+    La wishlist non e' un elenco di preferiti: e' un cruscotto.
+
+    L'elenco dei nomi che ti sei salvato non ti dice niente che non sapessi
+    gia'. Quello che serve sapere e' se sono ancora liberi, quanto puoi
+    spingerti su ciascuno, e - per quelli andati - chi prendere al loro posto.
+    """
+    desiderati = list(session.get('wishlist', []))
+    markup = InlineKeyboardMarkup(row_width=1)
+    if not desiderati:
+        markup.add(InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+        return bot.edit_message_text(
+            "⭐ <b>WISHLIST VUOTA</b>\n\n<i>Aggiungi un giocatore dalla sua "
+            "scheda: qui vedrai se e' ancora libero e fin dove spingerti.</i>",
+            chat_id, message_id, parse_mode="HTML", reply_markup=markup)
+
+    registro_asta, disponibili, quadro, inflazione, _ = _quadro_piano(df, session)
+    contesto = contesto_valori(df, session)
+    venduti = set(n.lower() for n in registro_asta.venduti())
+
+    liberi, andati = [], []
+    for nome in desiderati:
+        riga = df[df['Nome'].astype(str).str.lower() == str(nome).lower()]
+        if riga.empty:
+            continue
+        riga = riga.iloc[0]
+        (andati if str(nome).lower() in venduti else liberi).append(riga)
+
+    righe = ["⭐ <b>WISHLIST</b>", ""]
+
+    for riga in liberi:
+        ruolo = str(riga.get('R', 'C')).upper()[:1]
+        conti = piano.disponibile(quadro, ruolo)
+        fasce = piano.fasce_di_spesa(conti['disponibile'], conti['mancanti'],
+                                     session.get('strategia', 'equilibrata'))
+        tetto_reparto = fasce[0] if fasce else conti['disponibile']
+        scelte = consiglio.consiglia(disponibili, ruolo, contesto, tetto_reparto,
+                                     conti['mancanti'], inflazione,
+                                     session.get('lega_partecipanti', 8))
+        suo = next((s for s in scelte if s['nome'] == str(riga['Nome'])), None)
+        prezzo = int(_num(riga.get('Prezzo'), 1))
+        tetto = suo['tetto'] if suo else min(prezzo, tetto_reparto)
+        righe.append(f"🟢 <b>{html.escape(str(riga['Nome']))}</b> "
+                     f"{ROLE_ICONS.get(ruolo, '')} · libero · vale {prezzo}, "
+                     f"fino a <b>{tetto}</b>")
+        markup.add(InlineKeyboardButton(f"🔍 {riga['Nome']} · fino a {tetto}",
+                                        callback_data=f"sq_pl_{riga['Nome']}"))
+
+    for riga in andati:
+        ruolo = str(riga.get('R', 'C')).upper()[:1]
+        conti = piano.disponibile(quadro, ruolo)
+        fasce = piano.fasce_di_spesa(conti['disponibile'], conti['mancanti'],
+                                     session.get('strategia', 'equilibrata'))
+        scelte = consiglio.consiglia(disponibili, ruolo, contesto,
+                                     fasce[0] if fasce else conti['disponibile'],
+                                     conti['mancanti'], inflazione,
+                                     session.get('lega_partecipanti', 8))
+        # Un nome cancellato e' una perdita; un nome cancellato con accanto chi
+        # prendere al suo posto e' una decisione gia' presa.
+        if scelte and conti['mancanti'] > 0:
+            sostituto = scelte[0]
+            righe.append(f"⚫️ <s>{html.escape(str(riga['Nome']))}</s> · andato → "
+                         f"al suo posto <b>{html.escape(sostituto['nome'])}</b> "
+                         f"({sostituto['prezzo']} cr, fino a {sostituto['tetto']})")
+            markup.add(InlineKeyboardButton(
+                f"🔍 {sostituto['nome']} · al posto di {riga['Nome']}",
+                callback_data=f"sq_pl_{sostituto['nome']}"))
+        else:
+            righe.append(f"⚫️ <s>{html.escape(str(riga['Nome']))}</s> · andato")
+
+    if liberi:
+        righe.append(f"\n<i>{len(liberi)} ancora liberi su {len(desiderati)}</i>")
+
+    markup.row(InlineKeyboardButton("🚨 Chi prendo adesso",
+                                    callback_data="menu_panic_start"),
+               InlineKeyboardButton("🏠 Home", callback_data="go_home"))
+    bot.edit_message_text("\n".join(righe), chat_id, message_id,
+                          parse_mode="HTML", reply_markup=markup)
+
+
 def mostra_plancia(chat_id, message_id, df, session):
     """
     La plancia dell'asta: un messaggio solo, che si riscrive.
@@ -626,7 +707,32 @@ def mostra_plancia(chat_id, message_id, df, session):
 
     # La fase non si imposta a mano: e' il primo reparto ancora scoperto.
     ruolo = quadro['scoperti'][0] if quadro['scoperti'] else None
+    precedente = session.get('fase_asta')
     session['fase_asta'] = ruolo or 'A'
+
+    # Reparto appena chiuso: il verdetto va dato UNA volta, subito, mentre hai
+    # ancora in mente cosa hai speso. Dopo tre giocatori del reparto seguente
+    # non interessa piu' a nessuno.
+    if precedente and precedente != ruolo and precedente in quadro['reparti']:
+        chiuso = quadro['reparti'][precedente]
+        differenza = chiuso['speso'] - chiuso['previsto']
+        # Tre casi, non due: dire "in linea col piano" e subito sotto "hai
+        # sforato" e' il modo piu' rapido per far smettere di leggere.
+        if abs(differenza) <= max(5, chiuso['previsto'] * 0.15):
+            giudizio = "in linea col piano"
+            avanzo = "niente da correggere: prosegui cosi'"
+        elif differenza < 0:
+            giudizio = f"<b>{differenza:+d}</b> rispetto al previsto"
+            avanzo = "hai risparmiato: quei crediti valgono per i reparti che restano"
+        else:
+            giudizio = f"<b>{differenza:+d}</b> rispetto al previsto"
+            avanzo = "hai sforato: da qui in avanti tocca stringere"
+        bot.send_message(
+            chat_id,
+            f"{ROLE_ICONS[precedente]} <b>{consiglio.PLURALE_RUOLO[precedente].upper()} "
+            f"CHIUSI</b>\nspesi <b>{chiuso['speso']}</b> cr · {giudizio}\n"
+            f"<i>{avanzo}</i>\ncassa: <b>{registro_asta.budget()}</b> cr",
+            parse_mode="HTML")
 
     righe = [f"🔨 <b>ASTA LIVE</b>"]
     if ruolo is None:
@@ -676,8 +782,11 @@ def mostra_plancia(chat_id, message_id, df, session):
 
     testo = "\n".join(righe)
     try:
+        if not message_id:
+            raise ValueError("nessuna plancia ancora aperta")
         bot.edit_message_text(testo, chat_id, message_id, parse_mode="HTML",
                               reply_markup=markup)
+        session['id_plancia'] = message_id
     except Exception:
         messaggio = bot.send_message(chat_id, testo, parse_mode="HTML",
                                      reply_markup=markup)
@@ -1147,48 +1256,21 @@ def get_strategia_asta(fase, session, df=None):
 
 
 def send_asta_dashboard(chat_id, user_id, message_id=None):
+    """
+    L'ingresso in asta mostra subito la plancia.
+
+    Prima il wizard di setup finiva su una schermata diversa e la plancia
+    compariva solo dopo aver scritto qualcosa: assurdo, perche' il momento in
+    cui premi "avvia asta" e' esattamente quello in cui vuoi vedere dove sei.
+    """
     session = get_session(user_id)
     df = load_data()
-    fase, budget, b_iniziale = session.get('fase_asta', 'P'), session['budget'], session.get('lega_budget_iniziale', 500)
-    lega_part, modif = session.get('lega_partecipanti', 8), session.get('modificatore_attivo', False)
-    
-    avail = get_available_players(df, session)
-    giocatori = avail[avail['R'] == fase].copy()
-    giocatori['_p'] = [fair_price(r, session) for _, r in giocatori.iterrows()]
-    giocatori = giocatori.sort_values('_p', ascending=False)
-    
-    top_str = ""
-    for i, (_, r) in enumerate(giocatori.head(5).iterrows(), 1):
-        max_bid = fair_price(r, session)
-        pres = int(_num(r.get('Pv')))
-        top_str += f"{i}. <b>{r['Nome']}</b> ({r['Squadra']}) ─ <code>{max_bid} cr.</code> · {pres} pres\n"
-    
-    testo = (f"🔨 <b>ASTA LIVE - FASE: {ROLE_ICONS.get(fase, '')} {fase}</b>\n━━━━━━━━━━━━━━━━━━━━━━\n"
-             f"⭐ <b>TOP 5 RIMASTI:</b>\n{top_str}\n🧠 <b>STRATEGIA:</b>\n<i>{get_strategia_asta(fase, session, df)}</i>\n"
-             f"━━━━━━━━━━━━━━━━━━━━━━\n💰 <b>Cassa:</b> <code>{budget} cr.</code> (Slot liberi: {get_roster_stats(session)['slot_liberi']})\n")
-    
-    if fase == 'D' and modif:
-        mods = analisi.candidati_modificatore(avail, limite=3)
-        if mods is not None and not mods.empty:
-            testo += "\n🛡️ <b>TOP MODIFICATORE DA PUNTARE:</b>\n" + "\n".join(
-                [f"• {r['Nome']} ({r['Squadra']}) - MV {_num(r.get('Mv')):.2f} · {fair_price(r, session)} cr"
-                 for _, r in mods.iterrows()]) + "\n"
-        
-    testo += "\n💡 <i>Cerca un nome o invia un vocale! (es: + nome prezzo)</i>"
-    
-    markup = InlineKeyboardMarkup(row_width=2)
-    next_fase = {'P': 'D', 'D': 'C', 'C': 'A', 'A': None}
-    if next_fase[fase]: markup.add(InlineKeyboardButton(f"⏭️ Passa ai {next_fase[fase]}", callback_data=f"asta_fase_{next_fase[fase]}"))
-    markup.add(InlineKeyboardButton("📚 Menu Principale (Studio)", callback_data="go_home"))
-    
+    if df is None:
+        return bot.send_message(chat_id, "❌ Listone non disponibile.")
     if message_id:
-        try: bot.edit_message_text(testo, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
-        except Exception: bot.send_message(chat_id, testo, parse_mode="HTML", reply_markup=markup)
-    else: bot.send_message(chat_id, testo, parse_mode="HTML", reply_markup=markup)
+        session['id_plancia'] = message_id
+    mostra_plancia(chat_id, session.get('id_plancia'), df, session)
 
-# =========================================================================
-# SCHEDA GIOCATORE CON PREZZI E FASCE REALI
-# =========================================================================
 def send_player_card_view(chat_id, player_name, message_id, df, session, is_scommessa=False):
     p_data = df[df['Nome'] == player_name].iloc[0]
     sq_name, ruolo, fvm = p_data.get('Squadra', '-'), str(p_data.get('R', '-')), p_data.get('FVM', 0)
@@ -2196,7 +2278,9 @@ def handle_callbacks(call):
             except Exception:
                 pass
 
-    elif call.data == "menu_wishlist": bot.edit_message_text("⭐ <b>WISHLIST:</b>\n" if session.get('wishlist') else "⭐ <b>VUOTA</b>", chat_id, call.message.message_id, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(row_width=1).add(*[InlineKeyboardButton(f"🔍 {n}", callback_data=f"sq_pl_{n}") for n in session.get('wishlist', [])]).add(InlineKeyboardButton("🏠 Home", callback_data="go_home")))
+    elif call.data == "menu_wishlist":
+        mostra_wishlist(chat_id, call.message.message_id, df, session)
+
 
 def verifica_istanza_unica(tentativi=6, attesa=10):
     """
